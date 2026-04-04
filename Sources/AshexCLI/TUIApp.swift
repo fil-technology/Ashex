@@ -533,12 +533,21 @@ final class TUIApp {
                 return
             case .terminalCommand:
                 inputMode = .prompt
-                focus = showTerminalPane ? .terminal : .launcher
-                statusLine = "Back to terminal"
+                showTerminalPane = false
+                focus = .launcher
+                statusLine = "Back to launcher"
                 return
             default:
                 break
             }
+        }
+
+        if showTerminalPane && focus == .terminal {
+            showTerminalPane = false
+            inputMode = .prompt
+            focus = .launcher
+            statusLine = "Back to launcher"
+            return
         }
 
         if showSettings {

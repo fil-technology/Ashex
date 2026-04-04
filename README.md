@@ -33,6 +33,31 @@ swift run ashex 'shell: ls -la'
 
 Running `swift run ashex` with no prompt starts the interactive terminal TUI.
 
+Install once, then launch like a normal command:
+
+```bash
+./scripts/install.sh
+~/.local/bin/ashex
+```
+
+Single-command install and launch from the repo root:
+
+```bash
+./scripts/install.sh && ~/.local/bin/ashex
+```
+
+If `~/.local/bin` is already in your `PATH`, the one-liner becomes:
+
+```bash
+./scripts/install.sh && ashex
+```
+
+You can also install somewhere else:
+
+```bash
+./scripts/install.sh /usr/local/bin
+```
+
 TUI highlights:
 
 - Switch between `mock`, `ollama`, and `openai` without restarting
@@ -91,8 +116,11 @@ TUI controls:
 
 - `Tab`: cycle focus between launcher, settings/history panels, and input
 - `Up/Down` or `j/k`: move through launcher or panel selections
+- `Page Up` / `Page Down`: scroll transcripts or terminal output faster
+- `Home` / `End` or `g` / `G`: jump to the oldest output or back to the live tail
 - `Enter`: open the selected item or submit the current input
 - `Esc` or `Left`: back out, cancel, or quit
+- `t`: toggle the side terminal pane
 - `y` / `n`: approve or deny guarded actions
 
 ## Runtime boundary

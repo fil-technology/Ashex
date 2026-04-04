@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+INSTALL_DIR="${1:-${INSTALL_DIR:-$HOME/.local/bin}}"
+TARGET_NAME="ashex"
+
+mkdir -p "$INSTALL_DIR"
+
+echo "Building Ashex in release mode..."
+cd "$ROOT_DIR"
+swift build -c release
+
+BINARY_PATH="$ROOT_DIR/.build/release/$TARGET_NAME"
+if [[ ! -x "$BINARY_PATH" ]]; then
+  echo "error: expected binary not found at $BINARY_PATH" >&2
+  exit 1
+fi
+
+install -m 755 "$BINARY_PATH" "$INSTALL_DIR/$TARGET_NAME"
+
+echo "Installed $TARGET_NAME to $INSTALL_DIR/$TARGET_NAME"
+case ":$PATH:" in
+  *":$INSTALL_DIR:"*)
+    echo "Run it with: $TARGET_NAME"
+    ;;
+  *)
+    echo "Run it with: $INSTALL_DIR/$TARGET_NAME"
+    echo "Optional: add $INSTALL_DIR to your PATH"
+    ;;
+esac
