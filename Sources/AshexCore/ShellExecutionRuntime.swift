@@ -4,6 +4,12 @@ public struct ShellExecutionRequest: Sendable {
     public let command: String
     public let workspaceURL: URL
     public let timeout: TimeInterval
+
+    public init(command: String, workspaceURL: URL, timeout: TimeInterval) {
+        self.command = command
+        self.workspaceURL = workspaceURL
+        self.timeout = timeout
+    }
 }
 
 public struct ShellExecutionResult: Sendable {

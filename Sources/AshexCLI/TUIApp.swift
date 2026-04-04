@@ -9,6 +9,7 @@ final class TUIApp {
         case model
         case apiKey
         case workspacePath
+        case terminalCommand
     }
 
     private struct MenuItem {
@@ -20,6 +21,7 @@ final class TUIApp {
     private enum Action {
         case compose
         case commands
+        case terminal
         case history
         case settings
         case help
@@ -31,6 +33,7 @@ final class TUIApp {
         case history
         case settings
         case transcript
+        case terminal
         case input
         case approval
     }
@@ -67,6 +70,7 @@ final class TUIApp {
     private let menuItems: [MenuItem] = [
         .init(title: "New Prompt", subtitle: "Write your own instruction", action: .compose),
         .init(title: "Commands", subtitle: "See available tools, operations, and config policy", action: .commands),
+        .init(title: "Terminal", subtitle: "Toggle the side shell pane for quick workspace commands", action: .terminal),
         .init(title: "History", subtitle: "Browse persisted threads and run transcripts", action: .history),
         .init(title: "Provider Settings", subtitle: "Switch backend and edit the active model", action: .settings),
         .init(title: "Help", subtitle: "Show keyboard shortcuts and behavior", action: .help),
@@ -80,11 +84,13 @@ final class TUIApp {
     private var modelInput = ""
     private var apiKeyInput = ""
     private var workspacePathInput = ""
+    private var terminalCommandInput = ""
     private var inputMode: InputMode = .prompt
     private var showHelp = false
     private var showCommands = false
     private var showHistory = false
     private var showSettings = false
+    private var showTerminalPane = false
     private var statusLine = "Ready"
     private var runLines: [String] = []
     private var runFinished = true
@@ -94,6 +100,7 @@ final class TUIApp {
     private var runStartedAt: Date?
     private var workingFrameIndex = 0
     private var transcriptScrollOffset = 0
+    private var terminalScrollOffset = 0
     private var showToolDetails = false
     private var providerStatus = ProviderStatusSnapshot.idle
     private var shouldQuit = false
@@ -109,6 +116,9 @@ final class TUIApp {
     private var historyRuns: [UUID: [RunRecord]] = [:]
     private var historySelection = 0
     private var historyPreviewLines: [String] = []
+    private var terminalLines: [String] = ["No terminal commands yet. Open the pane and run one from the input bar."]
+    private var terminalTask: Task<Void, Never>?
+    private var terminalCancellation = CancellationToken()
 
     init(configuration: CLIConfiguration) throws {
         let approvalCoordinator = TUIApprovalCoordinator()
@@ -230,6 +240,22 @@ final class TUIApp {
             jumpTranscriptToTop()
         case .character("G") where focus == .transcript:
             jumpTranscriptToBottom()
+        case .character("k") where focus == .terminal:
+            scrollTerminal(by: 1)
+        case .character("j") where focus == .terminal:
+            scrollTerminal(by: -1)
+        case .character("K") where focus == .terminal:
+            scrollTerminalPage(direction: .older)
+        case .character("J") where focus == .terminal:
+            scrollTerminalPage(direction: .newer)
+        case .character("g") where focus == .terminal:
+            jumpTerminalToTop()
+        case .character("G") where focus == .terminal:
+            jumpTerminalToBottom()
+        case .character("t") where focus != .input:
+            toggleTerminalPane()
+        case .character("T") where focus != .input:
+            toggleTerminalPane()
         case .character("e") where focus == .transcript:
             showToolDetails.toggle()
             statusLine = showToolDetails ? "Expanded tool details" : "Collapsed tool details"
@@ -259,6 +285,8 @@ final class TUIApp {
             case .settings:
                 focus = .transcript
             case .transcript:
+                focus = showTerminalPane ? .terminal : .input
+            case .terminal:
                 focus = .input
             case .input:
                 focus = .launcher
@@ -276,6 +304,8 @@ final class TUIApp {
             case .history:
                 focus = .transcript
             case .transcript:
+                focus = showTerminalPane ? .terminal : .input
+            case .terminal:
                 focus = .input
             case .settings:
                 focus = .input
@@ -292,6 +322,8 @@ final class TUIApp {
         case .launcher:
             focus = .transcript
         case .transcript:
+            focus = showTerminalPane ? .terminal : .input
+        case .terminal:
             focus = .input
         case .history:
             focus = .input
@@ -316,6 +348,8 @@ final class TUIApp {
             settingsSelection = max(settingsSelection - 1, 0)
         case .transcript:
             scrollTranscript(by: 1)
+        case .terminal:
+            scrollTerminal(by: 1)
         case .input, .approval:
             break
         }
@@ -332,29 +366,55 @@ final class TUIApp {
             settingsSelection = min(settingsSelection + 1, SettingsAction.allCases.count - 1)
         case .transcript:
             scrollTranscript(by: -1)
+        case .terminal:
+            scrollTerminal(by: -1)
         case .input, .approval:
             break
         }
     }
 
     private func handlePageUp() {
-        guard focus == .transcript else { return }
-        scrollTranscriptPage(direction: .older)
+        switch focus {
+        case .transcript:
+            scrollTranscriptPage(direction: .older)
+        case .terminal:
+            scrollTerminalPage(direction: .older)
+        default:
+            return
+        }
     }
 
     private func handlePageDown() {
-        guard focus == .transcript else { return }
-        scrollTranscriptPage(direction: .newer)
+        switch focus {
+        case .transcript:
+            scrollTranscriptPage(direction: .newer)
+        case .terminal:
+            scrollTerminalPage(direction: .newer)
+        default:
+            return
+        }
     }
 
     private func handleHome() {
-        guard focus == .transcript else { return }
-        jumpTranscriptToTop()
+        switch focus {
+        case .transcript:
+            jumpTranscriptToTop()
+        case .terminal:
+            jumpTerminalToTop()
+        default:
+            return
+        }
     }
 
     private func handleEnd() {
-        guard focus == .transcript else { return }
-        jumpTranscriptToBottom()
+        switch focus {
+        case .transcript:
+            jumpTranscriptToBottom()
+        case .terminal:
+            jumpTerminalToBottom()
+        default:
+            return
+        }
     }
 
     private func handleEnter() {
@@ -367,6 +427,9 @@ final class TUIApp {
         case .prompt:
             let prompt = promptText.trimmingCharacters(in: .whitespacesAndNewlines)
             if !prompt.isEmpty {
+                if handleLocalPromptCommand(prompt) {
+                    return
+                }
                 startRun(prompt: prompt)
                 return
             }
@@ -378,6 +441,9 @@ final class TUIApp {
             return
         case .workspacePath:
             commitWorkspacePathInput()
+            return
+        case .terminalCommand:
+            commitTerminalCommand()
             return
         }
 
@@ -414,6 +480,11 @@ final class TUIApp {
             workspacePathInput.removeLast()
             focus = .input
             statusLine = "Editing workspace"
+        case .terminalCommand:
+            guard !terminalCommandInput.isEmpty else { return }
+            terminalCommandInput.removeLast()
+            focus = .input
+            statusLine = "Editing terminal command"
         }
     }
 
@@ -441,6 +512,10 @@ final class TUIApp {
                 workspacePathInput = ""
                 statusLine = "Cleared workspace input"
                 return
+            case .terminalCommand where !terminalCommandInput.isEmpty:
+                terminalCommandInput = ""
+                statusLine = "Cleared terminal input"
+                return
             case .model:
                 inputMode = .prompt
                 focus = showSettings ? .settings : .launcher
@@ -455,6 +530,11 @@ final class TUIApp {
                 inputMode = .prompt
                 focus = showSettings ? .settings : .launcher
                 statusLine = "Back to settings"
+                return
+            case .terminalCommand:
+                inputMode = .prompt
+                focus = showTerminalPane ? .terminal : .launcher
+                statusLine = "Back to terminal"
                 return
             default:
                 break
@@ -518,6 +598,9 @@ final class TUIApp {
         case .workspacePath:
             workspacePathInput.append(character)
             statusLine = "Editing workspace"
+        case .terminalCommand:
+            terminalCommandInput.append(character)
+            statusLine = "Editing terminal command"
         }
         focus = .input
         if inputMode == .prompt {
@@ -566,6 +649,8 @@ final class TUIApp {
             showHelp = false
             focus = .launcher
             statusLine = "Commands"
+        case .terminal:
+            toggleTerminalPane()
         case .history:
             showHistory = true
             showSettings = false
@@ -641,6 +726,23 @@ final class TUIApp {
         }
     }
 
+    private func toggleTerminalPane() {
+        showTerminalPane.toggle()
+        if showTerminalPane {
+            focus = .terminal
+            inputMode = .terminalCommand
+            statusLine = "Terminal pane opened"
+        } else {
+            if focus == .terminal {
+                focus = .launcher
+            }
+            if inputMode == .terminalCommand {
+                inputMode = .prompt
+            }
+            statusLine = "Terminal pane hidden"
+        }
+    }
+
     private func commitModelInput() {
         let trimmed = modelInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
@@ -705,6 +807,66 @@ final class TUIApp {
         }
     }
 
+    private func commitTerminalCommand() {
+        let command = terminalCommandInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !command.isEmpty else {
+            statusLine = "Terminal command is empty"
+            return
+        }
+
+        terminalTask?.cancel()
+        let cancellation = CancellationToken()
+        terminalCancellation = cancellation
+        terminalCommandInput = ""
+        terminalScrollOffset = 0
+        showTerminalPane = true
+        focus = .terminal
+        inputMode = .terminalCommand
+        statusLine = "Running terminal command"
+        terminalLines.append("[command] \(command)")
+
+        let runtime = ProcessExecutionRuntime()
+        let request = ShellExecutionRequest(
+            command: command,
+            workspaceURL: sessionWorkspaceRoot,
+            timeout: 30
+        )
+
+        terminalTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let result = try await runtime.execute(
+                    request,
+                    cancellationToken: cancellation,
+                    onStdout: { [weak self] chunk in
+                        Task { @MainActor [weak self] in
+                            self?.appendTerminalChunks(prefix: "[stdout]", chunk: chunk)
+                        }
+                    },
+                    onStderr: { [weak self] chunk in
+                        Task { @MainActor [weak self] in
+                            self?.appendTerminalChunks(prefix: "[stderr]", chunk: chunk)
+                        }
+                    }
+                )
+
+                await MainActor.run {
+                    self.terminalLines.append("[exit] code \(result.exitCode)\(result.timedOut ? " (timed out)" : "")")
+                    self.terminalTask = nil
+                    self.statusLine = "Terminal command finished"
+                    self.render()
+                }
+            } catch {
+                await MainActor.run {
+                    self.terminalLines.append("[error] \(error.localizedDescription)")
+                    self.terminalTask = nil
+                    self.statusLine = "Terminal command failed"
+                    self.render()
+                }
+            }
+        }
+    }
+
     private func commitAPIKeyInput() {
         let trimmed = apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
@@ -759,6 +921,69 @@ final class TUIApp {
             )
             statusLine = "Provider needs attention"
         }
+    }
+
+    @discardableResult
+    private func handleLocalPromptCommand(_ prompt: String) -> Bool {
+        let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix(":") || trimmed == "pwd" || trimmed.hasPrefix("cd ") else {
+            return false
+        }
+
+        if trimmed == "pwd" || trimmed == ":pwd" {
+            runTask?.cancel()
+            runExecutionControl = nil
+            stopWorkingIndicator()
+            runLines = [
+                "Prompt: \(trimmed)",
+                "",
+                "[local] Current workspace",
+                sessionWorkspaceRoot.path
+            ]
+            transcriptScrollOffset = 0
+            runFinished = true
+            runStartedAt = nil
+            promptText = ""
+            inputMode = .prompt
+            showSettings = false
+            showHelp = false
+            showHistory = false
+            focus = .transcript
+            statusLine = "Workspace shown"
+            return true
+        }
+
+        let workspacePath: String?
+        if trimmed.hasPrefix(":workspace ") {
+            workspacePath = String(trimmed.dropFirst(":workspace ".count))
+        } else if trimmed.hasPrefix(":cd ") {
+            workspacePath = String(trimmed.dropFirst(":cd ".count))
+        } else if trimmed.hasPrefix("cd ") {
+            workspacePath = String(trimmed.dropFirst(3))
+        } else {
+            workspacePath = nil
+        }
+
+        guard let workspacePath else {
+            runLines = [
+                "Prompt: \(trimmed)",
+                "",
+                "[local] Unknown local command",
+                "Use :workspace /full/path, cd /full/path, or pwd"
+            ]
+            transcriptScrollOffset = 0
+            runFinished = true
+            runStartedAt = nil
+            promptText = ""
+            focus = .transcript
+            statusLine = "Unknown local command"
+            return true
+        }
+
+        promptText = ""
+        workspacePathInput = workspacePath
+        commitWorkspacePathInput()
+        return true
     }
 
     private func startRun(prompt: String) {
@@ -948,7 +1173,9 @@ final class TUIApp {
         let bodyHeight = max(height - chromeHeight, 10)
         let gap = 1
         let leftWidth = max(min(width / 3, 40), 30)
-        let rightWidth = max(width - leftWidth - gap, 38)
+        let availableRightWidth = max(width - leftWidth - gap, 38)
+        let terminalWidth = showTerminalPane ? max(min(availableRightWidth / 3, 48), 32) : 0
+        let rightWidth = showTerminalPane ? max(availableRightWidth - terminalWidth - gap, 38) : availableRightWidth
 
         let leftPanel = panel(
             title: "Launcher",
@@ -986,8 +1213,20 @@ final class TUIApp {
             maxBodyHeight: bodyHeight
         )
 
-        return zip(leftPanel, rightPanel).map { left, right in
-            left + String(repeating: " ", count: gap) + right
+        if showTerminalPane {
+            let terminalPanel = panel(
+                title: "Terminal",
+                lines: renderTerminalLines(width: terminalWidth - 4, maxBodyHeight: bodyHeight),
+                width: terminalWidth,
+                maxBodyHeight: bodyHeight
+            )
+            return zip(zip(leftPanel, rightPanel), terminalPanel).map { pair, terminal in
+                pair.0 + String(repeating: " ", count: gap) + pair.1 + String(repeating: " ", count: gap) + terminal
+            }
+        } else {
+            return zip(leftPanel, rightPanel).map { left, right in
+                left + String(repeating: " ", count: gap) + right
+            }
         }
     }
 
@@ -1029,6 +1268,7 @@ final class TUIApp {
             "\(TerminalUIStyle.slate)Up/Down or j/k\(TerminalUIStyle.reset) Move through launcher items or scroll the transcript",
             "\(TerminalUIStyle.slate)Page Up/Down or Shift+j/Shift+k\(TerminalUIStyle.reset) Scroll the transcript faster",
             "\(TerminalUIStyle.slate)Home/End or g/G\(TerminalUIStyle.reset) Jump to the oldest output or back to the live tail",
+            "\(TerminalUIStyle.slate)t\(TerminalUIStyle.reset) Toggle the side terminal pane",
             "\(TerminalUIStyle.slate)e\(TerminalUIStyle.reset) Expand or collapse tool details in the transcript",
             "\(TerminalUIStyle.slate)x\(TerminalUIStyle.reset) Skip the current planned step and continue",
             "\(TerminalUIStyle.slate)Enter\(TerminalUIStyle.reset) Open launcher item or submit prompt",
@@ -1057,6 +1297,10 @@ final class TUIApp {
             "\(TerminalUIStyle.blue)\(TerminalUIStyle.truncateVisible("Read a file: read README.md", limit: width))\(TerminalUIStyle.reset)",
             "\(TerminalUIStyle.blue)\(TerminalUIStyle.truncateVisible("List a directory: list files", limit: width))\(TerminalUIStyle.reset)",
             "\(TerminalUIStyle.blue)\(TerminalUIStyle.truncateVisible("Run shell: shell: git status", limit: width))\(TerminalUIStyle.reset)",
+            "\(TerminalUIStyle.blue)\(TerminalUIStyle.truncateVisible("Switch workspace live: :workspace /full/path/to/project", limit: width))\(TerminalUIStyle.reset)",
+            "\(TerminalUIStyle.blue)\(TerminalUIStyle.truncateVisible("Terminal-style alias: cd /full/path/to/project", limit: width))\(TerminalUIStyle.reset)",
+            "\(TerminalUIStyle.blue)\(TerminalUIStyle.truncateVisible("Show current workspace: pwd", limit: width))\(TerminalUIStyle.reset)",
+            "\(TerminalUIStyle.blue)\(TerminalUIStyle.truncateVisible("Open side terminal: press t or choose Terminal in the launcher", limit: width))\(TerminalUIStyle.reset)",
             "",
             "\(TerminalUIStyle.ink)Filesystem Tool\(TerminalUIStyle.reset)",
             "\(TerminalUIStyle.slate)read_text_file\(TerminalUIStyle.reset) Read UTF-8 text files inside the workspace",
@@ -1354,6 +1598,7 @@ final class TUIApp {
         case .model: actualLabelText = "Model"
         case .apiKey: actualLabelText = "API Key"
         case .workspacePath: actualLabelText = "Workspace"
+        case .terminalCommand: actualLabelText = "Terminal"
         }
         let title = focus == .input ? "\(TerminalUIStyle.cyan)\(actualLabelText)\(TerminalUIStyle.reset)" : "\(TerminalUIStyle.faint)\(actualLabelText)\(TerminalUIStyle.reset)"
         let currentText: String
@@ -1362,6 +1607,7 @@ final class TUIApp {
         case .model: currentText = modelInput
         case .apiKey: currentText = String(repeating: "•", count: apiKeyInput.count)
         case .workspacePath: currentText = workspacePathInput
+        case .terminalCommand: currentText = terminalCommandInput
         }
         let placeholder = inputMode == .model
             ? "Type a model name, then press Enter to apply…"
@@ -1369,6 +1615,8 @@ final class TUIApp {
                 ? "Paste an API key, then press Enter to save…"
                 : inputMode == .workspacePath
                     ? "Type a project directory path, then press Enter to switch…"
+                : inputMode == .terminalCommand
+                    ? "Type a shell command for the side terminal, then press Enter…"
                 : "Type a prompt here, then press Enter to run…"
         let prompt = currentText.isEmpty
             ? "\(TerminalUIStyle.faint)\(placeholder)\(TerminalUIStyle.reset)"
@@ -1515,6 +1763,7 @@ final class TUIApp {
         case .history: return "history"
         case .settings: return "settings"
         case .transcript: return "transcript"
+        case .terminal: return "terminal"
         case .input: return "input"
         case .approval: return "approval"
         }
@@ -1678,6 +1927,35 @@ final class TUIApp {
     private func jumpTranscriptToBottom() {
         transcriptScrollOffset = 0
         statusLine = "Transcript at live tail"
+    }
+
+    private func scrollTerminal(by delta: Int) {
+        let metrics = terminalMetrics()
+        let maxOffset = max(metrics.totalLines - metrics.bodyLimit, 0)
+        terminalScrollOffset = min(max(terminalScrollOffset + delta, 0), maxOffset)
+        statusLine = terminalScrollOffset == 0 ? "Terminal at live tail" : "Terminal scroll +\(terminalScrollOffset)"
+    }
+
+    private func scrollTerminalPage(direction: TranscriptPageDirection) {
+        let metrics = terminalMetrics()
+        let step = max(metrics.bodyLimit - 2, 8)
+        switch direction {
+        case .older:
+            scrollTerminal(by: step)
+        case .newer:
+            scrollTerminal(by: -step)
+        }
+    }
+
+    private func jumpTerminalToTop() {
+        let metrics = terminalMetrics()
+        terminalScrollOffset = max(metrics.totalLines - metrics.bodyLimit, 0)
+        statusLine = terminalScrollOffset == 0 ? "Terminal at live tail" : "Terminal at top"
+    }
+
+    private func jumpTerminalToBottom() {
+        terminalScrollOffset = 0
+        statusLine = "Terminal at live tail"
     }
 
     private func isTranscriptNearBottom() -> Bool {
@@ -2026,6 +2304,39 @@ final class TUIApp {
         return lines
     }
 
+    private func renderTerminalLines(width: Int, maxBodyHeight: Int) -> [String] {
+        let bodyLimit = max(maxBodyHeight - 3, 1)
+        let expanded = wrappedTerminalLines(width: width)
+        let maxOffset = max(expanded.count - bodyLimit, 0)
+        terminalScrollOffset = min(max(terminalScrollOffset, 0), maxOffset)
+        let endIndex = max(expanded.count - terminalScrollOffset, 0)
+        let startIndex = max(endIndex - bodyLimit, 0)
+        let viewport = Array(expanded[startIndex..<endIndex])
+
+        var output = [terminalHeader(width: width, totalLines: expanded.count, visibleLines: bodyLimit), ""]
+        output.append(contentsOf: viewport)
+        return output
+    }
+
+    private func terminalHeader(width: Int, totalLines: Int, visibleLines: Int) -> String {
+        let state = terminalTask == nil ? "idle" : "running"
+        let focusInfo = focus == .terminal
+            ? "\(TerminalUIStyle.cyan)\(terminalScrollOffset == 0 ? "live tail" : "scroll +\(terminalScrollOffset)")\(TerminalUIStyle.reset)"
+            : "\(TerminalUIStyle.faint)tab to focus\(TerminalUIStyle.reset)"
+        let left = "\(TerminalUIStyle.faint)state\(TerminalUIStyle.reset) \(state)"
+        let right = "\(TerminalUIStyle.faint)\(totalLines) lines / \(visibleLines) view\(TerminalUIStyle.reset)  \(focusInfo)"
+        return join(left: left, right: right, width: width)
+    }
+
+    private func wrappedTerminalLines(width: Int) -> [String] {
+        let source = terminalLines.isEmpty ? ["No terminal commands yet."] : terminalLines
+        var expanded: [String] = []
+        for line in source {
+            expanded.append(contentsOf: wrapRunLine(line, width: width))
+        }
+        return expanded
+    }
+
     private func transcriptMetrics() -> (bodyLimit: Int, totalLines: Int) {
         let size = terminal.terminalSize()
         let chromeHeight = 10
@@ -2035,6 +2346,27 @@ final class TUIApp {
         let bodyLimit = max(bodyHeight - 3, 1)
         let totalLines = wrappedRunLines(width: rightWidth - 4).count
         return (bodyLimit, totalLines)
+    }
+
+    private func terminalMetrics() -> (bodyLimit: Int, totalLines: Int) {
+        let size = terminal.terminalSize()
+        let chromeHeight = 10
+        let bodyHeight = max(size.rows - chromeHeight, 10)
+        let availableRightWidth = max(size.columns - max(min(size.columns / 3, 40), 30) - 1, 38)
+        let terminalWidth = max(min(availableRightWidth / 3, 48), 32)
+        let bodyLimit = max(bodyHeight - 3, 1)
+        let totalLines = wrappedTerminalLines(width: terminalWidth - 4).count
+        return (bodyLimit, totalLines)
+    }
+
+    private func appendTerminalChunks(prefix: String, chunk: String) {
+        let pieces = chunk.split(separator: "\n", omittingEmptySubsequences: false)
+        let shouldFollowTail = terminalScrollOffset <= 1
+        terminalLines.append(contentsOf: pieces.map { "\(prefix) \($0)" })
+        if shouldFollowTail {
+            terminalScrollOffset = 0
+        }
+        render()
     }
 
     private func wrapText(_ text: String, width: Int) -> [String] {
