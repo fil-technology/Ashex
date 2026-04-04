@@ -11,6 +11,8 @@ public enum RuntimeEventPayload: Codable, Sendable {
     case runStateChanged(runID: UUID, state: RunState, reason: String?)
     case status(runID: UUID, message: String)
     case messageAppended(runID: UUID, messageID: UUID, role: MessageRole)
+    case approvalRequested(runID: UUID, toolName: String, summary: String, reason: String, risk: ApprovalRisk)
+    case approvalResolved(runID: UUID, toolName: String, allowed: Bool, reason: String)
     case toolCallStarted(runID: UUID, toolCallID: UUID, toolName: String, arguments: JSONObject)
     case toolOutput(runID: UUID, toolCallID: UUID, stream: OutputStreamKind, chunk: String)
     case toolCallFinished(runID: UUID, toolCallID: UUID, success: Bool, summary: String)

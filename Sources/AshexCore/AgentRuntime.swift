@@ -18,17 +18,20 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
     private let modelAdapter: any ModelAdapter
     private let toolRegistry: ToolRegistry
     private let persistence: PersistenceStore
+    private let approvalPolicy: any ApprovalPolicy
     private let clock: @Sendable () -> Date
 
     public init(
         modelAdapter: any ModelAdapter,
         toolRegistry: ToolRegistry,
         persistence: PersistenceStore,
+        approvalPolicy: any ApprovalPolicy = TrustedApprovalPolicy(),
         clock: @escaping @Sendable () -> Date = Date.init
     ) throws {
         self.modelAdapter = modelAdapter
         self.toolRegistry = toolRegistry
         self.persistence = persistence
+        self.approvalPolicy = approvalPolicy
         self.clock = clock
         try persistence.initialize()
         try persistence.normalizeInterruptedRuns(now: clock())
@@ -93,6 +96,33 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                 case .toolCall(let call):
                     let tool = try toolRegistry.tool(named: call.toolName)
                     let toolCall = try persistence.recordToolCall(runID: run.id, toolName: tool.name, arguments: call.arguments, now: clock())
+
+                    if let approvalRequest = ApprovalClassifier.requestForTool(runID: run.id, toolName: tool.name, arguments: call.arguments),
+                       approvalPolicy.mode == .guarded {
+                        try emitter.emit(.approvalRequested(
+                            runID: run.id,
+                            toolName: tool.name,
+                            summary: approvalRequest.summary,
+                            reason: approvalRequest.reason,
+                            risk: approvalRequest.risk
+                        ), runID: run.id)
+
+                        let decision = await approvalPolicy.evaluate(approvalRequest)
+                        try emitter.emit(.approvalResolved(
+                            runID: run.id,
+                            toolName: tool.name,
+                            allowed: decision.allowed,
+                            reason: decision.reason
+                        ), runID: run.id)
+
+                        guard decision.allowed else {
+                            try persistence.finishToolCall(toolCallID: toolCall.id, status: "denied", output: decision.reason, finishedAt: clock())
+                            let toolMessage = try persistence.appendMessage(threadID: thread.id, runID: run.id, role: .tool, content: "Tool denied: \(decision.reason)", now: clock())
+                            try emitter.emit(.messageAppended(runID: run.id, messageID: toolMessage.id, role: .tool), runID: run.id)
+                            throw AshexError.approvalDenied("Execution denied for \(tool.name): \(decision.reason)")
+                        }
+                    }
+
                     try emitter.emit(.toolCallStarted(runID: run.id, toolCallID: toolCall.id, toolName: tool.name, arguments: call.arguments), runID: run.id)
 
                     let toolContext = ToolContext(

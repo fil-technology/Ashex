@@ -45,6 +45,20 @@ CLI options:
 - `--max-iterations N`: loop limit, default `8`
 - `--provider mock|openai`: model adapter selection, default `mock`
 - `--model MODEL`: model name for provider-backed mode, default `gpt-5.4-mini`
+- `--approval-mode trusted|guarded`: execution policy, default `trusted`
+
+Guarded mode examples:
+
+```bash
+swift run ashex --approval-mode guarded 'shell: pwd'
+swift run ashex --approval-mode guarded
+```
+
+In guarded mode:
+
+- shell commands require approval
+- filesystem writes and directory creation require approval
+- read-only filesystem operations continue without prompting
 
 ## Runtime boundary
 

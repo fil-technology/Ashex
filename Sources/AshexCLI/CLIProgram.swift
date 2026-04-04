@@ -6,16 +6,16 @@ struct AshexCLI {
     static func main() async {
         do {
             let configuration = try CLIConfiguration(arguments: CommandLine.arguments)
-            let runtime = try configuration.makeRuntime()
 
             if let prompt = configuration.prompt {
+                let runtime = try configuration.makeRuntime()
                 let stream = runtime.run(.init(prompt: prompt, maxIterations: configuration.maxIterations))
                 for await event in stream {
                     render(event)
                 }
             } else {
                 let app = try await MainActor.run {
-                    try TUIApp(configuration: configuration, runtime: runtime)
+                    try TUIApp(configuration: configuration)
                 }
                 try await app.run()
             }
@@ -35,6 +35,10 @@ struct AshexCLI {
             print("[status] \(message)")
         case .messageAppended(_, _, let role):
             print("[message] appended \(role.rawValue)")
+        case .approvalRequested(_, let toolName, let summary, let reason, let risk):
+            print("[approval] \(toolName) \(summary) (\(risk.rawValue)) - \(reason)")
+        case .approvalResolved(_, let toolName, let allowed, let reason):
+            print("[approval] \(toolName) \(allowed ? "approved" : "denied") - \(reason)")
         case .toolCallStarted(_, _, let toolName, let arguments):
             print("[tool] \(toolName) started \(JSONValue.object(arguments).prettyPrinted)")
         case .toolOutput(_, _, let stream, let chunk):
@@ -63,6 +67,7 @@ struct CLIConfiguration {
     let maxIterations: Int
     let provider: String
     let model: String
+    let approvalMode: ApprovalMode
 
     init(arguments: [String]) throws {
         var promptParts: [String] = []
@@ -71,6 +76,7 @@ struct CLIConfiguration {
         var maxIterations = 8
         var provider = ProcessInfo.processInfo.environment["ASHEX_PROVIDER"] ?? "mock"
         var model = ProcessInfo.processInfo.environment["OPENAI_MODEL"] ?? "gpt-5.4-mini"
+        var approvalMode = ApprovalMode(rawValue: ProcessInfo.processInfo.environment["ASHEX_APPROVAL_MODE"] ?? "trusted") ?? .trusted
 
         var iterator = arguments.dropFirst().makeIterator()
         while let argument = iterator.next() {
@@ -96,6 +102,11 @@ struct CLIConfiguration {
                     throw AshexError.model("Missing value for --model")
                 }
                 model = value
+            case "--approval-mode":
+                guard let value = iterator.next(), let parsed = ApprovalMode(rawValue: value) else {
+                    throw AshexError.model("Invalid value for --approval-mode. Supported: trusted, guarded")
+                }
+                approvalMode = parsed
             default:
                 promptParts.append(argument)
             }
@@ -110,6 +121,7 @@ struct CLIConfiguration {
         self.maxIterations = maxIterations
         self.provider = provider
         self.model = model
+        self.approvalMode = approvalMode
     }
 
     func makeModelAdapter() throws -> any ModelAdapter {
@@ -129,6 +141,10 @@ struct CLIConfiguration {
     }
 
     func makeRuntime() throws -> AgentRuntime {
+        try makeRuntime(approvalPolicy: makeApprovalPolicy())
+    }
+
+    func makeRuntime(approvalPolicy: any ApprovalPolicy) throws -> AgentRuntime {
         let workspaceURL = workspaceRoot.standardizedFileURL
         let persistence = SQLitePersistenceStore(databaseURL: storageRoot.appendingPathComponent("ashex.sqlite"))
         return try AgentRuntime(
@@ -137,7 +153,17 @@ struct CLIConfiguration {
                 FileSystemTool(workspaceGuard: WorkspaceGuard(rootURL: workspaceURL)),
                 ShellTool(executionRuntime: ProcessExecutionRuntime(), workspaceURL: workspaceURL),
             ]),
-            persistence: persistence
+            persistence: persistence,
+            approvalPolicy: approvalPolicy
         )
+    }
+
+    func makeApprovalPolicy() -> any ApprovalPolicy {
+        switch approvalMode {
+        case .trusted:
+            return TrustedApprovalPolicy()
+        case .guarded:
+            return ConsoleApprovalPolicy()
+        }
     }
 }

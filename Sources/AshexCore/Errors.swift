@@ -8,6 +8,7 @@ public enum AshexError: LocalizedError, Sendable {
     case shell(String)
     case model(String)
     case persistence(String)
+    case approvalDenied(String)
     case maxIterationsReached(Int)
     case cancelled
 
@@ -18,6 +19,7 @@ public enum AshexError: LocalizedError, Sendable {
              .fileSystem(let message),
              .shell(let message),
              .model(let message),
+             .approvalDenied(let message),
              .persistence(let message):
             return message
         case .toolNotFound(let name):

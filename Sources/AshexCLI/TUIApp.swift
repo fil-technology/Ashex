@@ -28,6 +28,7 @@ final class TUIApp {
     private let runtime: AgentRuntime
     private let terminal = TerminalController()
     private let surface = TerminalSurface()
+    private let approvalCoordinator: TUIApprovalCoordinator
     private let menuItems: [MenuItem] = [
         .init(title: "New Prompt", subtitle: "Write your own instruction", action: .compose),
         .init(title: "Example: List Files", subtitle: "Run a quick filesystem task", action: .example("list files")),
@@ -45,10 +46,21 @@ final class TUIApp {
     private var runFinished = true
     private var runTask: Task<Void, Never>?
     private var shouldQuit = false
+    private var pendingApproval: PendingApproval?
 
-    init(configuration: CLIConfiguration, runtime: AgentRuntime) throws {
+    init(configuration: CLIConfiguration) throws {
+        let approvalCoordinator = TUIApprovalCoordinator()
         self.configuration = configuration
-        self.runtime = runtime
+        self.approvalCoordinator = approvalCoordinator
+        self.runtime = try configuration.makeRuntime(
+            approvalPolicy: configuration.approvalMode == .guarded
+                ? TUIApprovalPolicy(coordinator: approvalCoordinator)
+                : TrustedApprovalPolicy()
+        )
+        approvalCoordinator.handler = { [weak self] request in
+            guard let self else { return .deny("TUI is unavailable") }
+            return await self.requestApproval(request)
+        }
     }
 
     func run() async throws {
@@ -66,6 +78,10 @@ final class TUIApp {
     }
 
     private func handle(key: TerminalKey) {
+        if pendingApproval != nil {
+            handleApproval(key: key)
+            return
+        }
         switch screen {
         case .home:
             handleHome(key: key)
@@ -151,6 +167,22 @@ final class TUIApp {
         }
     }
 
+    private func handleApproval(key: TerminalKey) {
+        guard let pendingApproval else { return }
+        switch key {
+        case .character("y"), .character("Y"), .enter:
+            pendingApproval.resume(.allow("Approved from TUI"))
+            self.pendingApproval = nil
+            statusLine = "Approval granted"
+        case .character("n"), .character("N"), .escape, .left:
+            pendingApproval.resume(.deny("Denied from TUI"))
+            self.pendingApproval = nil
+            statusLine = "Approval denied"
+        default:
+            break
+        }
+    }
+
     private func activate(_ action: Action) {
         switch action {
         case .compose:
@@ -200,6 +232,10 @@ final class TUIApp {
             runLines.append("[status] \(message)")
         case .messageAppended(_, _, let role):
             runLines.append("[message] appended \(role.rawValue)")
+        case .approvalRequested(_, let toolName, let summary, let reason, let risk):
+            runLines.append("[approval] request \(toolName) \(summary) (\(risk.rawValue)) - \(reason)")
+        case .approvalResolved(_, let toolName, let allowed, let reason):
+            runLines.append("[approval] \(toolName) \(allowed ? "approved" : "denied") - \(reason)")
         case .toolCallStarted(_, _, let toolName, let arguments):
             runLines.append("[tool] \(toolName) started")
             runLines.append(contentsOf: JSONValue.object(arguments).prettyPrinted.split(separator: "\n").map(String.init))
@@ -265,6 +301,14 @@ final class TUIApp {
     private func renderContent(width: Int, height: Int) -> [String] {
         let chromeHeight = 9
         let available = max(height - chromeHeight, 8)
+        if let pendingApproval {
+            return panel(
+                title: "Approval Required",
+                lines: renderApprovalLines(request: pendingApproval.request, width: width - 4),
+                width: width,
+                maxBodyHeight: available
+            )
+        }
         switch screen {
         case .home:
             return panel(
@@ -368,6 +412,19 @@ final class TUIApp {
         ]
     }
 
+    private func renderApprovalLines(request: ApprovalRequest, width: Int) -> [String] {
+        [
+            "\(TerminalUIStyle.amber)Guarded mode requires approval before this tool can run.\(TerminalUIStyle.reset)",
+            "",
+            "\(TerminalUIStyle.ink)Tool\(TerminalUIStyle.reset): \(TerminalUIStyle.violet)\(request.toolName)\(TerminalUIStyle.reset)",
+            "\(TerminalUIStyle.ink)Summary\(TerminalUIStyle.reset): \(TerminalUIStyle.truncateVisible(request.summary, limit: width - 10))",
+            "\(TerminalUIStyle.ink)Target\(TerminalUIStyle.reset): \(TerminalUIStyle.truncateVisible(request.reason, limit: width - 10))",
+            "\(TerminalUIStyle.ink)Risk\(TerminalUIStyle.reset): \(request.risk.rawValue)",
+            "",
+            "\(TerminalUIStyle.faint)Press y or Enter to approve. Press n, Esc, or Left to deny.\(TerminalUIStyle.reset)"
+        ]
+    }
+
     private func renderFooter(width: Int) -> String {
         let hint = switch screen {
         case .home:
@@ -382,7 +439,8 @@ final class TUIApp {
             "\(TerminalUIStyle.faint)enter/esc\(TerminalUIStyle.reset) close"
         }
 
-        let value = "\(TerminalUIStyle.faint)Ashex local agent runtime\(TerminalUIStyle.reset)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(hint)"
+        let approvalHint = pendingApproval == nil ? hint : "\(TerminalUIStyle.faint)y\(TerminalUIStyle.reset) approve  \(TerminalUIStyle.faint)n\(TerminalUIStyle.reset) deny"
+        let value = "\(TerminalUIStyle.faint)Ashex local agent runtime\(TerminalUIStyle.reset)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(approvalHint)"
         return TerminalUIStyle.padVisible(TerminalUIStyle.truncateVisible(value, limit: width), to: width)
     }
 
@@ -483,6 +541,16 @@ final class TUIApp {
         return zip(letters, colors)
             .map { "\(String($0.1))\($0.0)" }
             .joined()
+    }
+
+    private func requestApproval(_ request: ApprovalRequest) async -> ApprovalDecision {
+        await withCheckedContinuation { continuation in
+            pendingApproval = PendingApproval(request: request) { decision in
+                continuation.resume(returning: decision)
+            }
+            statusLine = "Waiting for approval"
+            render()
+        }
     }
 }
 
@@ -693,5 +761,39 @@ private enum TerminalUIStyle {
     static func rule(width: Int) -> String {
         guard width >= 2 else { return String(repeating: "─", count: max(width, 0)) }
         return border + "├" + String(repeating: "─", count: width - 2) + "┤" + reset
+    }
+}
+
+private struct PendingApproval {
+    let request: ApprovalRequest
+    let complete: (ApprovalDecision) -> Void
+
+    func resume(_ decision: ApprovalDecision) {
+        complete(decision)
+    }
+}
+
+private struct TUIApprovalPolicy: ApprovalPolicy {
+    let mode: ApprovalMode = .guarded
+
+    private let coordinator: TUIApprovalCoordinator
+
+    init(coordinator: TUIApprovalCoordinator) {
+        self.coordinator = coordinator
+    }
+
+    func evaluate(_ request: ApprovalRequest) async -> ApprovalDecision {
+        await coordinator.evaluate(request)
+    }
+}
+
+private final class TUIApprovalCoordinator: @unchecked Sendable {
+    var handler: (@Sendable (ApprovalRequest) async -> ApprovalDecision)?
+
+    func evaluate(_ request: ApprovalRequest) async -> ApprovalDecision {
+        guard let handler else {
+            return .deny("Approval handler is unavailable")
+        }
+        return await handler(request)
     }
 }
