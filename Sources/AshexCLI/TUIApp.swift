@@ -1112,13 +1112,15 @@ final class TUIApp {
             return lines
         case .toolOutput(_, _, let stream, let chunk):
             let prefix = stream == .stderr ? "stderr" : "stdout"
-            return chunk
+            let normalizedChunk = normalizeStoredTranscriptText(chunk)
+            return normalizedChunk
                 .split(separator: "\n", omittingEmptySubsequences: false)
                 .map(String.init)
                 .filter { !$0.isEmpty }
                 .map { "[\(prefix)] \($0)" }
         case .toolCallFinished(_, _, let success, let summary):
-            if let data = summary.data(using: .utf8),
+            let normalizedSummary = normalizeStoredTranscriptText(summary)
+            if let data = normalizedSummary.data(using: .utf8),
                let structured = try? JSONDecoder().decode(JSONValue.self, from: data) {
                 var lines = [summarizeStructuredCompletion(success: success, value: structured)]
                 if showToolDetails {
@@ -1126,17 +1128,55 @@ final class TUIApp {
                 }
                 return lines
             }
-            return ["[tool] \(success ? "completed" : "failed") \(summary)"]
+            return ["[tool] \(success ? "completed" : "failed") \(normalizedSummary)"]
         case .finalAnswer(_, _, let text):
-            if let structured = formattedStructuredLines(from: text) {
+            let normalizedText = normalizeStoredTranscriptText(text)
+            if let structured = formattedStructuredLines(from: normalizedText) {
                 return ["", "Final answer:"] + structured
             }
-            return ["", "Final answer:"] + text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+            return ["", "Final answer:"] + normalizedText.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         case .error(_, let message):
-            return ["[error] \(message)"]
+            return ["[error] \(normalizeStoredTranscriptText(message))"]
         case .runFinished(_, let state):
             return ["[run] finished \(state.rawValue)"]
         }
+    }
+
+    private func normalizeStoredTranscriptText(_ text: String) -> String {
+        guard !text.contains("\n"), text.contains("\\") else { return text }
+
+        var output = ""
+        var iterator = text.makeIterator()
+
+        while let character = iterator.next() {
+            guard character == "\\" else {
+                output.append(character)
+                continue
+            }
+
+            guard let next = iterator.next() else {
+                output.append(character)
+                break
+            }
+
+            switch next {
+            case "n":
+                output.append("\n")
+            case "r":
+                output.append("\r")
+            case "t":
+                output.append("\t")
+            case "\\":
+                output.append("\\")
+            case "\"":
+                output.append("\"")
+            default:
+                output.append("\\")
+                output.append(next)
+            }
+        }
+
+        return output
     }
 
     private func render() {
