@@ -3,10 +3,12 @@ import Foundation
 public struct RunRequest: Sendable {
     public let prompt: String
     public let maxIterations: Int
+    public let executionControl: ExecutionControl?
 
-    public init(prompt: String, maxIterations: Int = 8) {
+    public init(prompt: String, maxIterations: Int = 8, executionControl: ExecutionControl? = nil) {
         self.prompt = prompt
         self.maxIterations = maxIterations
+        self.executionControl = executionControl
     }
 }
 
@@ -69,142 +71,217 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
 
             let userMessage = try persistence.appendMessage(threadID: thread.id, runID: run.id, role: .user, content: request.prompt, now: clock())
             try emitter.emit(.messageAppended(runID: run.id, messageID: userMessage.id, role: .user), runID: run.id)
+            let plan = TaskPlanner.plan(for: request.prompt)
+            var stepSummaries: [String] = []
 
-            var repeatedToolCallSignature: String?
-            var repeatedToolCallCount = 0
-            var lastSafeToolResult: String?
-
-            for iteration in 0..<request.maxIterations {
-                try await cancellation.checkCancellation()
-                try emitter.emit(.status(runID: run.id, message: "Iteration \(iteration + 1): requesting next model action"), runID: run.id)
-
-                let messages = try persistence.fetchMessages(threadID: thread.id)
-                let refreshedRun = try persistence.fetchRun(runID: run.id) ?? run
-                let action = try await modelAdapter.nextAction(for: .init(
-                    thread: thread,
-                    run: refreshedRun,
-                    messages: messages,
-                    availableTools: toolRegistry.schema()
-                ))
-
-                switch action {
-                case .finalAnswer(let answer):
-                    let assistantMessage = try persistence.appendMessage(threadID: thread.id, runID: run.id, role: .assistant, content: answer, now: clock())
-                    try emitter.emit(.messageAppended(runID: run.id, messageID: assistantMessage.id, role: .assistant), runID: run.id)
-                    try emitter.emit(.finalAnswer(runID: run.id, messageID: assistantMessage.id, text: answer), runID: run.id)
-                    try persistence.transitionRun(runID: run.id, to: .completed, reason: nil, now: clock())
-                    try emitter.emit(.runStateChanged(runID: run.id, state: .completed, reason: nil), runID: run.id)
-                    try emitter.emit(.runFinished(runID: run.id, state: .completed), runID: run.id)
-                    return
-
-                case .toolCall(let call):
-                    let callSignature = Self.toolCallSignature(toolName: call.toolName, arguments: call.arguments)
-                    if callSignature == repeatedToolCallSignature {
-                        repeatedToolCallCount += 1
-                    } else {
-                        repeatedToolCallSignature = callSignature
-                        repeatedToolCallCount = 1
-                    }
-
-                    if repeatedToolCallCount >= 2,
-                       let lastSafeToolResult,
-                       Self.isSafeRepeatedToolCall(toolName: call.toolName, arguments: call.arguments) {
-                        let answer = "Using the latest tool result because the model repeated the same read-only call.\n\n\(lastSafeToolResult)"
-                        let assistantMessage = try persistence.appendMessage(threadID: thread.id, runID: run.id, role: .assistant, content: answer, now: clock())
-                        try emitter.emit(.status(runID: run.id, message: "Detected a repeated identical read-only tool call. Returning the previous result."), runID: run.id)
-                        try emitter.emit(.messageAppended(runID: run.id, messageID: assistantMessage.id, role: .assistant), runID: run.id)
-                        try emitter.emit(.finalAnswer(runID: run.id, messageID: assistantMessage.id, text: answer), runID: run.id)
-                        try persistence.transitionRun(runID: run.id, to: .completed, reason: "Recovered from repeated tool loop", now: clock())
-                        try emitter.emit(.runStateChanged(runID: run.id, state: .completed, reason: "Recovered from repeated tool loop"), runID: run.id)
-                        try emitter.emit(.runFinished(runID: run.id, state: .completed), runID: run.id)
-                        return
-                    }
-
-                    let tool: any Tool
-                    do {
-                        tool = try toolRegistry.tool(named: call.toolName)
-                    } catch {
-                        if try await handleRecoverableToolRequestError(
-                            error,
-                            threadID: thread.id,
-                            runID: run.id,
-                            emitter: emitter
-                        ) {
-                            continue
-                        }
-                        throw error
-                    }
-
-                    let toolCall = try persistence.recordToolCall(runID: run.id, toolName: tool.name, arguments: call.arguments, now: clock())
-
-                    if let approvalRequest = ApprovalClassifier.requestForTool(runID: run.id, toolName: tool.name, arguments: call.arguments),
-                       approvalPolicy.mode == .guarded {
-                        try emitter.emit(.approvalRequested(
-                            runID: run.id,
-                            toolName: tool.name,
-                            summary: approvalRequest.summary,
-                            reason: approvalRequest.reason,
-                            risk: approvalRequest.risk
-                        ), runID: run.id)
-
-                        let decision = await approvalPolicy.evaluate(approvalRequest)
-                        try emitter.emit(.approvalResolved(
-                            runID: run.id,
-                            toolName: tool.name,
-                            allowed: decision.allowed,
-                            reason: decision.reason
-                        ), runID: run.id)
-
-                        guard decision.allowed else {
-                            try persistence.finishToolCall(toolCallID: toolCall.id, status: "denied", output: decision.reason, finishedAt: clock())
-                            let toolMessage = try persistence.appendMessage(threadID: thread.id, runID: run.id, role: .tool, content: "Tool denied: \(decision.reason)", now: clock())
-                            try emitter.emit(.messageAppended(runID: run.id, messageID: toolMessage.id, role: .tool), runID: run.id)
-                            throw AshexError.approvalDenied("Execution denied for \(tool.name): \(decision.reason)")
-                        }
-                    }
-
-                    try emitter.emit(.toolCallStarted(runID: run.id, toolCallID: toolCall.id, toolName: tool.name, arguments: call.arguments), runID: run.id)
-
-                    let toolContext = ToolContext(
-                        runID: run.id,
-                        emit: { event in
-                            var payload = event.payload
-                            if case .toolOutput(_, _, let stream, let chunk) = payload {
-                                payload = .toolOutput(runID: run.id, toolCallID: toolCall.id, stream: stream, chunk: chunk)
-                            }
-                            try? emitter.emit(payload, runID: run.id)
-                        },
-                        cancellation: cancellation
-                    )
-
-                    do {
-                        let result = try await tool.execute(arguments: call.arguments, context: toolContext)
-                        let text = result.displayText
-                        let toolMessage = try persistence.appendMessage(threadID: thread.id, runID: run.id, role: .tool, content: text, now: clock())
-                        try emitter.emit(.messageAppended(runID: run.id, messageID: toolMessage.id, role: .tool), runID: run.id)
-                        try persistence.finishToolCall(toolCallID: toolCall.id, status: "completed", output: text, finishedAt: clock())
-                        try emitter.emit(.toolCallFinished(runID: run.id, toolCallID: toolCall.id, success: true, summary: text), runID: run.id)
-                        lastSafeToolResult = Self.isSafeRepeatedToolCall(toolName: tool.name, arguments: call.arguments) ? text : nil
-                    } catch {
-                        let message = error.localizedDescription
-                        let toolMessage = try persistence.appendMessage(threadID: thread.id, runID: run.id, role: .tool, content: "Tool error: \(message)", now: clock())
-                        try emitter.emit(.messageAppended(runID: run.id, messageID: toolMessage.id, role: .tool), runID: run.id)
-                        try persistence.finishToolCall(toolCallID: toolCall.id, status: "failed", output: message, finishedAt: clock())
-                        try emitter.emit(.toolCallFinished(runID: run.id, toolCallID: toolCall.id, success: false, summary: message), runID: run.id)
-                        lastSafeToolResult = nil
-                        if Self.shouldRetryToolRequest(after: error) {
-                            try emitter.emit(.status(runID: run.id, message: "Repairing malformed tool request and asking the model to try again"), runID: run.id)
-                            continue
-                        }
-                        throw error
-                    }
-                }
+            if let plan, plan.steps.count > 1 {
+                let planText = plan.steps.enumerated()
+                    .map { "\($0.offset + 1). \($0.element.title)" }
+                    .joined(separator: "\n")
+                let planMessage = try persistence.appendMessage(threadID: thread.id, runID: run.id, role: .assistant, content: "Plan:\n\(planText)", now: clock())
+                try emitter.emit(.messageAppended(runID: run.id, messageID: planMessage.id, role: .assistant), runID: run.id)
+                try emitter.emit(.taskPlanCreated(runID: run.id, steps: plan.steps.map(\.title)), runID: run.id)
             }
 
-            throw AshexError.maxIterationsReached(request.maxIterations)
+            let steps = plan?.steps ?? [PlannedStep(title: "Complete the user request")]
+            for (index, step) in steps.enumerated() {
+                try await cancellation.checkCancellation()
+
+                if let control = request.executionControl,
+                   await control.consumeSkipCurrentStep() {
+                    try emitter.emit(.taskStepFinished(runID: run.id, index: index + 1, total: steps.count, title: step.title, outcome: "skipped"), runID: run.id)
+                    stepSummaries.append("Skipped: \(step.title)")
+                    continue
+                }
+
+                try emitter.emit(.taskStepStarted(runID: run.id, index: index + 1, total: steps.count, title: step.title), runID: run.id)
+                let stepMessage = steps.count > 1
+                    ? """
+                    Work on only this step of the larger task.
+                    Step \(index + 1) of \(steps.count): \(step.title)
+                    Overall user request: \(request.prompt)
+                    """
+                    : request.prompt
+
+                if steps.count > 1 {
+                    let systemMessage = try persistence.appendMessage(threadID: thread.id, runID: run.id, role: .system, content: stepMessage, now: clock())
+                    try emitter.emit(.messageAppended(runID: run.id, messageID: systemMessage.id, role: .system), runID: run.id)
+                }
+
+                let outcome = try await executeStep(
+                    thread: thread,
+                    run: run,
+                    stepPrompt: stepMessage,
+                    maxIterations: request.maxIterations,
+                    cancellation: cancellation,
+                    executionControl: request.executionControl,
+                    emitter: emitter
+                )
+                stepSummaries.append(outcome)
+                if steps.count > 1 {
+                    let stepSummaryMessage = try persistence.appendMessage(
+                        threadID: thread.id,
+                        runID: run.id,
+                        role: .assistant,
+                        content: "Step \(index + 1) result:\n\(outcome)",
+                        now: clock()
+                    )
+                    try emitter.emit(.messageAppended(runID: run.id, messageID: stepSummaryMessage.id, role: .assistant), runID: run.id)
+                }
+                try emitter.emit(.taskStepFinished(runID: run.id, index: index + 1, total: steps.count, title: step.title, outcome: "completed"), runID: run.id)
+            }
+
+            let finalAnswerText: String
+            if steps.count == 1 {
+                finalAnswerText = stepSummaries.last ?? "Task finished."
+            } else {
+                finalAnswerText = Self.compilePlannedRunSummary(request: request.prompt, steps: steps, summaries: stepSummaries)
+            }
+
+            let assistantMessage = try persistence.appendMessage(threadID: thread.id, runID: run.id, role: .assistant, content: finalAnswerText, now: clock())
+            try emitter.emit(.messageAppended(runID: run.id, messageID: assistantMessage.id, role: .assistant), runID: run.id)
+            try emitter.emit(.finalAnswer(runID: run.id, messageID: assistantMessage.id, text: finalAnswerText), runID: run.id)
+            try persistence.transitionRun(runID: run.id, to: .completed, reason: nil, now: clock())
+            try emitter.emit(.runStateChanged(runID: run.id, state: .completed, reason: nil), runID: run.id)
+            try emitter.emit(.runFinished(runID: run.id, state: .completed), runID: run.id)
+            return
         } catch {
             await finalizeFailure(error: error, emitter: emitter)
         }
+    }
+
+    private func executeStep(
+        thread: ThreadRecord,
+        run: RunRecord,
+        stepPrompt: String,
+        maxIterations: Int,
+        cancellation: CancellationToken,
+        executionControl: ExecutionControl?,
+        emitter: EventEmitter
+    ) async throws -> String {
+        var repeatedToolCallSignature: String?
+        var repeatedToolCallCount = 0
+        var lastSafeToolResult: String?
+
+        for iteration in 0..<maxIterations {
+            try await cancellation.checkCancellation()
+            if let executionControl, await executionControl.consumeSkipCurrentStep() {
+                return "Skipped current step"
+            }
+
+            try emitter.emit(.status(runID: run.id, message: "Iteration \(iteration + 1): requesting next model action"), runID: run.id)
+
+            let messages = try persistence.fetchMessages(threadID: thread.id)
+            let refreshedRun = try persistence.fetchRun(runID: run.id) ?? run
+            let action = try await modelAdapter.nextAction(for: .init(
+                thread: thread,
+                run: refreshedRun,
+                messages: messages,
+                availableTools: toolRegistry.schema()
+            ))
+
+            switch action {
+            case .finalAnswer(let answer):
+                return answer
+
+            case .toolCall(let call):
+                let callSignature = Self.toolCallSignature(toolName: call.toolName, arguments: call.arguments)
+                if callSignature == repeatedToolCallSignature {
+                    repeatedToolCallCount += 1
+                } else {
+                    repeatedToolCallSignature = callSignature
+                    repeatedToolCallCount = 1
+                }
+
+                if repeatedToolCallCount >= 2,
+                   let lastSafeToolResult,
+                   Self.isSafeRepeatedToolCall(toolName: call.toolName, arguments: call.arguments) {
+                    try emitter.emit(.status(runID: run.id, message: "Detected a repeated identical read-only tool call. Returning the previous result."), runID: run.id)
+                    return "Using the latest tool result because the model repeated the same read-only call.\n\n\(lastSafeToolResult)"
+                }
+
+                let tool: any Tool
+                do {
+                    tool = try toolRegistry.tool(named: call.toolName)
+                } catch {
+                    if try await handleRecoverableToolRequestError(
+                        error,
+                        threadID: thread.id,
+                        runID: run.id,
+                        emitter: emitter
+                    ) {
+                        continue
+                    }
+                    throw error
+                }
+
+                let toolCall = try persistence.recordToolCall(runID: run.id, toolName: tool.name, arguments: call.arguments, now: clock())
+
+                if let approvalRequest = ApprovalClassifier.requestForTool(runID: run.id, toolName: tool.name, arguments: call.arguments),
+                   approvalPolicy.mode == .guarded {
+                    try emitter.emit(.approvalRequested(
+                        runID: run.id,
+                        toolName: tool.name,
+                        summary: approvalRequest.summary,
+                        reason: approvalRequest.reason,
+                        risk: approvalRequest.risk
+                    ), runID: run.id)
+
+                    let decision = await approvalPolicy.evaluate(approvalRequest)
+                    try emitter.emit(.approvalResolved(
+                        runID: run.id,
+                        toolName: tool.name,
+                        allowed: decision.allowed,
+                        reason: decision.reason
+                    ), runID: run.id)
+
+                    guard decision.allowed else {
+                        try persistence.finishToolCall(toolCallID: toolCall.id, status: "denied", output: decision.reason, finishedAt: clock())
+                        let toolMessage = try persistence.appendMessage(threadID: thread.id, runID: run.id, role: .tool, content: "Tool denied: \(decision.reason)", now: clock())
+                        try emitter.emit(.messageAppended(runID: run.id, messageID: toolMessage.id, role: .tool), runID: run.id)
+                        throw AshexError.approvalDenied("Execution denied for \(tool.name): \(decision.reason)")
+                    }
+                }
+
+                try emitter.emit(.toolCallStarted(runID: run.id, toolCallID: toolCall.id, toolName: tool.name, arguments: call.arguments), runID: run.id)
+
+                let toolContext = ToolContext(
+                    runID: run.id,
+                    emit: { event in
+                        var payload = event.payload
+                        if case .toolOutput(_, _, let stream, let chunk) = payload {
+                            payload = .toolOutput(runID: run.id, toolCallID: toolCall.id, stream: stream, chunk: chunk)
+                        }
+                        try? emitter.emit(payload, runID: run.id)
+                    },
+                    cancellation: cancellation
+                )
+
+                do {
+                    let result = try await tool.execute(arguments: call.arguments, context: toolContext)
+                    let text = result.displayText
+                    let toolMessage = try persistence.appendMessage(threadID: thread.id, runID: run.id, role: .tool, content: text, now: clock())
+                    try emitter.emit(.messageAppended(runID: run.id, messageID: toolMessage.id, role: .tool), runID: run.id)
+                    try persistence.finishToolCall(toolCallID: toolCall.id, status: "completed", output: text, finishedAt: clock())
+                    try emitter.emit(.toolCallFinished(runID: run.id, toolCallID: toolCall.id, success: true, summary: text), runID: run.id)
+                    lastSafeToolResult = Self.isSafeRepeatedToolCall(toolName: tool.name, arguments: call.arguments) ? text : nil
+                } catch {
+                    let message = error.localizedDescription
+                    let toolMessage = try persistence.appendMessage(threadID: thread.id, runID: run.id, role: .tool, content: "Tool error: \(message)", now: clock())
+                    try emitter.emit(.messageAppended(runID: run.id, messageID: toolMessage.id, role: .tool), runID: run.id)
+                    try persistence.finishToolCall(toolCallID: toolCall.id, status: "failed", output: message, finishedAt: clock())
+                    try emitter.emit(.toolCallFinished(runID: run.id, toolCallID: toolCall.id, success: false, summary: message), runID: run.id)
+                    lastSafeToolResult = nil
+                    if Self.shouldRetryToolRequest(after: error) {
+                        try emitter.emit(.status(runID: run.id, message: "Repairing malformed tool request and asking the model to try again"), runID: run.id)
+                        continue
+                    }
+                    throw error
+                }
+            }
+        }
+
+        throw AshexError.maxIterationsReached(maxIterations)
     }
 
     private func finalizeFailure(error: Error, emitter: EventEmitter) async {
@@ -272,7 +349,18 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
     private static func isSafeRepeatedToolCall(toolName: String, arguments: JSONObject) -> Bool {
         guard toolName == "filesystem" else { return false }
         guard let operation = arguments["operation"]?.stringValue else { return false }
-        return operation == "read_text_file" || operation == "list_directory"
+        return operation == "read_text_file" || operation == "list_directory" || operation == "find_files" || operation == "search_text" || operation == "file_info"
+    }
+
+    private static func compilePlannedRunSummary(request: String, steps: [PlannedStep], summaries: [String]) -> String {
+        var lines = ["Completed planned task for: \(request)", ""]
+        for (index, step) in steps.enumerated() {
+            let summary = index < summaries.count ? summaries[index] : "No summary recorded"
+            lines.append("\(index + 1). \(step.title)")
+            lines.append(summary)
+            lines.append("")
+        }
+        return lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 

@@ -7,6 +7,8 @@ final class TUIApp {
     private enum InputMode {
         case prompt
         case model
+        case apiKey
+        case workspacePath
     }
 
     private struct MenuItem {
@@ -34,8 +36,10 @@ final class TUIApp {
     }
 
     private enum SettingsAction: String, CaseIterable {
+        case workspace = "Workspace"
         case provider = "Provider"
         case model = "Model"
+        case apiKey = "API Key"
         case refresh = "Refresh Status"
         case back = "Back"
     }
@@ -56,7 +60,7 @@ final class TUIApp {
 
     private let configuration: CLIConfiguration
     private var runtime: AgentRuntime
-    private let historyStore: SQLitePersistenceStore
+    private var historyStore: SQLitePersistenceStore
     private let terminal = TerminalController()
     private let surface = TerminalSurface()
     private let approvalCoordinator: TUIApprovalCoordinator
@@ -74,6 +78,8 @@ final class TUIApp {
     private var settingsSelection = 0
     private var promptText = ""
     private var modelInput = ""
+    private var apiKeyInput = ""
+    private var workspacePathInput = ""
     private var inputMode: InputMode = .prompt
     private var showHelp = false
     private var showCommands = false
@@ -83,6 +89,7 @@ final class TUIApp {
     private var runLines: [String] = []
     private var runFinished = true
     private var runTask: Task<Void, Never>?
+    private var runExecutionControl: ExecutionControl?
     private var workingIndicatorTask: Task<Void, Never>?
     private var runStartedAt: Date?
     private var workingFrameIndex = 0
@@ -91,6 +98,10 @@ final class TUIApp {
     private var providerStatus = ProviderStatusSnapshot.idle
     private var shouldQuit = false
     private var pendingApproval: PendingApproval?
+    private var sessionWorkspaceRoot: URL
+    private var sessionStorageRoot: URL
+    private var sessionUserConfig: AshexUserConfig
+    private var sessionUserConfigFile: URL
     private var sessionProvider: String
     private var sessionModel: String
     private var providerStartupIssue: String?
@@ -105,6 +116,10 @@ final class TUIApp {
         self.configuration = configuration
         self.historyStore = historyStore
         self.approvalCoordinator = approvalCoordinator
+        self.sessionWorkspaceRoot = configuration.workspaceRoot
+        self.sessionStorageRoot = configuration.storageRoot
+        self.sessionUserConfig = configuration.userConfig
+        self.sessionUserConfigFile = configuration.userConfigFile
         self.sessionProvider = configuration.provider
         self.sessionModel = configuration.model
         let approvalPolicy: any ApprovalPolicy = configuration.approvalMode == .guarded
@@ -148,6 +163,8 @@ final class TUIApp {
         switch provider {
         case "openai":
             return "Set OPENAI_API_KEY, then open Provider Settings and refresh or keep using mock."
+        case "anthropic":
+            return "Add ANTHROPIC_API_KEY in Provider Settings or the environment, then refresh or keep using mock."
         case "ollama":
             return "Start Ollama with `ollama serve`, then open Provider Settings and refresh or switch to mock."
         default:
@@ -183,6 +200,14 @@ final class TUIApp {
             handleUp()
         case .down:
             handleDown()
+        case .pageUp:
+            handlePageUp()
+        case .pageDown:
+            handlePageDown()
+        case .home:
+            handleHome()
+        case .end:
+            handleEnd()
         case .enter:
             handleEnter()
         case .backspace:
@@ -197,9 +222,21 @@ final class TUIApp {
             scrollTranscript(by: 1)
         case .character("j") where focus == .transcript:
             scrollTranscript(by: -1)
+        case .character("K") where focus == .transcript:
+            scrollTranscriptPage(direction: .older)
+        case .character("J") where focus == .transcript:
+            scrollTranscriptPage(direction: .newer)
+        case .character("g") where focus == .transcript:
+            jumpTranscriptToTop()
+        case .character("G") where focus == .transcript:
+            jumpTranscriptToBottom()
         case .character("e") where focus == .transcript:
             showToolDetails.toggle()
             statusLine = showToolDetails ? "Expanded tool details" : "Collapsed tool details"
+        case .character("x") where !runFinished:
+            requestSkipCurrentStep()
+        case .character("X") where !runFinished:
+            requestSkipCurrentStep()
         case .character("E") where focus == .transcript:
             showToolDetails.toggle()
             statusLine = showToolDetails ? "Expanded tool details" : "Collapsed tool details"
@@ -300,6 +337,26 @@ final class TUIApp {
         }
     }
 
+    private func handlePageUp() {
+        guard focus == .transcript else { return }
+        scrollTranscriptPage(direction: .older)
+    }
+
+    private func handlePageDown() {
+        guard focus == .transcript else { return }
+        scrollTranscriptPage(direction: .newer)
+    }
+
+    private func handleHome() {
+        guard focus == .transcript else { return }
+        jumpTranscriptToTop()
+    }
+
+    private func handleEnd() {
+        guard focus == .transcript else { return }
+        jumpTranscriptToBottom()
+    }
+
     private func handleEnter() {
         if pendingApproval != nil {
             handleApproval(key: .enter)
@@ -315,6 +372,12 @@ final class TUIApp {
             }
         case .model:
             commitModelInput()
+            return
+        case .apiKey:
+            commitAPIKeyInput()
+            return
+        case .workspacePath:
+            commitWorkspacePathInput()
             return
         }
 
@@ -341,6 +404,16 @@ final class TUIApp {
             modelInput.removeLast()
             focus = .input
             statusLine = "Editing model"
+        case .apiKey:
+            guard !apiKeyInput.isEmpty else { return }
+            apiKeyInput.removeLast()
+            focus = .input
+            statusLine = "Editing API key"
+        case .workspacePath:
+            guard !workspacePathInput.isEmpty else { return }
+            workspacePathInput.removeLast()
+            focus = .input
+            statusLine = "Editing workspace"
         }
     }
 
@@ -360,7 +433,25 @@ final class TUIApp {
                 modelInput = ""
                 statusLine = "Cleared model input"
                 return
+            case .apiKey where !apiKeyInput.isEmpty:
+                apiKeyInput = ""
+                statusLine = "Cleared API key input"
+                return
+            case .workspacePath where !workspacePathInput.isEmpty:
+                workspacePathInput = ""
+                statusLine = "Cleared workspace input"
+                return
             case .model:
+                inputMode = .prompt
+                focus = showSettings ? .settings : .launcher
+                statusLine = "Back to settings"
+                return
+            case .apiKey:
+                inputMode = .prompt
+                focus = showSettings ? .settings : .launcher
+                statusLine = "Back to settings"
+                return
+            case .workspacePath:
                 inputMode = .prompt
                 focus = showSettings ? .settings : .launcher
                 statusLine = "Back to settings"
@@ -400,6 +491,7 @@ final class TUIApp {
         }
 
         if !runFinished && !runLines.isEmpty {
+            runExecutionControl = nil
             runTask?.cancel()
             runTask = nil
             stopWorkingIndicator()
@@ -420,6 +512,12 @@ final class TUIApp {
         case .model:
             modelInput.append(character)
             statusLine = "Editing model"
+        case .apiKey:
+            apiKeyInput.append(character)
+            statusLine = "Editing API key"
+        case .workspacePath:
+            workspacePathInput.append(character)
+            statusLine = "Editing workspace"
         }
         focus = .input
         if inputMode == .prompt {
@@ -497,6 +595,11 @@ final class TUIApp {
 
     private func activate(settingsAction: SettingsAction) {
         switch settingsAction {
+        case .workspace:
+            inputMode = .workspacePath
+            workspacePathInput = sessionWorkspaceRoot.path
+            focus = .input
+            statusLine = "Enter a project directory and press Enter"
         case .provider:
             cycleProvider()
         case .model:
@@ -504,6 +607,11 @@ final class TUIApp {
             modelInput = sessionModel
             focus = .input
             statusLine = "Edit model and press Enter to apply"
+        case .apiKey:
+            inputMode = .apiKey
+            apiKeyInput = ""
+            focus = .input
+            statusLine = "Enter API key and press Enter to save"
         case .refresh:
             statusLine = "Refreshing provider status"
             Task { [weak self] in
@@ -518,7 +626,7 @@ final class TUIApp {
     }
 
     private func cycleProvider() {
-        let providers = ["mock", "ollama", "openai"]
+        let providers = ["mock", "ollama", "openai", "anthropic"]
         let currentIndex = providers.firstIndex(of: sessionProvider) ?? 0
         let nextProvider = providers[(currentIndex + 1) % providers.count]
 
@@ -553,17 +661,92 @@ final class TUIApp {
         }
     }
 
+    private func commitWorkspacePathInput() {
+        let trimmed = workspacePathInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            statusLine = "Workspace path is empty"
+            return
+        }
+
+        let proposed = URL(
+            fileURLWithPath: trimmed,
+            relativeTo: URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        ).standardizedFileURL
+
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: proposed.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            statusLine = "Workspace directory not found"
+            return
+        }
+
+        do {
+            let configFile = proposed.appendingPathComponent(UserConfigStore.fileName)
+            let config = try UserConfigStore.ensure(at: configFile)
+            let storageRoot = proposed.appendingPathComponent(".ashex")
+            let store = SQLitePersistenceStore(databaseURL: storageRoot.appendingPathComponent("ashex.sqlite"))
+            try store.initialize()
+
+            sessionWorkspaceRoot = proposed
+            sessionStorageRoot = storageRoot
+            sessionUserConfig = config
+            sessionUserConfigFile = configFile
+            historyStore = store
+            inputMode = .prompt
+            workspacePathInput = ""
+            focus = .settings
+            runLines = ["[local] Switched workspace to \(proposed.path)"]
+            runFinished = true
+            transcriptScrollOffset = 0
+            refreshSessionRuntime()
+            loadHistory()
+            statusLine = "Workspace updated"
+        } catch {
+            statusLine = "Failed to switch workspace"
+        }
+    }
+
+    private func commitAPIKeyInput() {
+        let trimmed = apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            statusLine = "API key is empty"
+            return
+        }
+
+        let normalized = normalizeAPIKeyInput(trimmed, for: sessionProvider)
+        guard !normalized.isEmpty else {
+            statusLine = "Could not detect a valid API key in the pasted text"
+            return
+        }
+
+        do {
+            let keyName = CLIConfiguration.apiKeySettingKey(for: sessionProvider)
+            try historyStore.upsertSetting(
+                namespace: "provider.credentials",
+                key: keyName,
+                value: .string(normalized),
+                now: Date()
+            )
+            apiKeyInput = ""
+            inputMode = .prompt
+            focus = .settings
+            refreshSessionRuntime()
+            statusLine = normalized == trimmed
+                ? "API key saved for \(sessionProvider)"
+                : "API key extracted and saved for \(sessionProvider)"
+        } catch {
+            statusLine = "Failed to save API key"
+        }
+
+        Task { [weak self] in
+            await self?.refreshProviderStatus()
+        }
+    }
+
     private func refreshSessionRuntime() {
         do {
             runtime = try makeSessionRuntime()
         } catch {
-            runtime = try! configuration.makeRuntime(
-                provider: "mock",
-                model: CLIConfiguration.defaultModel(for: "mock"),
-                approvalPolicy: configuration.approvalMode == .guarded
-                    ? TUIApprovalPolicy(coordinator: approvalCoordinator)
-                    : TrustedApprovalPolicy()
-            )
+            runtime = try! makeSessionRuntime(provider: "mock", model: CLIConfiguration.defaultModel(for: "mock"))
             providerStatus = .init(
                 headline: "Provider needs attention",
                 details: [
@@ -580,6 +763,8 @@ final class TUIApp {
 
     private func startRun(prompt: String) {
         runTask?.cancel()
+        let executionControl = ExecutionControl()
+        runExecutionControl = executionControl
         runLines = [
             "Prompt: \(prompt)",
             ""
@@ -605,17 +790,23 @@ final class TUIApp {
                     self.statusLine = "Running"
                 }
 
-                let stream = self.runtime.run(.init(prompt: prompt, maxIterations: self.configuration.maxIterations))
+                let stream = self.runtime.run(.init(
+                    prompt: prompt,
+                    maxIterations: self.configuration.maxIterations,
+                    executionControl: executionControl
+                ))
                 for await event in stream {
                     await MainActor.run {
                         self.append(event: event)
                     }
                 }
                 await MainActor.run {
+                    self.runExecutionControl = nil
                     self.finishRun()
                 }
             } catch {
                 await MainActor.run {
+                    self.runExecutionControl = nil
                     self.stopWorkingIndicator()
                     self.runLines.append("[error] \(error.localizedDescription)")
                     self.runFinished = true
@@ -639,6 +830,7 @@ final class TUIApp {
 
     private func finishRun() {
         stopWorkingIndicator()
+        runExecutionControl = nil
         runFinished = true
         runStartedAt = nil
         if statusLine == "Running" {
@@ -647,12 +839,29 @@ final class TUIApp {
         render()
     }
 
+    private func requestSkipCurrentStep() {
+        guard let runExecutionControl else { return }
+        Task {
+            await runExecutionControl.requestSkipCurrentStep()
+        }
+        runLines.append("[local] Requested skip for the current step")
+        statusLine = "Skipping current step"
+    }
+
     private func renderLines(for payload: RuntimeEventPayload) -> [String] {
         switch payload {
         case .runStarted(_, let runID):
             return ["[run] started \(runID.uuidString)"]
         case .runStateChanged(_, let state, let reason):
             return ["[state] \(state.rawValue)\(reason.map { " - \($0)" } ?? "")"]
+        case .taskPlanCreated(_, let steps):
+            var lines = ["[plan] created \(steps.count) steps"]
+            lines.append(contentsOf: steps.enumerated().map { "[plan] \($0.offset + 1). \($0.element)" })
+            return lines
+        case .taskStepStarted(_, let index, let total, let title):
+            return ["[plan] step \(index)/\(total) started - \(title)"]
+        case .taskStepFinished(_, let index, let total, let title, let outcome):
+            return ["[plan] step \(index)/\(total) \(outcome) - \(title)"]
         case .status(_, let message):
             return ["[status] \(message)"]
         case .messageAppended(_, _, let role):
@@ -717,11 +926,13 @@ final class TUIApp {
 
         let provider = "\(TerminalUIStyle.faint)provider\(TerminalUIStyle.reset) \(TerminalUIStyle.blue)\(sessionProvider)\(TerminalUIStyle.reset)"
         let model = "\(TerminalUIStyle.faint)model\(TerminalUIStyle.reset) \(TerminalUIStyle.ink)\(sessionModel)\(TerminalUIStyle.reset)"
+        let usage = "\(TerminalUIStyle.faint)tok~\(TerminalUIStyle.reset) \(TerminalUIStyle.ink)\(formattedEstimatedTokens)\(TerminalUIStyle.reset)"
+        let context = "\(TerminalUIStyle.faint)ctx~\(TerminalUIStyle.reset) \(TerminalUIStyle.ink)\(formattedContextUsage)\(TerminalUIStyle.reset)"
         let status = "\(statusColor)\(displayStatusLine)\(TerminalUIStyle.reset)"
-        let right = "\(provider)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(model)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(status)"
+        let right = "\(provider)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(model)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(usage)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(context)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(status)"
 
         let topLine = join(left: left, right: right, width: innerWidth)
-        let workspace = "\(TerminalUIStyle.faint)workspace\(TerminalUIStyle.reset) \(TerminalUIStyle.truncateVisible(configuration.workspaceRoot.path, limit: innerWidth))"
+        let workspace = "\(TerminalUIStyle.faint)workspace\(TerminalUIStyle.reset) \(TerminalUIStyle.truncateVisible(sessionWorkspaceRoot.path, limit: innerWidth))"
 
         return [
             TerminalUIStyle.border + "╭" + String(repeating: "─", count: innerWidth + 2) + "╮" + TerminalUIStyle.reset,
@@ -816,7 +1027,10 @@ final class TUIApp {
             "\(TerminalUIStyle.ink)Navigation\(TerminalUIStyle.reset)",
             "\(TerminalUIStyle.slate)Tab\(TerminalUIStyle.reset) Switch between launcher, transcript, settings/history, and input",
             "\(TerminalUIStyle.slate)Up/Down or j/k\(TerminalUIStyle.reset) Move through launcher items or scroll the transcript",
+            "\(TerminalUIStyle.slate)Page Up/Down or Shift+j/Shift+k\(TerminalUIStyle.reset) Scroll the transcript faster",
+            "\(TerminalUIStyle.slate)Home/End or g/G\(TerminalUIStyle.reset) Jump to the oldest output or back to the live tail",
             "\(TerminalUIStyle.slate)e\(TerminalUIStyle.reset) Expand or collapse tool details in the transcript",
+            "\(TerminalUIStyle.slate)x\(TerminalUIStyle.reset) Skip the current planned step and continue",
             "\(TerminalUIStyle.slate)Enter\(TerminalUIStyle.reset) Open launcher item or submit prompt",
             "\(TerminalUIStyle.slate)Esc or Left\(TerminalUIStyle.reset) Back out, cancel a run, or quit",
             "\(TerminalUIStyle.slate)Backspace\(TerminalUIStyle.reset) Delete text in the input bar",
@@ -833,7 +1047,7 @@ final class TUIApp {
     }
 
     private func renderCommandCatalogLines(width: Int) -> [String] {
-        let shellPolicy = configuration.userConfig.shell
+        let shellPolicy = sessionUserConfig.shell
         var lines: [String] = [
             "\(TerminalUIStyle.ink)Available Commands\(TerminalUIStyle.reset)",
             "\(TerminalUIStyle.slate)This screen is meant to grow as Ashex gains more tools.\(TerminalUIStyle.reset)",
@@ -847,15 +1061,30 @@ final class TUIApp {
             "\(TerminalUIStyle.ink)Filesystem Tool\(TerminalUIStyle.reset)",
             "\(TerminalUIStyle.slate)read_text_file\(TerminalUIStyle.reset) Read UTF-8 text files inside the workspace",
             "\(TerminalUIStyle.slate)write_text_file\(TerminalUIStyle.reset) Write text files and show diffs in the transcript",
+            "\(TerminalUIStyle.slate)replace_in_file\(TerminalUIStyle.reset) Replace text in a file and show the exact diff",
             "\(TerminalUIStyle.slate)list_directory\(TerminalUIStyle.reset) Explore a directory and render a tree",
             "\(TerminalUIStyle.slate)create_directory\(TerminalUIStyle.reset) Create folders inside the workspace",
+            "\(TerminalUIStyle.slate)delete_path\(TerminalUIStyle.reset) Delete files or folders in the workspace",
+            "\(TerminalUIStyle.slate)move_path\(TerminalUIStyle.reset) Move or rename files and folders",
+            "\(TerminalUIStyle.slate)copy_path\(TerminalUIStyle.reset) Copy files or folders",
+            "\(TerminalUIStyle.slate)file_info\(TerminalUIStyle.reset) Inspect type, size, and modification time",
+            "\(TerminalUIStyle.slate)find_files\(TerminalUIStyle.reset) Find paths by name fragment",
+            "\(TerminalUIStyle.slate)search_text\(TerminalUIStyle.reset) Search text across UTF-8 files",
+            "",
+            "\(TerminalUIStyle.ink)Git Tool\(TerminalUIStyle.reset)",
+            "\(TerminalUIStyle.slate)status\(TerminalUIStyle.reset) Show git status with branch and changed files",
+            "\(TerminalUIStyle.slate)current_branch\(TerminalUIStyle.reset) Show the current checked out branch",
+            "\(TerminalUIStyle.slate)diff_unstaged\(TerminalUIStyle.reset) Inspect unstaged changes",
+            "\(TerminalUIStyle.slate)diff_staged\(TerminalUIStyle.reset) Inspect staged changes",
+            "\(TerminalUIStyle.slate)log\(TerminalUIStyle.reset) Show recent commit history",
+            "\(TerminalUIStyle.slate)show_commit\(TerminalUIStyle.reset) Inspect one commit with patch and stats",
             "",
             "\(TerminalUIStyle.ink)Shell Tool\(TerminalUIStyle.reset)",
             "\(TerminalUIStyle.slate)command\(TerminalUIStyle.reset) Execute a shell command from the workspace root",
             "\(TerminalUIStyle.slate)timeout_seconds\(TerminalUIStyle.reset) Optional timeout for long-running commands",
             "",
             "\(TerminalUIStyle.ink)User Config\(TerminalUIStyle.reset)",
-            "\(TerminalUIStyle.slate)\(TerminalUIStyle.truncateVisible(configuration.userConfigFile.path, limit: width))\(TerminalUIStyle.reset)"
+            "\(TerminalUIStyle.slate)\(TerminalUIStyle.truncateVisible(sessionUserConfigFile.path, limit: width))\(TerminalUIStyle.reset)"
         ]
 
         if shellPolicy.allowList.isEmpty {
@@ -887,10 +1116,14 @@ final class TUIApp {
             let color = selected ? TerminalUIStyle.cyan : TerminalUIStyle.ink
             let value: String
             switch action {
+            case .workspace:
+                value = sessionWorkspaceRoot.path
             case .provider:
                 value = sessionProvider
             case .model:
                 value = sessionModel
+            case .apiKey:
+                value = apiKeyStatusLabel(for: sessionProvider)
             case .refresh:
                 value = providerStatus.headline
             case .back:
@@ -939,9 +1172,68 @@ final class TUIApp {
         if inputMode == .model {
             lines.append("")
             lines.append("\(TerminalUIStyle.amber)Model edit mode is active in the input bar below.\(TerminalUIStyle.reset)")
+        } else if inputMode == .apiKey {
+            lines.append("")
+            lines.append("\(TerminalUIStyle.amber)API key edit mode is active in the input bar below.\(TerminalUIStyle.reset)")
         }
 
         return lines
+    }
+
+    private func apiKeyStatusLabel(for provider: String) -> String {
+        guard provider == "openai" || provider == "anthropic" else {
+            return "Not required"
+        }
+
+        let envName = CLIConfiguration.environmentAPIKeyName(for: provider)
+        if let envValue = ProcessInfo.processInfo.environment[envName], !envValue.isEmpty {
+            return "Loaded from environment (\(maskSecret(envValue)))"
+        }
+
+        do {
+            if let persisted = try historyStore.fetchSetting(namespace: "provider.credentials", key: CLIConfiguration.apiKeySettingKey(for: provider))?.value.stringValue,
+               !persisted.isEmpty {
+                return "Saved locally (\(maskSecret(persisted)))"
+            }
+        } catch {
+            return "Lookup failed"
+        }
+
+        return "Missing"
+    }
+
+    private func normalizeAPIKeyInput(_ input: String, for provider: String) -> String {
+        let cleaned = input
+            .replacingOccurrences(of: "\u{001B}[200~", with: "")
+            .replacingOccurrences(of: "\u{001B}[201~", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let strippedQuotes = cleaned.trimmingCharacters(in: CharacterSet(charactersIn: "\"'`"))
+        if looksLikeAPIKey(strippedQuotes, for: provider) {
+            return strippedQuotes
+        }
+
+        let tokens = strippedQuotes
+            .components(separatedBy: CharacterSet.whitespacesAndNewlines.union(.punctuationCharacters.subtracting(CharacterSet(charactersIn: "-_"))))
+            .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "\"'`")) }
+            .filter { !$0.isEmpty }
+
+        if let token = tokens.first(where: { looksLikeAPIKey($0, for: provider) }) {
+            return token
+        }
+
+        return strippedQuotes
+    }
+
+    private func looksLikeAPIKey(_ value: String, for provider: String) -> Bool {
+        switch provider {
+        case "openai":
+            return value.hasPrefix("sk-")
+        case "anthropic":
+            return value.hasPrefix("sk-ant-") || value.hasPrefix("sk_live_")
+        default:
+            return !value.isEmpty
+        }
     }
 
     private func renderHistoryLines(width: Int) -> [String] {
@@ -1032,8 +1324,20 @@ final class TUIApp {
                 } else {
                     lines.append(contentsOf: previewLines.flatMap { wrapText($0, width: width).map { "\(TerminalUIStyle.blue)\($0)\(TerminalUIStyle.reset)" } })
                 }
+            } else if operation == "replace_in_file" {
+                let oldText = request.arguments["old_text"]?.stringValue ?? ""
+                let newText = request.arguments["new_text"]?.stringValue ?? ""
+                lines.append("\(TerminalUIStyle.ink)Replace Preview\(TerminalUIStyle.reset)")
+                lines.append(contentsOf: wrapText("old: \(oldText)", width: width).map { "\(TerminalUIStyle.blue)\($0)\(TerminalUIStyle.reset)" })
+                lines.append(contentsOf: wrapText("new: \(newText)", width: width).map { "\(TerminalUIStyle.green)\($0)\(TerminalUIStyle.reset)" })
             }
             return lines
+        case "git":
+            let operation = request.arguments["operation"]?.stringValue ?? request.summary
+            return [
+                "\(TerminalUIStyle.ink)Git Preview\(TerminalUIStyle.reset)",
+                "\(TerminalUIStyle.slate)\(operation)\(TerminalUIStyle.reset)"
+            ]
         default:
             return [
                 "\(TerminalUIStyle.ink)Arguments\(TerminalUIStyle.reset)",
@@ -1044,12 +1348,28 @@ final class TUIApp {
 
     private func renderInputBar(width: Int) -> [String] {
         let innerWidth = max(width - 4, 20)
-        let labelText = inputMode == .model ? "Model" : "Input"
-        let title = focus == .input ? "\(TerminalUIStyle.cyan)\(labelText)\(TerminalUIStyle.reset)" : "\(TerminalUIStyle.faint)\(labelText)\(TerminalUIStyle.reset)"
-        let currentText = inputMode == .model ? modelInput : promptText
+        let actualLabelText: String
+        switch inputMode {
+        case .prompt: actualLabelText = "Input"
+        case .model: actualLabelText = "Model"
+        case .apiKey: actualLabelText = "API Key"
+        case .workspacePath: actualLabelText = "Workspace"
+        }
+        let title = focus == .input ? "\(TerminalUIStyle.cyan)\(actualLabelText)\(TerminalUIStyle.reset)" : "\(TerminalUIStyle.faint)\(actualLabelText)\(TerminalUIStyle.reset)"
+        let currentText: String
+        switch inputMode {
+        case .prompt: currentText = promptText
+        case .model: currentText = modelInput
+        case .apiKey: currentText = String(repeating: "•", count: apiKeyInput.count)
+        case .workspacePath: currentText = workspacePathInput
+        }
         let placeholder = inputMode == .model
             ? "Type a model name, then press Enter to apply…"
-            : "Type a prompt here, then press Enter to run…"
+            : inputMode == .apiKey
+                ? "Paste an API key, then press Enter to save…"
+                : inputMode == .workspacePath
+                    ? "Type a project directory path, then press Enter to switch…"
+                : "Type a prompt here, then press Enter to run…"
         let prompt = currentText.isEmpty
             ? "\(TerminalUIStyle.faint)\(placeholder)\(TerminalUIStyle.reset)"
             : "\(TerminalUIStyle.ink)\(currentText)\(TerminalUIStyle.reset)"
@@ -1062,9 +1382,14 @@ final class TUIApp {
         ]
     }
 
+    private func maskSecret(_ value: String) -> String {
+        guard value.count > 8 else { return String(repeating: "•", count: max(value.count, 4)) }
+        return String(value.prefix(4)) + String(repeating: "•", count: max(value.count - 8, 4)) + String(value.suffix(4))
+    }
+
     private func renderFooter(width: Int) -> String {
         let hint = pendingApproval == nil
-            ? "\(TerminalUIStyle.faint)tab\(TerminalUIStyle.reset) focus  \(TerminalUIStyle.faint)e\(TerminalUIStyle.reset) details  \(TerminalUIStyle.faint)enter\(TerminalUIStyle.reset) run/open  \(TerminalUIStyle.faint)esc\(TerminalUIStyle.reset) back"
+            ? "\(TerminalUIStyle.faint)tab\(TerminalUIStyle.reset) focus  \(TerminalUIStyle.faint)PgUp/PgDn\(TerminalUIStyle.reset) fast scroll  \(TerminalUIStyle.faint)g/G\(TerminalUIStyle.reset) top/end  \(TerminalUIStyle.faint)e\(TerminalUIStyle.reset) details  \(TerminalUIStyle.faint)x\(TerminalUIStyle.reset) skip  \(TerminalUIStyle.faint)esc\(TerminalUIStyle.reset) cancel"
             : "\(TerminalUIStyle.faint)y\(TerminalUIStyle.reset) approve  \(TerminalUIStyle.faint)n\(TerminalUIStyle.reset) deny"
         let value = "\(TerminalUIStyle.faint)Ashex local agent runtime\(TerminalUIStyle.reset)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(TerminalUIStyle.faint)focus\(TerminalUIStyle.reset) \(focusLabel)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(hint)"
         return TerminalUIStyle.padVisible(TerminalUIStyle.truncateVisible(value, limit: width), to: width)
@@ -1089,6 +1414,8 @@ final class TUIApp {
         let colored: String
         if line.hasPrefix("[error]") {
             colored = "\(TerminalUIStyle.red)\(line)\(TerminalUIStyle.reset)"
+        } else if line.hasPrefix("[plan]") {
+            colored = "\(TerminalUIStyle.cyan)\(line)\(TerminalUIStyle.reset)"
         } else if line.hasPrefix("[approval]") {
             colored = "\(TerminalUIStyle.amber)\(line)\(TerminalUIStyle.reset)"
         } else if line.hasPrefix("[tool]") {
@@ -1111,8 +1438,22 @@ final class TUIApp {
 
     private func wrapRunLine(_ line: String, width: Int) -> [String] {
         let baseColor: String
-        if line.hasPrefix("[error]") {
+        let diffCandidate = normalizeDiffCandidate(from: line)
+        if diffCandidate.hasPrefix("@@") {
+            baseColor = TerminalUIStyle.amber
+        } else if diffCandidate.hasPrefix("diff --git")
+                    || diffCandidate.hasPrefix("index ")
+                    || diffCandidate.hasPrefix("--- ")
+                    || diffCandidate.hasPrefix("+++ ") {
+            baseColor = TerminalUIStyle.blue
+        } else if diffCandidate.hasPrefix("+") && !diffCandidate.hasPrefix("+++") {
+            baseColor = TerminalUIStyle.green
+        } else if diffCandidate.hasPrefix("-") && !diffCandidate.hasPrefix("---") {
             baseColor = TerminalUIStyle.red
+        } else if line.hasPrefix("[error]") {
+            baseColor = TerminalUIStyle.red
+        } else if line.hasPrefix("[plan]") {
+            baseColor = TerminalUIStyle.cyan
         } else if line.hasPrefix("[approval]") {
             baseColor = TerminalUIStyle.amber
         } else if line.hasPrefix("[tool]") {
@@ -1133,6 +1474,13 @@ final class TUIApp {
 
         let plain = line.isEmpty ? " " : line
         return wrapText(plain, width: max(width, 10)).map { "\(baseColor)\($0)\(TerminalUIStyle.reset)" }
+    }
+
+    private func normalizeDiffCandidate(from line: String) -> String {
+        if line.hasPrefix("[stdout] ") || line.hasPrefix("[stderr] ") {
+            return String(line.dropFirst(9))
+        }
+        return line
     }
 
     private func join(left: String, right: String, width: Int) -> String {
@@ -1202,6 +1550,22 @@ final class TUIApp {
         return minutes > 0 ? "\(minutes)m \(seconds)s" : "\(seconds)s"
     }
 
+    private var estimatedConversationTokens: Int {
+        let source = runLines.isEmpty ? promptText : runLines.joined(separator: "\n")
+        let characters = source.count
+        return max(Int(ceil(Double(characters) / 4.0)), 0)
+    }
+
+    private var formattedEstimatedTokens: String {
+        Self.formatTokenCount(estimatedConversationTokens)
+    }
+
+    private var formattedContextUsage: String {
+        let maxTokens = Self.estimatedContextWindow(for: sessionProvider, model: sessionModel)
+        let usedTokens = estimatedConversationTokens
+        return "\(Self.formatTokenCount(usedTokens))/\(Self.formatTokenCount(maxTokens))"
+    }
+
     private func riskColor(for risk: ApprovalRisk) -> String {
         switch risk {
         case .low:
@@ -1210,6 +1574,40 @@ final class TUIApp {
             return TerminalUIStyle.amber
         case .high:
             return TerminalUIStyle.red
+        }
+    }
+
+    private static func estimatedContextWindow(for provider: String, model: String) -> Int {
+        let lowered = model.lowercased()
+        switch provider {
+        case "openai":
+            if lowered.contains("gpt-5") { return 400_000 }
+            if lowered.contains("gpt-4.1") { return 1_000_000 }
+            if lowered.contains("gpt-4o") { return 128_000 }
+            return 128_000
+        case "anthropic":
+            if lowered.contains("claude") { return 200_000 }
+            return 200_000
+        case "ollama":
+            if lowered.contains("llama3") || lowered.contains("qwen") || lowered.contains("mistral") || lowered.contains("gemma") {
+                return 128_000
+            }
+            return 32_000
+        default:
+            return 8_000
+        }
+    }
+
+    private static func formatTokenCount(_ count: Int) -> String {
+        switch count {
+        case 1_000_000...:
+            return String(format: "%.1fM", Double(count) / 1_000_000.0)
+        case 10_000...:
+            return String(format: "%.0fk", Double(count) / 1_000.0)
+        case 1_000...:
+            return String(format: "%.1fk", Double(count) / 1_000.0)
+        default:
+            return "\(count)"
         }
     }
 
@@ -1249,16 +1647,37 @@ final class TUIApp {
     }
 
     private func scrollTranscript(by delta: Int) {
-        let size = terminal.terminalSize()
-        let chromeHeight = 10
-        let bodyHeight = max(size.rows - chromeHeight, 10)
-        let leftWidth = max(min(size.columns / 3, 40), 30)
-        let rightWidth = max(size.columns - leftWidth - 1, 38)
-        let bodyLimit = max(bodyHeight - 3, 1)
-        let totalLines = wrappedRunLines(width: rightWidth - 4).count
-        let maxOffset = max(totalLines - bodyLimit, 0)
+        let metrics = transcriptMetrics()
+        let maxOffset = max(metrics.totalLines - metrics.bodyLimit, 0)
         transcriptScrollOffset = min(max(transcriptScrollOffset + delta, 0), maxOffset)
         statusLine = transcriptScrollOffset == 0 ? "Transcript at live tail" : "Transcript scroll +\(transcriptScrollOffset)"
+    }
+
+    private enum TranscriptPageDirection {
+        case older
+        case newer
+    }
+
+    private func scrollTranscriptPage(direction: TranscriptPageDirection) {
+        let metrics = transcriptMetrics()
+        let step = max(metrics.bodyLimit - 2, 8)
+        switch direction {
+        case .older:
+            scrollTranscript(by: step)
+        case .newer:
+            scrollTranscript(by: -step)
+        }
+    }
+
+    private func jumpTranscriptToTop() {
+        let metrics = transcriptMetrics()
+        transcriptScrollOffset = max(metrics.totalLines - metrics.bodyLimit, 0)
+        statusLine = transcriptScrollOffset == 0 ? "Transcript at live tail" : "Transcript at top"
+    }
+
+    private func jumpTranscriptToBottom() {
+        transcriptScrollOffset = 0
+        statusLine = "Transcript at live tail"
     }
 
     private func isTranscriptNearBottom() -> Bool {
@@ -1307,6 +1726,18 @@ final class TUIApp {
             return fileWriteDetails
         }
 
+        if let fileMutationDetails = renderFilesystemMutationDetails(from: value) {
+            return fileMutationDetails
+        }
+
+        if let fileSearchDetails = renderFilesystemSearchDetails(from: value) {
+            return fileSearchDetails
+        }
+
+        if let gitDetails = renderGitDetails(from: value) {
+            return gitDetails
+        }
+
         return value.prettyPrinted.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
     }
 
@@ -1321,11 +1752,36 @@ final class TUIApp {
                 return "[tool] reading \(path)"
             case "write_text_file":
                 return "[tool] editing \(path)"
+            case "replace_in_file":
+                return "[tool] replacing text in \(path)"
             case "create_directory":
                 return "[tool] creating directory \(path)"
+            case "delete_path":
+                return "[tool] deleting \(path)"
+            case "move_path":
+                let sourcePath = arguments["source_path"]?.stringValue ?? path
+                let destinationPath = arguments["destination_path"]?.stringValue ?? "."
+                return "[tool] moving \(sourcePath) → \(destinationPath)"
+            case "copy_path":
+                let sourcePath = arguments["source_path"]?.stringValue ?? path
+                let destinationPath = arguments["destination_path"]?.stringValue ?? "."
+                return "[tool] copying \(sourcePath) → \(destinationPath)"
+            case "file_info":
+                return "[tool] inspecting \(path)"
+            case "find_files":
+                let query = arguments["query"]?.stringValue ?? ""
+                return "[tool] finding files in \(path) matching \(query)"
+            case "search_text":
+                let query = arguments["query"]?.stringValue ?? ""
+                return "[tool] searching text in \(path) for \(query)"
             default:
                 return "[tool] filesystem \(operation)"
             }
+        }
+
+        if toolName == "git" {
+            let operation = arguments["operation"]?.stringValue ?? "status"
+            return "[tool] git \(operation)"
         }
 
         if toolName == "shell" {
@@ -1351,6 +1807,33 @@ final class TUIApp {
                 let path = object["path"]?.stringValue ?? "<unknown>"
                 let bytesWritten = object["bytes_written"]?.intValue ?? 0
                 return "[tool] edited \(path) (\(bytesWritten) chars)"
+            case "replace_in_file":
+                let path = object["path"]?.stringValue ?? "<unknown>"
+                return "[tool] replaced text in \(path)"
+            case "delete_path":
+                let path = object["path"]?.stringValue ?? "<unknown>"
+                return "[tool] deleted \(path)"
+            case "move_path":
+                let sourcePath = object["source_path"]?.stringValue ?? "<unknown>"
+                let destinationPath = object["destination_path"]?.stringValue ?? "<unknown>"
+                return "[tool] moved \(sourcePath) → \(destinationPath)"
+            case "copy_path":
+                let sourcePath = object["source_path"]?.stringValue ?? "<unknown>"
+                let destinationPath = object["destination_path"]?.stringValue ?? "<unknown>"
+                return "[tool] copied \(sourcePath) → \(destinationPath)"
+            case "file_info":
+                let path = object["path"]?.stringValue ?? "<unknown>"
+                return "[tool] inspected \(path)"
+            case "find_files":
+                let path = object["path"]?.stringValue ?? "."
+                let count = object["matches"]?.arrayValue?.count ?? 0
+                return "[tool] found \(count) matching paths in \(path)"
+            case "search_text":
+                let path = object["path"]?.stringValue ?? "."
+                let count = object["matches"]?.arrayValue?.count ?? 0
+                return "[tool] found \(count) text matches in \(path)"
+            case "status", "current_branch", "diff_unstaged", "diff_staged", "log", "show_commit":
+                return "[tool] git \(operation)"
             default:
                 break
             }
@@ -1430,6 +1913,128 @@ final class TUIApp {
             lines.append(contentsOf: diffLines)
         }
         return lines
+    }
+
+    private func renderFilesystemMutationDetails(from value: JSONValue) -> [String]? {
+        guard case .object(let object) = value,
+              let operation = object["operation"]?.stringValue else {
+            return nil
+        }
+
+        switch operation {
+        case "replace_in_file":
+            let path = object["path"]?.stringValue ?? "<unknown>"
+            let diffLines = object["diff"]?.arrayValue?.compactMap(\.stringValue) ?? []
+            var lines = ["Updated \(path)"]
+            if !diffLines.isEmpty {
+                lines.append("")
+                lines.append("Diff")
+                lines.append(contentsOf: diffLines)
+            }
+            return lines
+        case "delete_path":
+            return ["Deleted \(object["path"]?.stringValue ?? "<unknown>")"]
+        case "move_path":
+            return [
+                "Moved \(object["source_path"]?.stringValue ?? "<unknown>")",
+                "To \(object["destination_path"]?.stringValue ?? "<unknown>")"
+            ]
+        case "copy_path":
+            return [
+                "Copied \(object["source_path"]?.stringValue ?? "<unknown>")",
+                "To \(object["destination_path"]?.stringValue ?? "<unknown>")"
+            ]
+        case "file_info":
+            let path = object["path"]?.stringValue ?? "<unknown>"
+            let isDirectory = object["is_directory"] == .bool(true)
+            let size = object["size_bytes"]?.intValue ?? 0
+            let modifiedAt = object["modified_at"]?.stringValue ?? ""
+            return [
+                "Path \(path)",
+                isDirectory ? "Directory" : "File",
+                "Size \(size) bytes",
+                modifiedAt.isEmpty ? "Modified time unavailable" : "Modified \(modifiedAt)"
+            ]
+        default:
+            return nil
+        }
+    }
+
+    private func renderFilesystemSearchDetails(from value: JSONValue) -> [String]? {
+        guard case .object(let object) = value,
+              let operation = object["operation"]?.stringValue else {
+            return nil
+        }
+
+        switch operation {
+        case "find_files":
+            let path = object["path"]?.stringValue ?? "."
+            let query = object["query"]?.stringValue ?? ""
+            let matches = object["matches"]?.arrayValue?.compactMap(\.stringValue) ?? []
+            var lines = ["Find files in \(path)", "Query \(query)"]
+            if matches.isEmpty {
+                lines.append("No matches")
+            } else {
+                lines.append("")
+                lines.append(contentsOf: matches.map { "- \($0)" })
+            }
+            return lines
+        case "search_text":
+            let path = object["path"]?.stringValue ?? "."
+            let query = object["query"]?.stringValue ?? ""
+            let matches = object["matches"]?.arrayValue ?? []
+            var lines = ["Search text in \(path)", "Query \(query)"]
+            if matches.isEmpty {
+                lines.append("No matches")
+            } else {
+                lines.append("")
+                for match in matches {
+                    guard case .object(let object) = match else { continue }
+                    let filePath = object["path"]?.stringValue ?? "<unknown>"
+                    let line = object["line"]?.intValue ?? 0
+                    let text = object["text"]?.stringValue ?? ""
+                    lines.append("- \(filePath):\(line) \(text)")
+                }
+            }
+            return lines
+        default:
+            return nil
+        }
+    }
+
+    private func renderGitDetails(from value: JSONValue) -> [String]? {
+        guard case .object(let object) = value,
+              let operation = object["operation"]?.stringValue,
+              let stdout = object["stdout"]?.stringValue else {
+            return nil
+        }
+
+        var lines = ["Git \(operation)"]
+        let body = stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !body.isEmpty {
+            lines.append("")
+            lines.append(contentsOf: body.split(separator: "\n", omittingEmptySubsequences: false).map(String.init))
+        }
+
+        let stderr = object["stderr"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !stderr.isEmpty {
+            lines.append("")
+            lines.append("stderr")
+            lines.append(contentsOf: stderr.split(separator: "\n", omittingEmptySubsequences: false).map(String.init))
+        }
+
+        return lines
+    }
+
+    private func transcriptMetrics() -> (bodyLimit: Int, totalLines: Int) {
+        let size = terminal.terminalSize()
+        let chromeHeight = 10
+        let bodyHeight = max(size.rows - chromeHeight, 10)
+        let leftWidth = max(min(size.columns / 3, 40), 30)
+        let rightWidth = max(size.columns - leftWidth - 1, 38)
+        let bodyLimit = max(bodyHeight - 3, 1)
+        let totalLines = wrappedRunLines(width: rightWidth - 4).count
+        return (bodyLimit, totalLines)
     }
 
     private func wrapText(_ text: String, width: Int) -> [String] {
@@ -1542,17 +2147,38 @@ final class TUIApp {
     }
 
     private func makeSessionRuntime() throws -> AgentRuntime {
-        try configuration.makeRuntime(
-            provider: sessionProvider,
-            model: sessionModel,
-            approvalPolicy: configuration.approvalMode == .guarded
-                ? TUIApprovalPolicy(coordinator: approvalCoordinator)
-                : TrustedApprovalPolicy()
+        try makeSessionRuntime(provider: sessionProvider, model: sessionModel)
+    }
+
+    private func makeSessionRuntime(provider: String, model: String) throws -> AgentRuntime {
+        let approvalPolicy: any ApprovalPolicy = configuration.approvalMode == .guarded
+            ? TUIApprovalPolicy(coordinator: approvalCoordinator)
+            : TrustedApprovalPolicy()
+
+        let modelAdapter = try configuration.makeModelAdapter(provider: provider, model: model)
+        let persistence = SQLitePersistenceStore(databaseURL: sessionStorageRoot.appendingPathComponent("ashex.sqlite"))
+        return try AgentRuntime(
+            modelAdapter: modelAdapter,
+            toolRegistry: ToolRegistry(tools: [
+                FileSystemTool(workspaceGuard: WorkspaceGuard(rootURL: sessionWorkspaceRoot)),
+                GitTool(
+                    executionRuntime: ProcessExecutionRuntime(),
+                    workspaceURL: sessionWorkspaceRoot
+                ),
+                ShellTool(
+                    executionRuntime: ProcessExecutionRuntime(),
+                    workspaceURL: sessionWorkspaceRoot,
+                    commandPolicy: ShellCommandPolicy(config: sessionUserConfig.shell)
+                ),
+            ]),
+            persistence: persistence,
+            approvalPolicy: approvalPolicy
         )
     }
 
     private func refreshProviderStatus() async {
-        let snapshot = await ProviderInspector.inspect(provider: sessionProvider, model: sessionModel)
+        let apiKey = try? configuration.resolvedAPIKey(for: sessionProvider)
+        let snapshot = await ProviderInspector.inspect(provider: sessionProvider, model: sessionModel, apiKey: apiKey ?? nil)
         providerStatus = snapshot
         if let providerStartupIssue {
             statusLine = "Provider needs attention"
@@ -1608,6 +2234,10 @@ private enum TerminalKey {
     case down
     case left
     case right
+    case pageUp
+    case pageDown
+    case home
+    case end
     case enter
     case backspace
     case escape
@@ -1670,12 +2300,15 @@ private final class TerminalController {
     func makeKeyStream() -> AsyncStream<TerminalKey> {
         AsyncStream { continuation in
             let task = Task.detached(priority: .userInitiated) {
-                var buffer = [UInt8](repeating: 0, count: 3)
+                var buffer = [UInt8](repeating: 0, count: 256)
 
                 while !Task.isCancelled {
                     let count = Darwin.read(STDIN_FILENO, &buffer, buffer.count)
                     guard count > 0 else { continue }
-                    continuation.yield(Self.parseKey(bytes: Array(buffer.prefix(count))))
+                    let keys = Self.parseKeys(bytes: Array(buffer.prefix(count)))
+                    for key in keys {
+                        continuation.yield(key)
+                    }
                 }
             }
 
@@ -1685,35 +2318,55 @@ private final class TerminalController {
         }
     }
 
-    private static func parseKey(bytes: [UInt8]) -> TerminalKey {
-        guard let first = bytes.first else { return .unknown }
+    private static func parseKeys(bytes: [UInt8]) -> [TerminalKey] {
+        guard !bytes.isEmpty else { return [.unknown] }
 
-        switch first {
-        case 9:
-            return .tab
-        case 13, 10:
-            return .enter
-        case 27:
-            if bytes.count >= 3, bytes[1] == 91 {
-                switch bytes[2] {
-                case 65: return .up
-                case 66: return .down
-                case 67: return .right
-                case 68: return .left
-                default: return .escape
+        if bytes.first == 27, bytes.count >= 3, bytes[1] == 91 {
+            switch bytes[2] {
+            case 65:
+                return [.up]
+            case 66:
+                return [.down]
+            case 67:
+                return [.right]
+            case 68:
+                return [.left]
+            case 72:
+                return [.home]
+            case 70:
+                return [.end]
+            case 49 where bytes.count >= 4 && bytes[3] == 126:
+                return [.home]
+            case 52 where bytes.count >= 4 && bytes[3] == 126:
+                return [.end]
+            case 53 where bytes.count >= 4 && bytes[3] == 126:
+                return [.pageUp]
+            case 54 where bytes.count >= 4 && bytes[3] == 126:
+                return [.pageDown]
+            default: return [.escape]
+            }
+        }
+
+        var keys: [TerminalKey] = []
+        for byte in bytes {
+            switch byte {
+            case 9:
+                keys.append(.tab)
+            case 13, 10:
+                keys.append(.enter)
+            case 27:
+                keys.append(.escape)
+            case 127:
+                keys.append(.backspace)
+            case 32:
+                keys.append(.space)
+            default:
+                if let scalar = UnicodeScalar(Int(byte)) {
+                    keys.append(.character(Character(scalar)))
                 }
             }
-            return .escape
-        case 127:
-            return .backspace
-        case 32:
-            return .space
-        default:
-            if let scalar = UnicodeScalar(Int(first)) {
-                return .character(Character(scalar))
-            }
-            return .unknown
         }
+        return keys.isEmpty ? [.unknown] : keys
     }
 }
 
@@ -1815,7 +2468,7 @@ private enum TerminalUIStyle {
 }
 
 private enum ProviderInspector {
-    static func inspect(provider: String, model: String) async -> TUIApp.ProviderStatusSnapshot {
+    static func inspect(provider: String, model: String, apiKey: String? = nil) async -> TUIApp.ProviderStatusSnapshot {
         switch provider {
         case "mock":
             return .init(
@@ -1828,13 +2481,13 @@ private enum ProviderInspector {
                 guardrailAssessment: nil
             )
         case "openai":
-            guard let apiKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"], !apiKey.isEmpty else {
+            guard let apiKey, !apiKey.isEmpty else {
                 return .init(
                     headline: "OpenAI API key missing",
                     details: [
                         "OpenAI needs an API key before it can fetch models or run prompts.",
-                        "Set OPENAI_API_KEY in the shell that launches Ashex, then choose Refresh Status.",
-                        "Example: export OPENAI_API_KEY=sk-..."
+                        "Add it in Provider Settings with the API Key action, or set OPENAI_API_KEY before launch.",
+                        "After saving the key, choose Refresh Status."
                     ],
                     availableModels: [],
                     guardrailAssessment: nil
@@ -1864,7 +2517,7 @@ private enum ProviderInspector {
                     headline: "OpenAI model list fetch failed",
                     details: [
                         error.localizedDescription,
-                        "Check OPENAI_API_KEY, your network connection, and then choose Refresh Status."
+                        "A 401 usually means the saved key is malformed, expired, or was pasted incorrectly. Re-enter it in Provider Settings, then choose Refresh Status."
                     ],
                     availableModels: [],
                     guardrailAssessment: nil
@@ -1918,6 +2571,49 @@ private enum ProviderInspector {
                     guardrailAssessment: nil
                 )
             }
+        case "anthropic":
+            guard let apiKey, !apiKey.isEmpty else {
+                return .init(
+                    headline: "Anthropic API key missing",
+                    details: [
+                        "Anthropic needs an API key before it can fetch models or run prompts.",
+                        "Add it in Provider Settings with the API Key action, or set ANTHROPIC_API_KEY before launch.",
+                        "After saving the key, choose Refresh Status."
+                    ],
+                    availableModels: [],
+                    guardrailAssessment: nil
+                )
+            }
+
+            do {
+                let models = try await AnthropicModelsClient.fetchModels(apiKey: apiKey)
+                let curated = AnthropicModelsClient.curateModels(models)
+                let selectedAvailable = curated.contains(model)
+                return .init(
+                    headline: selectedAvailable ? "Anthropic configuration looks ready" : "Selected Anthropic model not found",
+                    details: [
+                        "Anthropic API key is available.",
+                        selectedAvailable
+                            ? "The selected model is \(model)."
+                            : "The current model \(model) was not returned by the Anthropic models API.",
+                        selectedAvailable
+                            ? "Choose Refresh Status anytime to fetch the current model list again."
+                            : "Pick one of the fetched models below or enter a known model name manually."
+                    ],
+                    availableModels: curated,
+                    guardrailAssessment: nil
+                )
+            } catch {
+                return .init(
+                    headline: "Anthropic model list fetch failed",
+                    details: [
+                        error.localizedDescription,
+                        "Check the saved API key or network connection, then choose Refresh Status."
+                    ],
+                    availableModels: [],
+                    guardrailAssessment: nil
+                )
+            }
         default:
             return .init(
                 headline: "Unknown provider",
@@ -1959,6 +2655,9 @@ private enum OpenAIModelsClient {
         }
 
         guard (200..<300).contains(httpResponse.statusCode) else {
+            if httpResponse.statusCode == 401 {
+                throw AshexError.model("OpenAI rejected the API key (401). Re-enter the key in Provider Settings and verify it is a valid current OpenAI API key.")
+            }
             throw AshexError.model("OpenAI model list request failed with status \(httpResponse.statusCode)")
         }
 
@@ -1979,6 +2678,45 @@ private enum OpenAIModelsClient {
                 }
                 return lowered.hasPrefix("gpt") || lowered.hasPrefix("o") || lowered.hasPrefix("codex")
             }
+            .sorted()
+    }
+}
+
+private enum AnthropicModelsClient {
+    private struct Envelope: Decodable {
+        let data: [Model]
+    }
+
+    private struct Model: Decodable {
+        let id: String
+    }
+
+    static func fetchModels(
+        apiKey: String,
+        baseURL: URL = URL(string: "https://api.anthropic.com/v1/models")!,
+        session: URLSession = .shared
+    ) async throws -> [String] {
+        var request = URLRequest(url: baseURL)
+        request.httpMethod = "GET"
+        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw AshexError.model("Anthropic model list did not return an HTTP response")
+        }
+
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            throw AshexError.model("Anthropic model list request failed with status \(httpResponse.statusCode)")
+        }
+
+        let envelope = try JSONDecoder().decode(Envelope.self, from: data)
+        return envelope.data.map(\.id)
+    }
+
+    static func curateModels(_ models: [String]) -> [String] {
+        models
+            .filter { $0.lowercased().contains("claude") }
             .sorted()
     }
 }

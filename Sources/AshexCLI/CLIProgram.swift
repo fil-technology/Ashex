@@ -35,6 +35,9 @@ struct AshexCLI {
         if message.contains("openai_api_key") {
             return "Action: set OPENAI_API_KEY, or run `swift run ashex --provider mock` to open the TUI without a remote provider."
         }
+        if message.contains("anthropic_api_key") {
+            return "Action: set ANTHROPIC_API_KEY, or run `swift run ashex --provider mock` to open the TUI without a remote provider."
+        }
         if message.contains("could not connect to the server") || message.contains("failed to connect") || message.contains("connection") {
             return "Action: start Ollama with `ollama serve`, switch to `mock` in Provider Settings after launch, or run `swift run ashex --provider mock`."
         }
@@ -50,6 +53,15 @@ struct AshexCLI {
             print("[run] started \(runID.uuidString)")
         case .runStateChanged(_, let state, let reason):
             print("[state] \(state.rawValue)\(reason.map { " - \($0)" } ?? "")")
+        case .taskPlanCreated(_, let steps):
+            print("[plan] created \(steps.count) steps")
+            for (index, step) in steps.enumerated() {
+                print("[plan] \(index + 1). \(step)")
+            }
+        case .taskStepStarted(_, let index, let total, let title):
+            print("[plan] step \(index)/\(total) started - \(title)")
+        case .taskStepFinished(_, let index, let total, let title, let outcome):
+            print("[plan] step \(index)/\(total) \(outcome) - \(title)")
         case .status(_, let message):
             print("[status] \(message)")
         case .messageAppended(_, _, let role):
@@ -84,6 +96,7 @@ struct CLIConfiguration {
         static let namespace = "ui.session"
         static let provider = "default_provider"
         static let model = "default_model"
+        static let credentialsNamespace = "provider.credentials"
     }
 
     let prompt: String?
@@ -95,6 +108,7 @@ struct CLIConfiguration {
     let approvalMode: ApprovalMode
     let userConfig: AshexUserConfig
     let userConfigFile: URL
+    let shouldPersistSessionDefaults: Bool
 
     init(arguments: [String]) throws {
         var promptParts: [String] = []
@@ -153,12 +167,23 @@ struct CLIConfiguration {
         let persistedModel = try settingsStore.fetchSetting(namespace: SessionSetting.namespace, key: SessionSetting.model)?.value.stringValue
         let environmentProvider = ProcessInfo.processInfo.environment["ASHEX_PROVIDER"]
 
-        let resolvedProvider = providerOverride ?? environmentProvider ?? persistedProvider ?? "mock"
+        let inferredPersistedProvider: String?
+        if providerOverride == nil, environmentProvider == nil, persistedProvider == "mock" {
+            inferredPersistedProvider = try Self.inferProviderFromPersistedState(
+                persistedModel: persistedModel,
+                store: settingsStore
+            )
+        } else {
+            inferredPersistedProvider = nil
+        }
+
+        let resolvedProvider = providerOverride ?? environmentProvider ?? inferredPersistedProvider ?? persistedProvider ?? "mock"
         let environmentModel = Self.environmentModel(for: resolvedProvider)
 
         self.provider = resolvedProvider
         self.model = modelOverride ?? environmentModel ?? persistedModel ?? Self.defaultModel(for: resolvedProvider)
         self.approvalMode = approvalMode
+        self.shouldPersistSessionDefaults = providerOverride == nil && modelOverride == nil && environmentProvider == nil && environmentModel == nil
     }
 
     func makeModelAdapter() throws -> any ModelAdapter {
@@ -170,10 +195,17 @@ struct CLIConfiguration {
         case "mock":
             return MockModelAdapter()
         case "openai":
-            guard let apiKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"], !apiKey.isEmpty else {
+            guard let apiKey = try resolvedAPIKey(for: "openai"), !apiKey.isEmpty else {
                 throw AshexError.model("OPENAI_API_KEY is required when --provider openai is used")
             }
             return OpenAIResponsesModelAdapter(
+                configuration: .init(apiKey: apiKey, model: model)
+            )
+        case "anthropic":
+            guard let apiKey = try resolvedAPIKey(for: "anthropic"), !apiKey.isEmpty else {
+                throw AshexError.model("ANTHROPIC_API_KEY is required when --provider anthropic is used")
+            }
+            return AnthropicMessagesModelAdapter(
                 configuration: .init(apiKey: apiKey, model: model)
             )
         case "ollama":
@@ -203,6 +235,10 @@ struct CLIConfiguration {
             modelAdapter: makeModelAdapter(provider: provider, model: model),
             toolRegistry: ToolRegistry(tools: [
                 FileSystemTool(workspaceGuard: WorkspaceGuard(rootURL: workspaceURL)),
+                GitTool(
+                    executionRuntime: ProcessExecutionRuntime(),
+                    workspaceURL: workspaceURL
+                ),
                 ShellTool(
                     executionRuntime: ProcessExecutionRuntime(),
                     workspaceURL: workspaceURL,
@@ -224,6 +260,7 @@ struct CLIConfiguration {
     }
 
     func persistSessionSettings() throws {
+        guard shouldPersistSessionDefaults else { return }
         let store = try Self.makeSettingsStore(storageRoot: storageRoot)
         let now = Date()
         try store.upsertSetting(namespace: SessionSetting.namespace, key: SessionSetting.provider, value: .string(provider), now: now)
@@ -246,6 +283,8 @@ struct CLIConfiguration {
         switch provider {
         case "openai":
             return ProcessInfo.processInfo.environment["OPENAI_MODEL"] ?? "gpt-5.4-mini"
+        case "anthropic":
+            return ProcessInfo.processInfo.environment["ANTHROPIC_MODEL"] ?? "claude-sonnet-4-20250514"
         case "ollama":
             return ProcessInfo.processInfo.environment["OLLAMA_MODEL"] ?? "llama3.2"
         default:
@@ -257,11 +296,56 @@ struct CLIConfiguration {
         switch provider {
         case "openai":
             return ProcessInfo.processInfo.environment["OPENAI_MODEL"]
+        case "anthropic":
+            return ProcessInfo.processInfo.environment["ANTHROPIC_MODEL"]
         case "ollama":
             return ProcessInfo.processInfo.environment["OLLAMA_MODEL"]
         default:
             return nil
         }
+    }
+
+    func resolvedAPIKey(for provider: String) throws -> String? {
+        if let envKey = ProcessInfo.processInfo.environment[Self.environmentAPIKeyName(for: provider)], !envKey.isEmpty {
+            return envKey
+        }
+
+        let store = try Self.makeSettingsStore(storageRoot: storageRoot)
+        return try store.fetchSetting(namespace: SessionSetting.credentialsNamespace, key: Self.apiKeySettingKey(for: provider))?.value.stringValue
+    }
+
+    static func environmentAPIKeyName(for provider: String) -> String {
+        switch provider {
+        case "openai":
+            return "OPENAI_API_KEY"
+        case "anthropic":
+            return "ANTHROPIC_API_KEY"
+        default:
+            return ""
+        }
+    }
+
+    static func apiKeySettingKey(for provider: String) -> String {
+        "\(provider)_api_key"
+    }
+
+    private static func inferProviderFromPersistedState(
+        persistedModel: String?,
+        store: SQLitePersistenceStore
+    ) throws -> String? {
+        guard let persistedModel, persistedModel != "mock" else { return nil }
+
+        if persistedModel.hasPrefix("gpt-"),
+           try store.fetchSetting(namespace: SessionSetting.credentialsNamespace, key: apiKeySettingKey(for: "openai"))?.value.stringValue?.isEmpty == false {
+            return "openai"
+        }
+
+        if persistedModel.hasPrefix("claude"),
+           try store.fetchSetting(namespace: SessionSetting.credentialsNamespace, key: apiKeySettingKey(for: "anthropic"))?.value.stringValue?.isEmpty == false {
+            return "anthropic"
+        }
+
+        return nil
     }
 
     private static func makeSettingsStore(storageRoot: URL) throws -> SQLitePersistenceStore {

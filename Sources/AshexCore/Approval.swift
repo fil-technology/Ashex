@@ -98,6 +98,48 @@ public enum ApprovalClassifier {
                     reason: path,
                     risk: .low
                 )
+            case "replace_in_file":
+                let path = arguments["path"]?.stringValue ?? "<unknown>"
+                return ApprovalRequest(
+                    runID: runID,
+                    toolName: toolName,
+                    arguments: arguments,
+                    summary: "Replace text in file",
+                    reason: path,
+                    risk: .medium
+                )
+            case "delete_path":
+                let path = arguments["path"]?.stringValue ?? "<unknown>"
+                return ApprovalRequest(
+                    runID: runID,
+                    toolName: toolName,
+                    arguments: arguments,
+                    summary: "Delete path",
+                    reason: path,
+                    risk: .high
+                )
+            case "move_path":
+                let sourcePath = arguments["source_path"]?.stringValue ?? "<unknown>"
+                let destinationPath = arguments["destination_path"]?.stringValue ?? "<unknown>"
+                return ApprovalRequest(
+                    runID: runID,
+                    toolName: toolName,
+                    arguments: arguments,
+                    summary: "Move path",
+                    reason: "\(sourcePath) → \(destinationPath)",
+                    risk: .medium
+                )
+            case "copy_path":
+                let sourcePath = arguments["source_path"]?.stringValue ?? "<unknown>"
+                let destinationPath = arguments["destination_path"]?.stringValue ?? "<unknown>"
+                return ApprovalRequest(
+                    runID: runID,
+                    toolName: toolName,
+                    arguments: arguments,
+                    summary: "Copy path",
+                    reason: "\(sourcePath) → \(destinationPath)",
+                    risk: .low
+                )
             default:
                 return nil
             }
