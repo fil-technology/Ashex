@@ -9,7 +9,7 @@ Ashex is a minimal local agent runtime foundation for macOS, built as a small Sw
 - Live streaming runtime events for CLI or future UI consumers
 - SQLite persistence for threads, messages, runs, tool calls, and append-only events
 - Restart normalization that marks previously running work as `interrupted`
-- A replaceable model boundary with both mock and OpenAI-backed adapters
+- A replaceable model boundary with mock, OpenAI, and local Ollama-backed adapters
 
 ## Package layout
 
@@ -38,14 +38,29 @@ export OPENAI_API_KEY=your_key_here
 swift run ashex --provider openai --model gpt-5.4-mini "list the files in this workspace"
 ```
 
+Local Ollama-backed mode:
+
+```bash
+ollama serve
+ollama pull llama3.2
+swift run ashex --provider ollama --model llama3.2 "list the files in this workspace"
+```
+
 CLI options:
 
 - `--workspace PATH`: workspace root enforced by `WorkspaceGuard`
 - `--storage PATH`: persistence directory, default `WORKSPACE/.ashex`
 - `--max-iterations N`: loop limit, default `8`
-- `--provider mock|openai`: model adapter selection, default `mock`
-- `--model MODEL`: model name for provider-backed mode, default `gpt-5.4-mini`
+- `--provider mock|openai|ollama`: model adapter selection, default `mock`
+- `--model MODEL`: model name for provider-backed mode. Defaults to `gpt-5.4-mini` for OpenAI and `llama3.2` for Ollama.
 - `--approval-mode trusted|guarded`: execution policy, default `trusted`
+
+Provider environment variables:
+
+- `OPENAI_API_KEY`: required for `--provider openai`
+- `OPENAI_MODEL`: optional default model for `openai`
+- `OLLAMA_MODEL`: optional default model for `ollama`
+- `OLLAMA_BASE_URL`: optional Ollama chat endpoint, default `http://localhost:11434/api/chat`
 
 Guarded mode examples:
 
@@ -66,4 +81,4 @@ The CLI is intentionally only a presentation adapter. `AgentRuntime` exposes `ru
 
 ## Current model behavior
 
-`MockModelAdapter` remains the fastest local test path. `OpenAIResponsesModelAdapter` adds a minimal real-provider path over the Responses API while keeping the same runtime loop and typed `ModelAction` contract.
+`MockModelAdapter` remains the fastest local test path. `OpenAIResponsesModelAdapter` and `OllamaChatModelAdapter` add real remote and local-provider paths while keeping the same runtime loop and typed `ModelAction` contract.

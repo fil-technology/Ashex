@@ -75,7 +75,7 @@ struct CLIConfiguration {
         var storageRoot: URL?
         var maxIterations = 8
         var provider = ProcessInfo.processInfo.environment["ASHEX_PROVIDER"] ?? "mock"
-        var model = ProcessInfo.processInfo.environment["OPENAI_MODEL"] ?? "gpt-5.4-mini"
+        var modelOverride: String?
         var approvalMode = ApprovalMode(rawValue: ProcessInfo.processInfo.environment["ASHEX_APPROVAL_MODE"] ?? "trusted") ?? .trusted
 
         var iterator = arguments.dropFirst().makeIterator()
@@ -101,7 +101,7 @@ struct CLIConfiguration {
                 guard let value = iterator.next(), !value.isEmpty else {
                     throw AshexError.model("Missing value for --model")
                 }
-                model = value
+                modelOverride = value
             case "--approval-mode":
                 guard let value = iterator.next(), let parsed = ApprovalMode(rawValue: value) else {
                     throw AshexError.model("Invalid value for --approval-mode. Supported: trusted, guarded")
@@ -120,7 +120,7 @@ struct CLIConfiguration {
         self.storageRoot = storageRoot?.standardizedFileURL ?? workspaceRoot.appendingPathComponent(".ashex")
         self.maxIterations = maxIterations
         self.provider = provider
-        self.model = model
+        self.model = modelOverride ?? Self.defaultModel(for: provider)
         self.approvalMode = approvalMode
     }
 
@@ -135,8 +135,15 @@ struct CLIConfiguration {
             return OpenAIResponsesModelAdapter(
                 configuration: .init(apiKey: apiKey, model: model)
             )
+        case "ollama":
+            return OllamaChatModelAdapter(
+                configuration: .init(
+                    model: model,
+                    baseURL: URL(string: ProcessInfo.processInfo.environment["OLLAMA_BASE_URL"] ?? "http://localhost:11434/api/chat")!
+                )
+            )
         default:
-            throw AshexError.model("Unsupported provider '\(provider)'. Supported: mock, openai")
+            throw AshexError.model("Unsupported provider '\(provider)'. Supported: mock, openai, ollama")
         }
     }
 
@@ -164,6 +171,17 @@ struct CLIConfiguration {
             return TrustedApprovalPolicy()
         case .guarded:
             return ConsoleApprovalPolicy()
+        }
+    }
+
+    private static func defaultModel(for provider: String) -> String {
+        switch provider {
+        case "openai":
+            return ProcessInfo.processInfo.environment["OPENAI_MODEL"] ?? "gpt-5.4-mini"
+        case "ollama":
+            return ProcessInfo.processInfo.environment["OLLAMA_MODEL"] ?? "llama3.2"
+        default:
+            return "mock"
         }
     }
 }

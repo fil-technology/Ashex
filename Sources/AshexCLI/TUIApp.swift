@@ -4,13 +4,6 @@ import Foundation
 
 @MainActor
 final class TUIApp {
-    private enum Screen {
-        case home
-        case composer
-        case run
-        case help
-    }
-
     private struct MenuItem {
         let title: String
         let subtitle: String
@@ -22,6 +15,12 @@ final class TUIApp {
         case example(String)
         case help
         case quit
+    }
+
+    private enum FocusArea {
+        case launcher
+        case input
+        case approval
     }
 
     private let configuration: CLIConfiguration
@@ -38,9 +37,10 @@ final class TUIApp {
         .init(title: "Quit", subtitle: "Exit Ashex", action: .quit),
     ]
 
-    private var screen: Screen = .home
+    private var focus: FocusArea = .launcher
     private var selectedIndex = 0
     private var composerText = ""
+    private var showHelp = false
     private var statusLine = "Ready"
     private var runLines: [String] = []
     private var runFinished = true
@@ -79,92 +79,134 @@ final class TUIApp {
 
     private func handle(key: TerminalKey) {
         if pendingApproval != nil {
+            focus = .approval
             handleApproval(key: key)
             return
         }
-        switch screen {
-        case .home:
-            handleHome(key: key)
-        case .composer:
-            handleComposer(key: key)
-        case .run:
-            handleRun(key: key)
-        case .help:
-            handleHelp(key: key)
-        }
-    }
 
-    private func handleHome(key: TerminalKey) {
         switch key {
+        case .tab:
+            cycleFocus()
         case .up:
-            selectedIndex = max(0, selectedIndex - 1)
+            handleUp()
         case .down:
-            selectedIndex = min(menuItems.count - 1, selectedIndex + 1)
+            handleDown()
         case .enter:
-            activate(menuItems[selectedIndex].action)
-        case .character("k"):
-            selectedIndex = max(0, selectedIndex - 1)
-        case .character("j"):
-            selectedIndex = min(menuItems.count - 1, selectedIndex + 1)
-        case .escape, .left:
-            shouldQuit = true
-        default:
-            break
-        }
-    }
-
-    private func handleComposer(key: TerminalKey) {
-        switch key {
-        case .enter:
-            let prompt = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
-            if prompt.isEmpty {
-                statusLine = "Prompt is empty"
-            } else {
-                startRun(prompt: prompt)
-            }
+            handleEnter()
         case .backspace:
-            if !composerText.isEmpty {
-                composerText.removeLast()
-            }
+            handleBackspace()
         case .escape, .left:
-            composerText = ""
-            screen = .home
-            statusLine = "Back to menu"
+            handleBack()
+        case .character("k") where focus == .launcher:
+            moveSelection(-1)
+        case .character("j") where focus == .launcher:
+            moveSelection(1)
         case .character(let character):
-            composerText.append(character)
+            handleCharacter(character)
         case .space:
-            composerText.append(" ")
+            handleCharacter(" ")
         default:
             break
         }
     }
 
-    private func handleRun(key: TerminalKey) {
-        switch key {
-        case .escape, .left:
-            if runFinished {
-                screen = .home
-                statusLine = "Back to menu"
-            } else {
-                runTask?.cancel()
-                runTask = nil
-                runFinished = true
-                runLines.append("[local] Run cancelled from TUI")
-                statusLine = "Run cancelled"
-            }
-        default:
+    private func cycleFocus() {
+        switch focus {
+        case .launcher:
+            focus = .input
+        case .input:
+            focus = .launcher
+        case .approval:
+            break
+        }
+        statusLine = "Focus: \(focusLabel)"
+    }
+
+    private func handleUp() {
+        switch focus {
+        case .launcher:
+            moveSelection(-1)
+        case .input, .approval:
             break
         }
     }
 
-    private func handleHelp(key: TerminalKey) {
-        switch key {
-        case .escape, .left, .enter:
-            screen = .home
-            statusLine = "Back to menu"
-        default:
+    private func handleDown() {
+        switch focus {
+        case .launcher:
+            moveSelection(1)
+        case .input, .approval:
             break
         }
+    }
+
+    private func handleEnter() {
+        if pendingApproval != nil {
+            handleApproval(key: .enter)
+            return
+        }
+
+        let prompt = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !prompt.isEmpty {
+            startRun(prompt: prompt)
+            return
+        }
+
+        if focus == .launcher {
+            activate(menuItems[selectedIndex].action)
+        } else if focus == .input {
+            statusLine = "Prompt is empty"
+        }
+    }
+
+    private func handleBackspace() {
+        if !composerText.isEmpty {
+            composerText.removeLast()
+            focus = .input
+            statusLine = "Editing prompt"
+        }
+    }
+
+    private func handleBack() {
+        if pendingApproval != nil {
+            handleApproval(key: .escape)
+            return
+        }
+
+        if !composerText.isEmpty && focus == .input {
+            composerText = ""
+            statusLine = "Cleared prompt"
+            return
+        }
+
+        if showHelp {
+            showHelp = false
+            focus = .launcher
+            statusLine = "Back to launcher"
+            return
+        }
+
+        if !runFinished && !runLines.isEmpty {
+            runTask?.cancel()
+            runTask = nil
+            runFinished = true
+            runLines.append("[local] Run cancelled from TUI")
+            statusLine = "Run cancelled"
+            return
+        }
+
+        shouldQuit = true
+    }
+
+    private func handleCharacter(_ character: Character) {
+        composerText.append(character)
+        focus = .input
+        showHelp = false
+        statusLine = "Editing prompt"
+    }
+
+    private func moveSelection(_ delta: Int) {
+        selectedIndex = min(max(selectedIndex + delta, 0), menuItems.count - 1)
     }
 
     private func handleApproval(key: TerminalKey) {
@@ -173,10 +215,12 @@ final class TUIApp {
         case .character("y"), .character("Y"), .enter:
             pendingApproval.resume(.allow("Approved from TUI"))
             self.pendingApproval = nil
+            focus = .launcher
             statusLine = "Approval granted"
         case .character("n"), .character("N"), .escape, .left:
             pendingApproval.resume(.deny("Denied from TUI"))
             self.pendingApproval = nil
+            focus = .launcher
             statusLine = "Approval denied"
         default:
             break
@@ -186,13 +230,14 @@ final class TUIApp {
     private func activate(_ action: Action) {
         switch action {
         case .compose:
-            composerText = ""
-            screen = .composer
-            statusLine = "Write a prompt and press Enter"
+            focus = .input
+            showHelp = false
+            statusLine = "Write a prompt below and press Enter"
         case .example(let prompt):
             startRun(prompt: prompt)
         case .help:
-            screen = .help
+            showHelp = true
+            focus = .launcher
             statusLine = "Help"
         case .quit:
             shouldQuit = true
@@ -206,7 +251,9 @@ final class TUIApp {
             ""
         ]
         runFinished = false
-        screen = .run
+        composerText = ""
+        showHelp = false
+        focus = .input
         statusLine = "Running"
 
         let stream = runtime.run(.init(prompt: prompt, maxIterations: configuration.maxIterations))
@@ -256,12 +303,15 @@ final class TUIApp {
         case .runFinished(_, let state):
             runLines.append("[run] finished \(state.rawValue)")
         }
+
         render()
     }
 
     private func finishRun() {
         runFinished = true
-        statusLine = "Run finished. Press Esc or Left to return."
+        if statusLine == "Running" {
+            statusLine = "Run finished"
+        }
         render()
     }
 
@@ -270,8 +320,9 @@ final class TUIApp {
         let width = max(size.columns, 72)
         var lines = renderHeader(width: width)
         lines.append(TerminalUIStyle.rule(width: width))
-        lines.append(contentsOf: renderContent(width: width, height: size.rows))
+        lines.append(contentsOf: renderBody(width: width, height: size.rows))
         lines.append(TerminalUIStyle.rule(width: width))
+        lines.append(contentsOf: renderInputBar(width: width))
         lines.append(renderFooter(width: width))
         surface.render(lines: lines, size: size)
     }
@@ -298,52 +349,48 @@ final class TUIApp {
         ]
     }
 
-    private func renderContent(width: Int, height: Int) -> [String] {
-        let chromeHeight = 9
-        let available = max(height - chromeHeight, 8)
+    private func renderBody(width: Int, height: Int) -> [String] {
+        let chromeHeight = 10
+        let bodyHeight = max(height - chromeHeight, 10)
+        let gap = 1
+        let leftWidth = max(min(width / 3, 40), 30)
+        let rightWidth = max(width - leftWidth - gap, 38)
+
+        let leftPanel = panel(
+            title: "Launcher",
+            lines: renderHomeLines(width: leftWidth - 4),
+            width: leftWidth,
+            maxBodyHeight: bodyHeight
+        )
+
+        let rightTitle: String
+        let rightLines: [String]
         if let pendingApproval {
-            return panel(
-                title: "Approval Required",
-                lines: renderApprovalLines(request: pendingApproval.request, width: width - 4),
-                width: width,
-                maxBodyHeight: available
-            )
+            rightTitle = "Approval Required"
+            rightLines = renderApprovalLines(request: pendingApproval.request, width: rightWidth - 4)
+        } else if showHelp {
+            rightTitle = "Controls"
+            rightLines = renderHelpLines(width: rightWidth - 4)
+        } else {
+            rightTitle = runFinished ? "Run Transcript" : "Live Run"
+            rightLines = renderRunLines(width: rightWidth - 4, maxBodyHeight: bodyHeight)
         }
-        switch screen {
-        case .home:
-            return panel(
-                title: "Launcher",
-                lines: renderHomeLines(width: width - 4),
-                width: width,
-                maxBodyHeight: available
-            )
-        case .composer:
-            return panel(
-                title: "Prompt Composer",
-                lines: renderComposerLines(width: width - 4),
-                width: width,
-                maxBodyHeight: available
-            )
-        case .run:
-            return panel(
-                title: runFinished ? "Run Transcript" : "Live Run",
-                lines: renderRunLines(width: width - 4, maxBodyHeight: available),
-                width: width,
-                maxBodyHeight: available
-            )
-        case .help:
-            return panel(
-                title: "Controls",
-                lines: renderHelpLines(width: width - 4),
-                width: width,
-                maxBodyHeight: available
-            )
+
+        let rightPanel = panel(
+            title: rightTitle,
+            lines: rightLines,
+            width: rightWidth,
+            maxBodyHeight: bodyHeight
+        )
+
+        return zip(leftPanel, rightPanel).map { left, right in
+            left + String(repeating: " ", count: gap) + right
         }
     }
 
     private func renderHomeLines(width: Int) -> [String] {
         var lines: [String] = [
-            "\(TerminalUIStyle.faint)Use Up/Down or j/k to move. Enter selects. Esc leaves Ashex.\(TerminalUIStyle.reset)",
+            "\(TerminalUIStyle.faint)\(focus == .launcher ? "Launcher focused" : "Press Tab to focus launcher")\(TerminalUIStyle.reset)",
             ""
         ]
 
@@ -351,64 +398,41 @@ final class TUIApp {
             let selected = index == selectedIndex
             let marker = selected ? "\(TerminalUIStyle.selection) \(TerminalUIStyle.reset)" : " "
             let titleColor = selected ? TerminalUIStyle.cyan : TerminalUIStyle.ink
-            let title = "\(marker) \(TerminalUIStyle.bold)\(titleColor)\(item.title)\(TerminalUIStyle.reset)"
-            let detail = "   \(TerminalUIStyle.slate)\(TerminalUIStyle.truncateVisible(item.subtitle, limit: max(width - 3, 10)))\(TerminalUIStyle.reset)"
-            lines.append(title)
-            lines.append(detail)
-            if index != menuItems.count - 1 {
-                lines.append("")
-            }
+            lines.append("\(marker) \(TerminalUIStyle.bold)\(titleColor)\(item.title)\(TerminalUIStyle.reset)")
+            lines.append("   \(TerminalUIStyle.slate)\(TerminalUIStyle.truncateVisible(item.subtitle, limit: max(width - 3, 10)))\(TerminalUIStyle.reset)")
+            if index != menuItems.count - 1 { lines.append("") }
         }
-        return lines
-    }
-
-    private func renderComposerLines(width: Int) -> [String] {
-        var lines: [String] = [
-            "\(TerminalUIStyle.faint)Type your instruction and press Enter to launch a run. Esc or Left returns to the launcher.\(TerminalUIStyle.reset)",
-            ""
-        ]
-
-        let prompt = composerText.isEmpty
-            ? "\(TerminalUIStyle.faint)Describe what you want Ashex to do…\(TerminalUIStyle.reset)"
-            : "\(TerminalUIStyle.ink)\(composerText)\(TerminalUIStyle.reset)"
-        lines.append(contentsOf: wrapVisible("\(TerminalUIStyle.cyan)›\(TerminalUIStyle.reset) \(prompt)", width: width))
-        lines.append("")
-        lines.append("\(TerminalUIStyle.faint)Tip:\(TerminalUIStyle.reset) \(TerminalUIStyle.blue)list files\(TerminalUIStyle.reset), \(TerminalUIStyle.blue)read README.md\(TerminalUIStyle.reset), \(TerminalUIStyle.blue)shell: ls -la\(TerminalUIStyle.reset)")
         return lines
     }
 
     private func renderRunLines(width: Int, maxBodyHeight: Int) -> [String] {
-        var visible = Array(runLines.suffix(max(maxBodyHeight - 2, 1)))
-        if visible.isEmpty {
-            visible = ["Waiting for events..."]
+        let bodyLimit = max(maxBodyHeight - 3, 1)
+        let source = runLines.isEmpty ? ["No run yet. Choose an example or type a prompt below."] : runLines
+
+        var expanded: [String] = []
+        for line in source {
+            expanded.append(contentsOf: wrapRunLine(line, width: width))
         }
 
-        var output: [String] = [
-            runFinished
-                ? "\(TerminalUIStyle.faint)Run completed. Esc or Left returns to the launcher.\(TerminalUIStyle.reset)"
-                : "\(TerminalUIStyle.amber)Streaming live events… Esc or Left cancels the active run.\(TerminalUIStyle.reset)",
-            ""
-        ]
-
-        for line in visible {
-            output.append(stylizeRunLine(line, width: width))
-        }
+        var output = [transcriptHeader(width: width), ""]
+        output.append(contentsOf: Array(expanded.suffix(bodyLimit)))
         return output
     }
 
     private func renderHelpLines(width: Int) -> [String] {
         [
             "\(TerminalUIStyle.ink)Navigation\(TerminalUIStyle.reset)",
-            "\(TerminalUIStyle.slate)Up/Down or j/k\(TerminalUIStyle.reset) Move through the launcher",
-            "\(TerminalUIStyle.slate)Enter\(TerminalUIStyle.reset) Open an item or submit a prompt",
+            "\(TerminalUIStyle.slate)Tab\(TerminalUIStyle.reset) Switch between launcher and input",
+            "\(TerminalUIStyle.slate)Up/Down or j/k\(TerminalUIStyle.reset) Move through launcher items",
+            "\(TerminalUIStyle.slate)Enter\(TerminalUIStyle.reset) Open launcher item or submit prompt",
             "\(TerminalUIStyle.slate)Esc or Left\(TerminalUIStyle.reset) Back out, cancel a run, or quit",
-            "\(TerminalUIStyle.slate)Backspace\(TerminalUIStyle.reset) Delete text in the composer",
+            "\(TerminalUIStyle.slate)Backspace\(TerminalUIStyle.reset) Delete text in the input bar",
             "",
             "\(TerminalUIStyle.ink)One-shot commands still work\(TerminalUIStyle.reset)",
             "\(TerminalUIStyle.blue)\(TerminalUIStyle.truncateVisible("swift run ashex 'list files'", limit: width))\(TerminalUIStyle.reset)",
-            "\(TerminalUIStyle.blue)\(TerminalUIStyle.truncateVisible("swift run ashex --provider openai 'read README.md'", limit: width))\(TerminalUIStyle.reset)",
+            "\(TerminalUIStyle.blue)\(TerminalUIStyle.truncateVisible("swift run ashex --approval-mode guarded 'shell: pwd'", limit: width))\(TerminalUIStyle.reset)",
             "",
-            "\(TerminalUIStyle.faint)This TUI is intentionally thin: it is a client over the same reusable runtime used by one-shot mode.\(TerminalUIStyle.reset)"
+            "\(TerminalUIStyle.faint)The TUI is a client over the same runtime used by one-shot mode and future app integrations.\(TerminalUIStyle.reset)"
         ]
     }
 
@@ -417,30 +441,34 @@ final class TUIApp {
             "\(TerminalUIStyle.amber)Guarded mode requires approval before this tool can run.\(TerminalUIStyle.reset)",
             "",
             "\(TerminalUIStyle.ink)Tool\(TerminalUIStyle.reset): \(TerminalUIStyle.violet)\(request.toolName)\(TerminalUIStyle.reset)",
-            "\(TerminalUIStyle.ink)Summary\(TerminalUIStyle.reset): \(TerminalUIStyle.truncateVisible(request.summary, limit: width - 10))",
-            "\(TerminalUIStyle.ink)Target\(TerminalUIStyle.reset): \(TerminalUIStyle.truncateVisible(request.reason, limit: width - 10))",
+            "\(TerminalUIStyle.ink)Summary\(TerminalUIStyle.reset): \(TerminalUIStyle.truncateVisible(request.summary, limit: max(width - 10, 8)))",
+            "\(TerminalUIStyle.ink)Target\(TerminalUIStyle.reset): \(TerminalUIStyle.truncateVisible(request.reason, limit: max(width - 10, 8)))",
             "\(TerminalUIStyle.ink)Risk\(TerminalUIStyle.reset): \(request.risk.rawValue)",
             "",
             "\(TerminalUIStyle.faint)Press y or Enter to approve. Press n, Esc, or Left to deny.\(TerminalUIStyle.reset)"
         ]
     }
 
-    private func renderFooter(width: Int) -> String {
-        let hint = switch screen {
-        case .home:
-            "\(TerminalUIStyle.faint)enter\(TerminalUIStyle.reset) open  \(TerminalUIStyle.faint)esc\(TerminalUIStyle.reset) quit"
-        case .composer:
-            "\(TerminalUIStyle.faint)enter\(TerminalUIStyle.reset) run  \(TerminalUIStyle.faint)backspace\(TerminalUIStyle.reset) edit  \(TerminalUIStyle.faint)esc\(TerminalUIStyle.reset) back"
-        case .run:
-            runFinished
-                ? "\(TerminalUIStyle.faint)esc\(TerminalUIStyle.reset) back to launcher"
-                : "\(TerminalUIStyle.faint)esc\(TerminalUIStyle.reset) cancel run"
-        case .help:
-            "\(TerminalUIStyle.faint)enter/esc\(TerminalUIStyle.reset) close"
-        }
+    private func renderInputBar(width: Int) -> [String] {
+        let innerWidth = max(width - 4, 20)
+        let title = focus == .input ? "\(TerminalUIStyle.cyan)Input\(TerminalUIStyle.reset)" : "\(TerminalUIStyle.faint)Input\(TerminalUIStyle.reset)"
+        let prompt = composerText.isEmpty
+            ? "\(TerminalUIStyle.faint)Type a prompt here, then press Enter to run…\(TerminalUIStyle.reset)"
+            : "\(TerminalUIStyle.ink)\(composerText)\(TerminalUIStyle.reset)"
+        let line = "\(TerminalUIStyle.blue)›\(TerminalUIStyle.reset) \(prompt)"
 
-        let approvalHint = pendingApproval == nil ? hint : "\(TerminalUIStyle.faint)y\(TerminalUIStyle.reset) approve  \(TerminalUIStyle.faint)n\(TerminalUIStyle.reset) deny"
-        let value = "\(TerminalUIStyle.faint)Ashex local agent runtime\(TerminalUIStyle.reset)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(approvalHint)"
+        return [
+            "\(TerminalUIStyle.border)┌─ \(title) \(TerminalUIStyle.border)" + String(repeating: "─", count: max(innerWidth - 7, 0)) + "┐\(TerminalUIStyle.reset)",
+            "\(TerminalUIStyle.border)│ \(TerminalUIStyle.reset)\(TerminalUIStyle.padVisible(TerminalUIStyle.truncateVisible(line, limit: innerWidth), to: innerWidth))\(TerminalUIStyle.border) │\(TerminalUIStyle.reset)",
+            "\(TerminalUIStyle.border)└" + String(repeating: "─", count: innerWidth + 2) + "┘\(TerminalUIStyle.reset)"
+        ]
+    }
+
+    private func renderFooter(width: Int) -> String {
+        let hint = pendingApproval == nil
+            ? "\(TerminalUIStyle.faint)tab\(TerminalUIStyle.reset) focus  \(TerminalUIStyle.faint)enter\(TerminalUIStyle.reset) run/open  \(TerminalUIStyle.faint)esc\(TerminalUIStyle.reset) back"
+            : "\(TerminalUIStyle.faint)y\(TerminalUIStyle.reset) approve  \(TerminalUIStyle.faint)n\(TerminalUIStyle.reset) deny"
+        let value = "\(TerminalUIStyle.faint)Ashex local agent runtime\(TerminalUIStyle.reset)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(TerminalUIStyle.faint)focus\(TerminalUIStyle.reset) \(focusLabel)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(hint)"
         return TerminalUIStyle.padVisible(TerminalUIStyle.truncateVisible(value, limit: width), to: width)
     }
 
@@ -463,6 +491,8 @@ final class TUIApp {
         let colored: String
         if line.hasPrefix("[error]") {
             colored = "\(TerminalUIStyle.red)\(line)\(TerminalUIStyle.reset)"
+        } else if line.hasPrefix("[approval]") {
+            colored = "\(TerminalUIStyle.amber)\(line)\(TerminalUIStyle.reset)"
         } else if line.hasPrefix("[tool]") {
             colored = "\(TerminalUIStyle.violet)\(line)\(TerminalUIStyle.reset)"
         } else if line.hasPrefix("[stdout]") {
@@ -481,22 +511,45 @@ final class TUIApp {
         return TerminalUIStyle.truncateVisible(colored, limit: width)
     }
 
-    private func wrapVisible(_ value: String, width: Int) -> [String] {
-        guard width > 8 else { return [TerminalUIStyle.truncateVisible(value, limit: width)] }
-        let plain = TerminalUIStyle.stripANSI(from: value)
-        guard plain.count > width else { return [value] }
+    private func wrapRunLine(_ line: String, width: Int) -> [String] {
+        let baseColor: String
+        if line.hasPrefix("[error]") {
+            baseColor = TerminalUIStyle.red
+        } else if line.hasPrefix("[approval]") {
+            baseColor = TerminalUIStyle.amber
+        } else if line.hasPrefix("[tool]") {
+            baseColor = TerminalUIStyle.violet
+        } else if line.hasPrefix("[stdout]") {
+            baseColor = TerminalUIStyle.green
+        } else if line.hasPrefix("[stderr]") {
+            baseColor = TerminalUIStyle.red
+        } else if line.hasPrefix("[status]") {
+            baseColor = TerminalUIStyle.amber
+        } else if line.hasPrefix("[run]") || line.hasPrefix("[state]") {
+            baseColor = TerminalUIStyle.blue
+        } else if line == "Final answer:" {
+            baseColor = TerminalUIStyle.pink + TerminalUIStyle.bold
+        } else {
+            baseColor = TerminalUIStyle.ink
+        }
 
-        var lines: [String] = []
-        var current = plain[...]
-        while current.count > width {
-            let index = current.index(current.startIndex, offsetBy: width)
-            lines.append(String(current[..<index]))
-            current = current[index...]
+        let plain = line.isEmpty ? " " : line
+        let limit = max(width, 10)
+        if plain.count <= limit {
+            return ["\(baseColor)\(plain)\(TerminalUIStyle.reset)"]
         }
-        if !current.isEmpty {
-            lines.append(String(current))
+
+        var chunks: [String] = []
+        var remainder = plain[...]
+        while remainder.count > limit {
+            let index = remainder.index(remainder.startIndex, offsetBy: limit)
+            chunks.append(String(remainder[..<index]))
+            remainder = remainder[index...]
         }
-        return lines.map { "\(TerminalUIStyle.ink)\($0)\(TerminalUIStyle.reset)" }
+        if !remainder.isEmpty {
+            chunks.append(String(remainder))
+        }
+        return chunks.map { "\(baseColor)\($0)\(TerminalUIStyle.reset)" }
     }
 
     private func join(left: String, right: String, width: Int) -> String {
@@ -505,24 +558,37 @@ final class TUIApp {
         if leftWidth + rightWidth + 2 <= width {
             return left + String(repeating: " ", count: width - leftWidth - rightWidth) + right
         }
-        return TerminalUIStyle.truncateVisible(left, limit: width)
+        let minGap = 2
+        let preservedLeftWidth = min(leftWidth, max(width / 2, 20))
+        let leftPart = TerminalUIStyle.truncateVisible(left, limit: preservedLeftWidth)
+        let remaining = max(width - TerminalUIStyle.visibleWidth(of: leftPart) - minGap, 0)
+        if remaining == 0 {
+            return leftPart
+        }
+        let rightPart = TerminalUIStyle.truncateVisible(right, limit: remaining)
+        return leftPart + String(repeating: " ", count: minGap) + rightPart
     }
 
     private var screenLabel: String {
-        switch screen {
-        case .home: return "launcher"
-        case .composer: return "composer"
-        case .run: return runFinished ? "run summary" : "live run"
-        case .help: return "help"
+        if pendingApproval != nil { return "approval" }
+        if showHelp { return "help" }
+        return runFinished ? "workspace" : "live run"
+    }
+
+    private var focusLabel: String {
+        switch focus {
+        case .launcher: return "launcher"
+        case .input: return "input"
+        case .approval: return "approval"
         }
     }
 
     private var statusColor: String {
         let lowered = statusLine.lowercased()
-        if lowered.contains("fail") || lowered.contains("error") {
+        if lowered.contains("fail") || lowered.contains("error") || lowered.contains("denied") {
             return TerminalUIStyle.red
         }
-        if lowered.contains("running") || lowered.contains("stream") {
+        if lowered.contains("running") || lowered.contains("stream") || lowered.contains("approval") {
             return TerminalUIStyle.amber
         }
         return TerminalUIStyle.green
@@ -543,11 +609,20 @@ final class TUIApp {
             .joined()
     }
 
+    private func transcriptHeader(width: Int) -> String {
+        let state = runLines.isEmpty ? "empty" : (runFinished ? "idle" : "streaming")
+        let focusInfo = "\(TerminalUIStyle.faint)stable transcript\(TerminalUIStyle.reset)"
+        let left = "\(TerminalUIStyle.faint)state\(TerminalUIStyle.reset) \(state)"
+        let right = focusInfo
+        return join(left: left, right: right, width: width)
+    }
+
     private func requestApproval(_ request: ApprovalRequest) async -> ApprovalDecision {
         await withCheckedContinuation { continuation in
             pendingApproval = PendingApproval(request: request) { decision in
                 continuation.resume(returning: decision)
             }
+            focus = .approval
             statusLine = "Waiting for approval"
             render()
         }
@@ -562,6 +637,7 @@ private enum TerminalKey {
     case enter
     case backspace
     case escape
+    case tab
     case space
     case character(Character)
     case unknown
@@ -639,6 +715,8 @@ private final class TerminalController {
         guard let first = bytes.first else { return .unknown }
 
         switch first {
+        case 9:
+            return .tab
         case 13, 10:
             return .enter
         case 27:
@@ -729,9 +807,7 @@ private enum TerminalUIStyle {
             if character == "\u{001B}" {
                 guard iterator.next() == "[" else { continue }
                 while let next = iterator.next() {
-                    if ("@"..."~").contains(next) {
-                        break
-                    }
+                    if ("@"..."~").contains(next) { break }
                 }
                 continue
             }
@@ -775,7 +851,6 @@ private struct PendingApproval {
 
 private struct TUIApprovalPolicy: ApprovalPolicy {
     let mode: ApprovalMode = .guarded
-
     private let coordinator: TUIApprovalCoordinator
 
     init(coordinator: TUIApprovalCoordinator) {
@@ -791,9 +866,7 @@ private final class TUIApprovalCoordinator: @unchecked Sendable {
     var handler: (@Sendable (ApprovalRequest) async -> ApprovalDecision)?
 
     func evaluate(_ request: ApprovalRequest) async -> ApprovalDecision {
-        guard let handler else {
-            return .deny("Approval handler is unavailable")
-        }
+        guard let handler else { return .deny("Approval handler is unavailable") }
         return await handler(request)
     }
 }

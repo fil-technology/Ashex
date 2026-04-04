@@ -44,6 +44,69 @@ public protocol ModelAdapter: Sendable {
     func nextAction(for context: ModelContext) async throws -> ModelAction
 }
 
+private enum ModelPromptRenderer {
+    static func renderPrompt(for context: ModelContext) -> String {
+        let toolBlock = context.availableTools
+            .map { "- \($0.name): \($0.description)" }
+            .joined(separator: "\n")
+
+        let transcript = context.messages.map { message in
+            let role = message.role.rawValue.uppercased()
+            return "[\(role)]\n\(message.content)"
+        }.joined(separator: "\n\n")
+
+        return """
+        You are Ashex, a local single-agent runtime.
+
+        Decide the next action for the current loop iteration.
+
+        You must return exactly one JSON object matching the provided schema:
+        - If the task is complete, return `type = "final_answer"` and fill `final_answer`.
+        - If a tool is needed, return `type = "tool_call"` and fill `tool_name` and `arguments`.
+
+        Rules:
+        - Use only the tools listed below.
+        - Never invent tools.
+        - If a tool result already contains the needed information, prefer answering directly.
+        - Keep final answers concise and useful.
+        - Tool arguments must be valid JSON objects.
+
+        Available tools:
+        \(toolBlock)
+
+        Conversation transcript:
+        \(transcript)
+        """
+    }
+
+    static let responseSchema: JSONObject = [
+        "type": .string("object"),
+        "properties": .object([
+            "type": .object([
+                "type": .string("string"),
+                "enum": .array([.string("final_answer"), .string("tool_call")]),
+            ]),
+            "final_answer": .object([
+                "type": .array([.string("string"), .string("null")]),
+            ]),
+            "tool_name": .object([
+                "type": .array([.string("string"), .string("null")]),
+            ]),
+            "arguments": .object([
+                "type": .array([.string("object"), .string("null")]),
+                "additionalProperties": .bool(true),
+            ]),
+        ]),
+        "required": .array([
+            .string("type"),
+            .string("final_answer"),
+            .string("tool_name"),
+            .string("arguments"),
+        ]),
+        "additionalProperties": .bool(false),
+    ]
+}
+
 public struct OpenAIModelConfiguration: Sendable {
     public let apiKey: String
     public let model: String
@@ -82,13 +145,13 @@ public struct OpenAIResponsesModelAdapter: ModelAdapter {
     public func nextAction(for context: ModelContext) async throws -> ModelAction {
         let requestBody = OpenAIResponsesRequest(
             model: configuration.model,
-            input: Self.renderPrompt(for: context),
+            input: ModelPromptRenderer.renderPrompt(for: context),
             store: false,
             text: .init(format: .init(
                 type: "json_schema",
                 name: "ashex_model_action",
                 strict: true,
-                schema: Self.responseSchema
+                schema: ModelPromptRenderer.responseSchema
             ))
         )
 
@@ -116,67 +179,77 @@ public struct OpenAIResponsesModelAdapter: ModelAdapter {
         let parsed = try decoder.decode(ModelActionEnvelope.self, from: Data(outputText.utf8))
         return try parsed.toModelAction()
     }
+}
 
-    private static func renderPrompt(for context: ModelContext) -> String {
-        let toolBlock = context.availableTools
-            .map { "- \($0.name): \($0.description)" }
-            .joined(separator: "\n")
+public struct OllamaModelConfiguration: Sendable {
+    public let model: String
+    public let baseURL: URL
 
-        let transcript = context.messages.map { message in
-            let role = message.role.rawValue.uppercased()
-            return "[\(role)]\n\(message.content)"
-        }.joined(separator: "\n\n")
+    public init(
+        model: String = "llama3.2",
+        baseURL: URL = URL(string: "http://localhost:11434/api/chat")!
+    ) {
+        self.model = model
+        self.baseURL = baseURL
+    }
+}
 
-        return """
-        You are Ashex, a local single-agent runtime.
+public struct OllamaChatModelAdapter: ModelAdapter {
+    public let name: String
 
-        Decide the next action for the current loop iteration.
+    private let configuration: OllamaModelConfiguration
+    private let session: URLSession
+    private let encoder: JSONEncoder
+    private let decoder: JSONDecoder
 
-        You must return exactly one JSON object matching the provided schema:
-        - If the task is complete, return `type = "final_answer"` and fill `final_answer`.
-        - If a tool is needed, return `type = "tool_call"` and fill `tool_name` and `arguments`.
-
-        Rules:
-        - Use only the tools listed below.
-        - Never invent tools.
-        - If a tool result already contains the needed information, prefer answering directly.
-        - Keep final answers concise and useful.
-        - Tool arguments must be valid JSON objects.
-
-        Available tools:
-        \(toolBlock)
-
-        Conversation transcript:
-        \(transcript)
-        """
+    public init(
+        configuration: OllamaModelConfiguration,
+        session: URLSession = .shared
+    ) {
+        self.configuration = configuration
+        self.session = session
+        self.name = "ollama-chat:\(configuration.model)"
+        self.encoder = JSONEncoder()
+        self.decoder = JSONDecoder()
     }
 
-    private static let responseSchema: JSONObject = [
-        "type": .string("object"),
-        "properties": .object([
-            "type": .object([
-                "type": .string("string"),
-                "enum": .array([.string("final_answer"), .string("tool_call")]),
-            ]),
-            "final_answer": .object([
-                "type": .array([.string("string"), .string("null")]),
-            ]),
-            "tool_name": .object([
-                "type": .array([.string("string"), .string("null")]),
-            ]),
-            "arguments": .object([
-                "type": .array([.string("object"), .string("null")]),
-                "additionalProperties": .bool(true),
-            ]),
-        ]),
-        "required": .array([
-            .string("type"),
-            .string("final_answer"),
-            .string("tool_name"),
-            .string("arguments"),
-        ]),
-        "additionalProperties": .bool(false),
-    ]
+    public func nextAction(for context: ModelContext) async throws -> ModelAction {
+        let requestBody = OllamaChatRequest(
+            model: configuration.model,
+            messages: [
+                .init(role: "user", content: ModelPromptRenderer.renderPrompt(for: context)),
+            ],
+            format: ModelPromptRenderer.responseSchema,
+            options: [
+                "temperature": .number(0),
+            ],
+            stream: false
+        )
+
+        var request = URLRequest(url: configuration.baseURL)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try encoder.encode(requestBody)
+
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw AshexError.model("Ollama request did not return an HTTP response")
+        }
+
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            let apiError = try? decoder.decode(OllamaErrorEnvelope.self, from: data)
+            throw AshexError.model(apiError?.error ?? "Ollama request failed with status \(httpResponse.statusCode)")
+        }
+
+        let envelope = try decoder.decode(OllamaChatResponseEnvelope.self, from: data)
+        let content = envelope.message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !content.isEmpty else {
+            throw AshexError.model("Ollama response did not include structured output content")
+        }
+
+        let parsed = try decoder.decode(ModelActionEnvelope.self, from: Data(content.utf8))
+        return try parsed.toModelAction()
+    }
 }
 
 public struct MockModelAdapter: ModelAdapter {
@@ -289,6 +362,19 @@ private struct OpenAIResponsesRequest: Encodable {
     }
 }
 
+private struct OllamaChatRequest: Encodable {
+    let model: String
+    let messages: [Message]
+    let format: JSONObject
+    let options: JSONObject?
+    let stream: Bool
+
+    struct Message: Encodable {
+        let role: String
+        let content: String
+    }
+}
+
 private struct OpenAIResponseEnvelope: Decodable {
     let output: [OutputItem]
 
@@ -312,12 +398,24 @@ private struct OpenAIResponseEnvelope: Decodable {
     }
 }
 
+private struct OllamaChatResponseEnvelope: Decodable {
+    let message: Message
+
+    struct Message: Decodable {
+        let content: String
+    }
+}
+
 private struct OpenAIErrorEnvelope: Decodable {
     let error: APIError
 
     struct APIError: Decodable {
         let message: String
     }
+}
+
+private struct OllamaErrorEnvelope: Decodable {
+    let error: String
 }
 
 private struct ModelActionEnvelope: Codable {
@@ -344,9 +442,115 @@ private struct ModelActionEnvelope: Codable {
             guard let toolName, let arguments else {
                 throw AshexError.model("Model returned tool_call without tool_name and arguments")
             }
-            return .toolCall(.init(toolName: toolName, arguments: arguments))
+            return .toolCall(.init(
+                toolName: ToolCallArgumentNormalizer.canonicalToolName(for: toolName),
+                arguments: ToolCallArgumentNormalizer.normalize(arguments: arguments, for: toolName)
+            ))
         default:
             throw AshexError.model("Unsupported model action type: \(type)")
         }
+    }
+}
+
+private enum ToolCallArgumentNormalizer {
+    static func canonicalToolName(for toolName: String) -> String {
+        switch toolName.lowercased() {
+        case "filesystem", "file_system", "files", "file":
+            return "filesystem"
+        case "shell", "terminal", "command":
+            return "shell"
+        default:
+            return toolName
+        }
+    }
+
+    static func normalize(arguments: JSONObject, for toolName: String) -> JSONObject {
+        switch canonicalToolName(for: toolName) {
+        case "filesystem":
+            return normalizeFilesystem(arguments: arguments)
+        case "shell":
+            return normalizeShell(arguments: arguments)
+        default:
+            return arguments
+        }
+    }
+
+    private static func normalizeFilesystem(arguments: JSONObject) -> JSONObject {
+        var normalized = arguments
+        if normalized["operation"] == nil,
+           let action = string(in: arguments, keys: ["action", "mode", "intent"])?.lowercased() {
+            switch action {
+            case "list", "ls", "list_files", "list_directory", "list_dir":
+                normalized["operation"] = .string("list_directory")
+            case "read", "read_file", "read_text", "cat":
+                normalized["operation"] = .string("read_text_file")
+            case "write", "write_file", "write_text":
+                normalized["operation"] = .string("write_text_file")
+            case "mkdir", "create_directory", "create_dir":
+                normalized["operation"] = .string("create_directory")
+            default:
+                break
+            }
+        }
+        normalized.removeValue(forKey: "action")
+        normalized.removeValue(forKey: "mode")
+        normalized.removeValue(forKey: "intent")
+
+        if normalized["path"] == nil,
+           let path = string(in: arguments, keys: ["file", "filepath", "directory", "dir", "target"]) {
+            normalized["path"] = .string(path)
+        }
+        normalized.removeValue(forKey: "file")
+        normalized.removeValue(forKey: "filepath")
+        normalized.removeValue(forKey: "directory")
+        normalized.removeValue(forKey: "dir")
+        normalized.removeValue(forKey: "target")
+
+        if normalized["operation"]?.stringValue == "list_directory", normalized["path"] == nil {
+            normalized["path"] = .string(".")
+        }
+
+        if normalized["content"] == nil,
+           let content = string(in: arguments, keys: ["text", "body", "data", "contents"]) {
+            normalized["content"] = .string(content)
+        }
+        normalized.removeValue(forKey: "text")
+        normalized.removeValue(forKey: "body")
+        normalized.removeValue(forKey: "data")
+        normalized.removeValue(forKey: "contents")
+
+        if normalized["operation"]?.stringValue == "write_text_file",
+           normalized["create_directories"] == nil {
+            normalized["create_directories"] = .bool(true)
+        }
+
+        return normalized
+    }
+
+    private static func normalizeShell(arguments: JSONObject) -> JSONObject {
+        var normalized = arguments
+        if normalized["command"] == nil,
+           let command = string(in: arguments, keys: ["cmd", "script", "input"]) {
+            normalized["command"] = .string(command)
+        }
+        normalized.removeValue(forKey: "cmd")
+        normalized.removeValue(forKey: "script")
+        normalized.removeValue(forKey: "input")
+        if normalized["timeout_seconds"] == nil,
+           let timeout = arguments["timeout"]?.intValue ?? arguments["timeoutSecs"]?.intValue {
+            normalized["timeout_seconds"] = .number(Double(timeout))
+        }
+        normalized.removeValue(forKey: "timeout")
+        normalized.removeValue(forKey: "timeoutSecs")
+        return normalized
+    }
+
+    private static func string(in arguments: JSONObject, keys: [String]) -> String? {
+        for key in keys {
+            if let value = arguments[key]?.stringValue, !value.isEmpty {
+                return value
+            }
+        }
+        return nil
     }
 }
