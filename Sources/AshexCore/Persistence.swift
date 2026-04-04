@@ -11,5 +11,8 @@ public protocol PersistenceStore: Sendable {
     func recordToolCall(runID: UUID, toolName: String, arguments: JSONObject, now: Date) throws -> ToolCallRecord
     func finishToolCall(toolCallID: UUID, status: String, output: String, finishedAt: Date) throws
     func appendEvent(_ event: RuntimeEvent, runID: UUID?) throws
+    func listThreads(limit: Int) throws -> [ThreadSummary]
+    func fetchRuns(threadID: UUID) throws -> [RunRecord]
+    func fetchEvents(runID: UUID) throws -> [RuntimeEvent]
     func fetchRun(runID: UUID) throws -> RunRecord?
 }

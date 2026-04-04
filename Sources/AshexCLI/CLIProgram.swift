@@ -125,6 +125,10 @@ struct CLIConfiguration {
     }
 
     func makeModelAdapter() throws -> any ModelAdapter {
+        try makeModelAdapter(provider: provider, model: model)
+    }
+
+    func makeModelAdapter(provider: String, model: String) throws -> any ModelAdapter {
         switch provider {
         case "mock":
             return MockModelAdapter()
@@ -148,14 +152,18 @@ struct CLIConfiguration {
     }
 
     func makeRuntime() throws -> AgentRuntime {
-        try makeRuntime(approvalPolicy: makeApprovalPolicy())
+        try makeRuntime(provider: provider, model: model, approvalPolicy: makeApprovalPolicy())
     }
 
     func makeRuntime(approvalPolicy: any ApprovalPolicy) throws -> AgentRuntime {
+        try makeRuntime(provider: provider, model: model, approvalPolicy: approvalPolicy)
+    }
+
+    func makeRuntime(provider: String, model: String, approvalPolicy: any ApprovalPolicy) throws -> AgentRuntime {
         let workspaceURL = workspaceRoot.standardizedFileURL
         let persistence = SQLitePersistenceStore(databaseURL: storageRoot.appendingPathComponent("ashex.sqlite"))
         return try AgentRuntime(
-            modelAdapter: makeModelAdapter(),
+            modelAdapter: makeModelAdapter(provider: provider, model: model),
             toolRegistry: ToolRegistry(tools: [
                 FileSystemTool(workspaceGuard: WorkspaceGuard(rootURL: workspaceURL)),
                 ShellTool(executionRuntime: ProcessExecutionRuntime(), workspaceURL: workspaceURL),
@@ -174,7 +182,7 @@ struct CLIConfiguration {
         }
     }
 
-    private static func defaultModel(for provider: String) -> String {
+    static func defaultModel(for provider: String) -> String {
         switch provider {
         case "openai":
             return ProcessInfo.processInfo.environment["OPENAI_MODEL"] ?? "gpt-5.4-mini"

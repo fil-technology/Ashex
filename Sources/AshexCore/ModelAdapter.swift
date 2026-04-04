@@ -70,6 +70,14 @@ private enum ModelPromptRenderer {
         - If a tool result already contains the needed information, prefer answering directly.
         - Keep final answers concise and useful.
         - Tool arguments must be valid JSON objects.
+        - For filesystem tool calls, always use the `operation` field with one of:
+          `read_text_file`, `write_text_file`, `list_directory`, `create_directory`.
+        - For shell tool calls, always send `command` and optional `timeout_seconds`.
+
+        Canonical tool-call examples:
+        {"type":"tool_call","final_answer":null,"tool_name":"filesystem","arguments":{"operation":"list_directory","path":"."}}
+        {"type":"tool_call","final_answer":null,"tool_name":"filesystem","arguments":{"operation":"read_text_file","path":"README.md"}}
+        {"type":"tool_call","final_answer":null,"tool_name":"shell","arguments":{"command":"ls -la","timeout_seconds":30}}
 
         Available tools:
         \(toolBlock)

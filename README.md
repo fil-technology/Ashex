@@ -10,6 +10,7 @@ Ashex is a minimal local agent runtime foundation for macOS, built as a small Sw
 - SQLite persistence for threads, messages, runs, tool calls, and append-only events
 - Restart normalization that marks previously running work as `interrupted`
 - A replaceable model boundary with mock, OpenAI, and local Ollama-backed adapters
+- A terminal TUI with provider switching, local history browsing, and guarded approvals
 
 ## Package layout
 
@@ -30,6 +31,13 @@ swift run ashex 'shell: ls -la'
 ```
 
 Running `swift run ashex` with no prompt starts the interactive terminal TUI.
+
+TUI highlights:
+
+- Switch between `mock`, `ollama`, and `openai` without restarting
+- Edit the active model name from the TUI
+- Browse persisted thread/run history and load prior transcripts back into the viewer
+- Review guarded approval requests with shell/file previews before allowing execution
 
 OpenAI-backed mode:
 
@@ -75,10 +83,18 @@ In guarded mode:
 - filesystem writes and directory creation require approval
 - read-only filesystem operations continue without prompting
 
+TUI controls:
+
+- `Tab`: cycle focus between launcher, settings/history panels, and input
+- `Up/Down` or `j/k`: move through launcher or panel selections
+- `Enter`: open the selected item or submit the current input
+- `Esc` or `Left`: back out, cancel, or quit
+- `y` / `n`: approve or deny guarded actions
+
 ## Runtime boundary
 
 The CLI is intentionally only a presentation adapter. `AgentRuntime` exposes `run(_:) -> AsyncStream<RuntimeEvent>`, which is the intended boundary for future SwiftUI integration.
 
 ## Current model behavior
 
-`MockModelAdapter` remains the fastest local test path. `OpenAIResponsesModelAdapter` and `OllamaChatModelAdapter` add real remote and local-provider paths while keeping the same runtime loop and typed `ModelAction` contract.
+`MockModelAdapter` remains the fastest local test path. `OpenAIResponsesModelAdapter` and `OllamaChatModelAdapter` add real remote and local-provider paths while keeping the same runtime loop and typed `ModelAction` contract. The runtime also repairs malformed tool calls when safe and breaks repeated read-only local-model loops by returning the last good tool result.

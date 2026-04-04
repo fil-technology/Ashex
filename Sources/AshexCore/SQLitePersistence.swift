@@ -176,6 +176,107 @@ public final class SQLitePersistenceStore: PersistenceStore, @unchecked Sendable
         }
     }
 
+    public func listThreads(limit: Int) throws -> [ThreadSummary] {
+        try queue.sync {
+            let sql = """
+            SELECT
+                t.id,
+                t.created_at,
+                COALESCE(MAX(r.updated_at), t.created_at) AS updated_at,
+                (
+                    SELECT r2.id
+                    FROM runs r2
+                    WHERE r2.thread_id = t.id
+                    ORDER BY r2.updated_at DESC
+                    LIMIT 1
+                ) AS latest_run_id,
+                (
+                    SELECT r2.state
+                    FROM runs r2
+                    WHERE r2.thread_id = t.id
+                    ORDER BY r2.updated_at DESC
+                    LIMIT 1
+                ) AS latest_run_state,
+                (
+                    SELECT COUNT(*)
+                    FROM messages m
+                    WHERE m.thread_id = t.id
+                ) AS message_count
+            FROM threads t
+            LEFT JOIN runs r ON r.thread_id = t.id
+            GROUP BY t.id, t.created_at
+            ORDER BY updated_at DESC
+            LIMIT ?
+            """
+
+            var statement: OpaquePointer?
+            defer { sqlite3_finalize(statement) }
+            try prepare(sql, statement: &statement)
+            sqlite3_bind_int(statement, 1, Int32(limit))
+
+            var threads: [ThreadSummary] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                let id = UUID(uuidString: columnText(statement, index: 0)) ?? UUID()
+                let createdAt = Date(timeIntervalSince1970: sqlite3_column_double(statement, 1))
+                let updatedAt = Date(timeIntervalSince1970: sqlite3_column_double(statement, 2))
+                let latestRunID = UUID(uuidString: columnNullableText(statement, index: 3) ?? "")
+                let latestRunState = columnNullableText(statement, index: 4).flatMap(RunState.init(rawValue:))
+                let messageCount = Int(sqlite3_column_int(statement, 5))
+                threads.append(.init(
+                    id: id,
+                    createdAt: createdAt,
+                    updatedAt: updatedAt,
+                    latestRunID: latestRunID,
+                    latestRunState: latestRunState,
+                    messageCount: messageCount
+                ))
+            }
+
+            return threads
+        }
+    }
+
+    public func fetchRuns(threadID: UUID) throws -> [RunRecord] {
+        try queue.sync {
+            let sql = "SELECT id, state, created_at, updated_at FROM runs WHERE thread_id = ? ORDER BY updated_at DESC"
+            var statement: OpaquePointer?
+            defer { sqlite3_finalize(statement) }
+            try prepare(sql, statement: &statement)
+            bindText(threadID.uuidString, to: statement, index: 1)
+
+            var runs: [RunRecord] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                let runID = UUID(uuidString: columnText(statement, index: 0)) ?? UUID()
+                let state = RunState(rawValue: columnText(statement, index: 1)) ?? .failed
+                let createdAt = Date(timeIntervalSince1970: sqlite3_column_double(statement, 2))
+                let updatedAt = Date(timeIntervalSince1970: sqlite3_column_double(statement, 3))
+                runs.append(.init(id: runID, threadID: threadID, state: state, createdAt: createdAt, updatedAt: updatedAt))
+            }
+            return runs
+        }
+    }
+
+    public func fetchEvents(runID: UUID) throws -> [RuntimeEvent] {
+        try queue.sync {
+            let sql = "SELECT payload_json FROM events WHERE run_id = ? ORDER BY created_at ASC"
+            var statement: OpaquePointer?
+            defer { sqlite3_finalize(statement) }
+            try prepare(sql, statement: &statement)
+            bindText(runID.uuidString, to: statement, index: 1)
+
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .millisecondsSince1970
+
+            var events: [RuntimeEvent] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                let payloadJSON = columnText(statement, index: 0)
+                let data = Data(payloadJSON.utf8)
+                events.append(try decoder.decode(RuntimeEvent.self, from: data))
+            }
+            return events
+        }
+    }
+
     public func fetchRun(runID: UUID) throws -> RunRecord? {
         try queue.sync {
             let sql = "SELECT thread_id, state, created_at, updated_at FROM runs WHERE id = ? LIMIT 1"

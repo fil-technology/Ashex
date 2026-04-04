@@ -75,6 +75,24 @@ public struct ThreadRecord: Codable, Sendable {
     }
 }
 
+public struct ThreadSummary: Codable, Sendable {
+    public let id: UUID
+    public let createdAt: Date
+    public let updatedAt: Date
+    public let latestRunID: UUID?
+    public let latestRunState: RunState?
+    public let messageCount: Int
+
+    public init(id: UUID, createdAt: Date, updatedAt: Date, latestRunID: UUID?, latestRunState: RunState?, messageCount: Int) {
+        self.id = id
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+        self.latestRunID = latestRunID
+        self.latestRunState = latestRunState
+        self.messageCount = messageCount
+    }
+}
+
 public struct MessageRecord: Codable, Sendable {
     public let id: UUID
     public let threadID: UUID

@@ -70,6 +70,10 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
             let userMessage = try persistence.appendMessage(threadID: thread.id, runID: run.id, role: .user, content: request.prompt, now: clock())
             try emitter.emit(.messageAppended(runID: run.id, messageID: userMessage.id, role: .user), runID: run.id)
 
+            var repeatedToolCallSignature: String?
+            var repeatedToolCallCount = 0
+            var lastSafeToolResult: String?
+
             for iteration in 0..<request.maxIterations {
                 try await cancellation.checkCancellation()
                 try emitter.emit(.status(runID: run.id, message: "Iteration \(iteration + 1): requesting next model action"), runID: run.id)
@@ -94,7 +98,43 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                     return
 
                 case .toolCall(let call):
-                    let tool = try toolRegistry.tool(named: call.toolName)
+                    let callSignature = Self.toolCallSignature(toolName: call.toolName, arguments: call.arguments)
+                    if callSignature == repeatedToolCallSignature {
+                        repeatedToolCallCount += 1
+                    } else {
+                        repeatedToolCallSignature = callSignature
+                        repeatedToolCallCount = 1
+                    }
+
+                    if repeatedToolCallCount >= 2,
+                       let lastSafeToolResult,
+                       Self.isSafeRepeatedToolCall(toolName: call.toolName, arguments: call.arguments) {
+                        let answer = "Using the latest tool result because the model repeated the same read-only call.\n\n\(lastSafeToolResult)"
+                        let assistantMessage = try persistence.appendMessage(threadID: thread.id, runID: run.id, role: .assistant, content: answer, now: clock())
+                        try emitter.emit(.status(runID: run.id, message: "Detected a repeated identical read-only tool call. Returning the previous result."), runID: run.id)
+                        try emitter.emit(.messageAppended(runID: run.id, messageID: assistantMessage.id, role: .assistant), runID: run.id)
+                        try emitter.emit(.finalAnswer(runID: run.id, messageID: assistantMessage.id, text: answer), runID: run.id)
+                        try persistence.transitionRun(runID: run.id, to: .completed, reason: "Recovered from repeated tool loop", now: clock())
+                        try emitter.emit(.runStateChanged(runID: run.id, state: .completed, reason: "Recovered from repeated tool loop"), runID: run.id)
+                        try emitter.emit(.runFinished(runID: run.id, state: .completed), runID: run.id)
+                        return
+                    }
+
+                    let tool: any Tool
+                    do {
+                        tool = try toolRegistry.tool(named: call.toolName)
+                    } catch {
+                        if try await handleRecoverableToolRequestError(
+                            error,
+                            threadID: thread.id,
+                            runID: run.id,
+                            emitter: emitter
+                        ) {
+                            continue
+                        }
+                        throw error
+                    }
+
                     let toolCall = try persistence.recordToolCall(runID: run.id, toolName: tool.name, arguments: call.arguments, now: clock())
 
                     if let approvalRequest = ApprovalClassifier.requestForTool(runID: run.id, toolName: tool.name, arguments: call.arguments),
@@ -144,12 +184,18 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                         try emitter.emit(.messageAppended(runID: run.id, messageID: toolMessage.id, role: .tool), runID: run.id)
                         try persistence.finishToolCall(toolCallID: toolCall.id, status: "completed", output: text, finishedAt: clock())
                         try emitter.emit(.toolCallFinished(runID: run.id, toolCallID: toolCall.id, success: true, summary: summarizeToolResult(text)), runID: run.id)
+                        lastSafeToolResult = Self.isSafeRepeatedToolCall(toolName: tool.name, arguments: call.arguments) ? text : nil
                     } catch {
                         let message = error.localizedDescription
                         let toolMessage = try persistence.appendMessage(threadID: thread.id, runID: run.id, role: .tool, content: "Tool error: \(message)", now: clock())
                         try emitter.emit(.messageAppended(runID: run.id, messageID: toolMessage.id, role: .tool), runID: run.id)
                         try persistence.finishToolCall(toolCallID: toolCall.id, status: "failed", output: message, finishedAt: clock())
                         try emitter.emit(.toolCallFinished(runID: run.id, toolCallID: toolCall.id, success: false, summary: message), runID: run.id)
+                        lastSafeToolResult = nil
+                        if Self.shouldRetryToolRequest(after: error) {
+                            try emitter.emit(.status(runID: run.id, message: "Repairing malformed tool request and asking the model to try again"), runID: run.id)
+                            continue
+                        }
                         throw error
                     }
                 }
@@ -193,6 +239,48 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
             return trimmed
         }
         return String(trimmed.prefix(157)) + "..."
+    }
+
+    private func handleRecoverableToolRequestError(
+        _ error: Error,
+        threadID: UUID,
+        runID: UUID,
+        emitter: EventEmitter
+    ) async throws -> Bool {
+        guard Self.shouldRetryToolRequest(after: error) else {
+            return false
+        }
+
+        let toolMessage = try persistence.appendMessage(
+            threadID: threadID,
+            runID: runID,
+            role: .tool,
+            content: "Tool error: \(error.localizedDescription)",
+            now: clock()
+        )
+        try emitter.emit(.messageAppended(runID: runID, messageID: toolMessage.id, role: .tool), runID: runID)
+        try emitter.emit(.status(runID: runID, message: "Model requested an invalid tool action. Asking for a corrected tool call."), runID: runID)
+        return true
+    }
+
+    private static func shouldRetryToolRequest(after error: Error) -> Bool {
+        guard let error = error as? AshexError else { return false }
+        switch error {
+        case .invalidToolArguments, .toolNotFound:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func toolCallSignature(toolName: String, arguments: JSONObject) -> String {
+        "\(toolName):\(JSONValue.object(arguments).prettyPrinted)"
+    }
+
+    private static func isSafeRepeatedToolCall(toolName: String, arguments: JSONObject) -> Bool {
+        guard toolName == "filesystem" else { return false }
+        guard let operation = arguments["operation"]?.stringValue else { return false }
+        return operation == "read_text_file" || operation == "list_directory"
     }
 }
 
