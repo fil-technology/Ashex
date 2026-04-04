@@ -8,6 +8,7 @@ Ashex is a minimal local agent runtime foundation for macOS, built as a small Sw
 - Exactly two tools: `filesystem` and `shell`
 - Live streaming runtime events for CLI or future UI consumers
 - SQLite persistence for threads, messages, runs, tool calls, and append-only events
+- Generic SQLite-backed persisted settings for session defaults and future runtime preferences
 - Restart normalization that marks previously running work as `interrupted`
 - A replaceable model boundary with mock, OpenAI, and local Ollama-backed adapters
 - A terminal TUI with provider switching, local history browsing, and guarded approvals
@@ -36,8 +37,10 @@ TUI highlights:
 
 - Switch between `mock`, `ollama`, and `openai` without restarting
 - Edit the active model name from the TUI
+- Persist provider/model defaults across launches
 - Browse persisted thread/run history and load prior transcripts back into the viewer
 - Review guarded approval requests with shell/file previews before allowing execution
+- Apply local-model memory guardrails based on the Mac's available RAM and installed model sizes
 
 OpenAI-backed mode:
 
@@ -69,6 +72,7 @@ Provider environment variables:
 - `OPENAI_MODEL`: optional default model for `openai`
 - `OLLAMA_MODEL`: optional default model for `ollama`
 - `OLLAMA_BASE_URL`: optional Ollama chat endpoint, default `http://localhost:11434/api/chat`
+- `ASHEX_ALLOW_LARGE_MODELS=1`: optional override if you intentionally want to bypass local-model memory guardrails
 
 Guarded mode examples:
 

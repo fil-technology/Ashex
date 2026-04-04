@@ -6,8 +6,10 @@ struct AshexCLI {
     static func main() async {
         do {
             let configuration = try CLIConfiguration(arguments: CommandLine.arguments)
+            try configuration.persistSessionSettings()
 
             if let prompt = configuration.prompt {
+                try await configuration.validateModelGuardrails()
                 let runtime = try configuration.makeRuntime()
                 let stream = runtime.run(.init(prompt: prompt, maxIterations: configuration.maxIterations))
                 for await event in stream {
@@ -21,8 +23,25 @@ struct AshexCLI {
             }
         } catch {
             fputs("ashex error: \(error.localizedDescription)\n", stderr)
+            if let recovery = startupRecoveryMessage(for: error) {
+                fputs("\(recovery)\n", stderr)
+            }
             Darwin.exit(1)
         }
+    }
+
+    private static func startupRecoveryMessage(for error: Error) -> String? {
+        let message = error.localizedDescription.lowercased()
+        if message.contains("openai_api_key") {
+            return "Action: set OPENAI_API_KEY, or run `swift run ashex --provider mock` to open the TUI without a remote provider."
+        }
+        if message.contains("could not connect to the server") || message.contains("failed to connect") || message.contains("connection") {
+            return "Action: start Ollama with `ollama serve`, switch to `mock` in Provider Settings after launch, or run `swift run ashex --provider mock`."
+        }
+        if message.contains("guardrail") || message.contains("local model") {
+            return "Action: choose a smaller model in Provider Settings, or set ASHEX_ALLOW_LARGE_MODELS=1 if you really want to override the memory guardrail."
+        }
+        return "Action: launch with `swift run ashex --provider mock` to recover into the TUI and then adjust Provider Settings."
     }
 
     private static func render(_ event: RuntimeEvent) {
@@ -61,6 +80,12 @@ struct AshexCLI {
 }
 
 struct CLIConfiguration {
+    private enum SessionSetting {
+        static let namespace = "ui.session"
+        static let provider = "default_provider"
+        static let model = "default_model"
+    }
+
     let prompt: String?
     let workspaceRoot: URL
     let storageRoot: URL
@@ -68,13 +93,15 @@ struct CLIConfiguration {
     let provider: String
     let model: String
     let approvalMode: ApprovalMode
+    let userConfig: AshexUserConfig
+    let userConfigFile: URL
 
     init(arguments: [String]) throws {
         var promptParts: [String] = []
         var workspaceRoot = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         var storageRoot: URL?
         var maxIterations = 8
-        var provider = ProcessInfo.processInfo.environment["ASHEX_PROVIDER"] ?? "mock"
+        var providerOverride: String?
         var modelOverride: String?
         var approvalMode = ApprovalMode(rawValue: ProcessInfo.processInfo.environment["ASHEX_APPROVAL_MODE"] ?? "trusted") ?? .trusted
 
@@ -96,7 +123,7 @@ struct CLIConfiguration {
                 guard let value = iterator.next(), !value.isEmpty else {
                     throw AshexError.model("Missing value for --provider")
                 }
-                provider = value
+                providerOverride = value
             case "--model":
                 guard let value = iterator.next(), !value.isEmpty else {
                     throw AshexError.model("Missing value for --model")
@@ -119,8 +146,18 @@ struct CLIConfiguration {
         self.workspaceRoot = workspaceRoot.standardizedFileURL
         self.storageRoot = storageRoot?.standardizedFileURL ?? workspaceRoot.appendingPathComponent(".ashex")
         self.maxIterations = maxIterations
-        self.provider = provider
-        self.model = modelOverride ?? Self.defaultModel(for: provider)
+        self.userConfigFile = self.workspaceRoot.appendingPathComponent(UserConfigStore.fileName)
+        self.userConfig = try UserConfigStore.ensure(at: self.userConfigFile)
+        let settingsStore = try Self.makeSettingsStore(storageRoot: self.storageRoot)
+        let persistedProvider = try settingsStore.fetchSetting(namespace: SessionSetting.namespace, key: SessionSetting.provider)?.value.stringValue
+        let persistedModel = try settingsStore.fetchSetting(namespace: SessionSetting.namespace, key: SessionSetting.model)?.value.stringValue
+        let environmentProvider = ProcessInfo.processInfo.environment["ASHEX_PROVIDER"]
+
+        let resolvedProvider = providerOverride ?? environmentProvider ?? persistedProvider ?? "mock"
+        let environmentModel = Self.environmentModel(for: resolvedProvider)
+
+        self.provider = resolvedProvider
+        self.model = modelOverride ?? environmentModel ?? persistedModel ?? Self.defaultModel(for: resolvedProvider)
         self.approvalMode = approvalMode
     }
 
@@ -166,7 +203,11 @@ struct CLIConfiguration {
             modelAdapter: makeModelAdapter(provider: provider, model: model),
             toolRegistry: ToolRegistry(tools: [
                 FileSystemTool(workspaceGuard: WorkspaceGuard(rootURL: workspaceURL)),
-                ShellTool(executionRuntime: ProcessExecutionRuntime(), workspaceURL: workspaceURL),
+                ShellTool(
+                    executionRuntime: ProcessExecutionRuntime(),
+                    workspaceURL: workspaceURL,
+                    commandPolicy: ShellCommandPolicy(config: userConfig.shell)
+                ),
             ]),
             persistence: persistence,
             approvalPolicy: approvalPolicy
@@ -182,6 +223,25 @@ struct CLIConfiguration {
         }
     }
 
+    func persistSessionSettings() throws {
+        let store = try Self.makeSettingsStore(storageRoot: storageRoot)
+        let now = Date()
+        try store.upsertSetting(namespace: SessionSetting.namespace, key: SessionSetting.provider, value: .string(provider), now: now)
+        try store.upsertSetting(namespace: SessionSetting.namespace, key: SessionSetting.model, value: .string(model), now: now)
+    }
+
+    func validateModelGuardrails() async throws {
+        guard provider == "ollama" else { return }
+        if ProcessInfo.processInfo.environment["ASHEX_ALLOW_LARGE_MODELS"] == "1" { return }
+
+        let catalog = try await OllamaCatalogClient().fetchModels(baseURL: Self.ollamaBaseURL())
+        let assessment = LocalModelGuardrails.assessOllamaModel(model: model, installedModels: catalog)
+        guard assessment.severity != .blocked else {
+            let details = ([assessment.headline] + assessment.details).joined(separator: " ")
+            throw AshexError.model(details + " Set ASHEX_ALLOW_LARGE_MODELS=1 to override this guardrail.")
+        }
+    }
+
     static func defaultModel(for provider: String) -> String {
         switch provider {
         case "openai":
@@ -191,5 +251,26 @@ struct CLIConfiguration {
         default:
             return "mock"
         }
+    }
+
+    static func environmentModel(for provider: String) -> String? {
+        switch provider {
+        case "openai":
+            return ProcessInfo.processInfo.environment["OPENAI_MODEL"]
+        case "ollama":
+            return ProcessInfo.processInfo.environment["OLLAMA_MODEL"]
+        default:
+            return nil
+        }
+    }
+
+    private static func makeSettingsStore(storageRoot: URL) throws -> SQLitePersistenceStore {
+        let store = SQLitePersistenceStore(databaseURL: storageRoot.appendingPathComponent("ashex.sqlite"))
+        try store.initialize()
+        return store
+    }
+
+    static func ollamaBaseURL() -> URL {
+        URL(string: ProcessInfo.processInfo.environment["OLLAMA_BASE_URL"] ?? "http://localhost:11434/api/chat")!
     }
 }

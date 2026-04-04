@@ -2,6 +2,8 @@ import AshexCore
 import Foundation
 import Testing
 
+private let testShellPolicy = ShellCommandPolicy(config: .default)
+
 @Test func workspaceGuardRejectsTraversal() throws {
     let root = URL(fileURLWithPath: "/tmp/ashex-tests/root")
     let guardrail = WorkspaceGuard(rootURL: root)
@@ -22,13 +24,13 @@ import Testing
         modelAdapter: MockModelAdapter(),
         toolRegistry: ToolRegistry(tools: [
             FileSystemTool(workspaceGuard: WorkspaceGuard(rootURL: root)),
-            ShellTool(executionRuntime: ProcessExecutionRuntime(), workspaceURL: root),
+            ShellTool(executionRuntime: ProcessExecutionRuntime(), workspaceURL: root, commandPolicy: testShellPolicy),
         ]),
         persistence: SQLitePersistenceStore(databaseURL: dbURL)
     )
 
     var sawFinalAnswer = false
-    for await event in runtime.run(.init(prompt: "read note.txt")) {
+    for await event in runtime.run(RunRequest(prompt: "read note.txt")) {
         if case .finalAnswer(_, _, let text) = event.payload {
             sawFinalAnswer = text.contains("hello")
         }
@@ -52,13 +54,13 @@ import Testing
         ]),
         toolRegistry: ToolRegistry(tools: [
             FileSystemTool(workspaceGuard: WorkspaceGuard(rootURL: root)),
-            ShellTool(executionRuntime: ProcessExecutionRuntime(), workspaceURL: root),
+            ShellTool(executionRuntime: ProcessExecutionRuntime(), workspaceURL: root, commandPolicy: testShellPolicy),
         ]),
         persistence: SQLitePersistenceStore(databaseURL: dbURL)
     )
 
     var sawRecoveredAnswer = false
-    for await event in runtime.run(.init(prompt: "read note.txt")) {
+    for await event in runtime.run(RunRequest(prompt: "read note.txt")) {
         if case .finalAnswer(_, _, let text) = event.payload {
             sawRecoveredAnswer = text == "Recovered"
         }
@@ -81,19 +83,68 @@ import Testing
         ]),
         toolRegistry: ToolRegistry(tools: [
             FileSystemTool(workspaceGuard: WorkspaceGuard(rootURL: root)),
-            ShellTool(executionRuntime: ProcessExecutionRuntime(), workspaceURL: root),
+            ShellTool(executionRuntime: ProcessExecutionRuntime(), workspaceURL: root, commandPolicy: testShellPolicy),
         ]),
         persistence: SQLitePersistenceStore(databaseURL: dbURL)
     )
 
     var sawRecoveryAnswer = false
-    for await event in runtime.run(.init(prompt: "read note.txt")) {
+    for await event in runtime.run(RunRequest(prompt: "read note.txt")) {
         if case .finalAnswer(_, _, let text) = event.payload {
             sawRecoveryAnswer = text.contains("hello") && text.contains("Using the latest tool result")
         }
     }
 
     #expect(sawRecoveryAnswer)
+}
+
+@Test func sqlitePersistenceRoundTripsGenericSettings() throws {
+    let fileManager = FileManager.default
+    let root = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let dbURL = root.appendingPathComponent(".ashex/test.sqlite")
+    try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+
+    let store = SQLitePersistenceStore(databaseURL: dbURL)
+    try store.initialize()
+    try store.upsertSetting(namespace: "ui.session", key: "default_provider", value: .string("ollama"), now: Date())
+    try store.upsertSetting(namespace: "ui.session", key: "default_model", value: .string("llama3.1:8b"), now: Date())
+
+    let provider = try store.fetchSetting(namespace: "ui.session", key: "default_provider")
+    let model = try store.fetchSetting(namespace: "ui.session", key: "default_model")
+    let settings = try store.listSettings(namespace: "ui.session")
+
+    #expect(provider?.value == .string("ollama"))
+    #expect(model?.value == .string("llama3.1:8b"))
+    #expect(settings.count == 2)
+}
+
+@Test func ollamaGuardrailWarnsForMemoryHeavyModel() {
+    let assessment = LocalModelGuardrails.assessOllamaModel(
+        model: "medium",
+        installedModels: [
+            .init(name: "small", sizeBytes: 2_000_000_000),
+            .init(name: "medium", sizeBytes: 7_000_000_000),
+        ],
+        resources: .init(
+            physicalMemoryBytes: 16_000_000_000,
+            usableLocalModelMemoryBytes: 12_000_000_000
+        )
+    )
+
+    #expect(assessment.severity == .warning)
+}
+
+@Test func ollamaGuardrailBlocksOversizedModel() {
+    let assessment = LocalModelGuardrails.assessOllamaModel(
+        model: "large",
+        installedModels: [
+            .init(name: "small", sizeBytes: 2_000_000_000),
+            .init(name: "large", sizeBytes: 7_500_000_000),
+        ],
+        resources: .init(physicalMemoryBytes: 8_000_000_000)
+    )
+
+    #expect(assessment.severity == .blocked)
 }
 
 private actor SequencedModelAdapter: ModelAdapter {

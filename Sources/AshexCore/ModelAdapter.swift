@@ -67,6 +67,8 @@ private enum ModelPromptRenderer {
         Rules:
         - Use only the tools listed below.
         - Never invent tools.
+        - Do not call tools for greetings, casual chat, or questions that can be answered without workspace state.
+        - Only call filesystem or shell when the user is asking about files, wants you to inspect project state, or explicitly asks you to run something.
         - If a tool result already contains the needed information, prefer answering directly.
         - Keep final answers concise and useful.
         - Tool arguments must be valid JSON objects.

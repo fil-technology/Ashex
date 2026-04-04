@@ -56,6 +56,11 @@ public enum JSONValue: Codable, Sendable, Equatable {
         if case .number(let value) = self { return Int(value) }
         return nil
     }
+
+    public var arrayValue: [JSONValue]? {
+        if case .array(let value) = self { return value }
+        return nil
+    }
 }
 
 public enum MessageRole: String, Codable, Sendable {
@@ -90,6 +95,20 @@ public struct ThreadSummary: Codable, Sendable {
         self.latestRunID = latestRunID
         self.latestRunState = latestRunState
         self.messageCount = messageCount
+    }
+}
+
+public struct PersistedSetting: Codable, Sendable, Equatable {
+    public let namespace: String
+    public let key: String
+    public let value: JSONValue
+    public let updatedAt: Date
+
+    public init(namespace: String, key: String, value: JSONValue, updatedAt: Date) {
+        self.namespace = namespace
+        self.key = key
+        self.value = value
+        self.updatedAt = updatedAt
     }
 }
 

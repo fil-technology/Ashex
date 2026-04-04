@@ -183,7 +183,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                         let toolMessage = try persistence.appendMessage(threadID: thread.id, runID: run.id, role: .tool, content: text, now: clock())
                         try emitter.emit(.messageAppended(runID: run.id, messageID: toolMessage.id, role: .tool), runID: run.id)
                         try persistence.finishToolCall(toolCallID: toolCall.id, status: "completed", output: text, finishedAt: clock())
-                        try emitter.emit(.toolCallFinished(runID: run.id, toolCallID: toolCall.id, success: true, summary: summarizeToolResult(text)), runID: run.id)
+                        try emitter.emit(.toolCallFinished(runID: run.id, toolCallID: toolCall.id, success: true, summary: text), runID: run.id)
                         lastSafeToolResult = Self.isSafeRepeatedToolCall(toolName: tool.name, arguments: call.arguments) ? text : nil
                     } catch {
                         let message = error.localizedDescription
@@ -231,14 +231,6 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
             let fallback = RuntimeEvent(payload: .error(runID: runID, message: "Failed to finalize run: \(error.localizedDescription)"))
             emitter.continuation.yield(fallback)
         }
-    }
-
-    private func summarizeToolResult(_ text: String) -> String {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.count <= 160 {
-            return trimmed
-        }
-        return String(trimmed.prefix(157)) + "..."
     }
 
     private func handleRecoverableToolRequestError(

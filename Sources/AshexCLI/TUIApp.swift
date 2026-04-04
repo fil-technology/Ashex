@@ -17,9 +17,9 @@ final class TUIApp {
 
     private enum Action {
         case compose
+        case commands
         case history
         case settings
-        case example(String)
         case help
         case quit
     }
@@ -28,6 +28,7 @@ final class TUIApp {
         case launcher
         case history
         case settings
+        case transcript
         case input
         case approval
     }
@@ -43,11 +44,13 @@ final class TUIApp {
         let headline: String
         let details: [String]
         let availableModels: [String]
+        let guardrailAssessment: ModelGuardrailAssessment?
 
         static let idle = Self(
             headline: "Status not checked yet",
             details: ["Open settings and choose Refresh Status to verify the active provider."],
-            availableModels: []
+            availableModels: [],
+            guardrailAssessment: nil
         )
     }
 
@@ -59,11 +62,9 @@ final class TUIApp {
     private let approvalCoordinator: TUIApprovalCoordinator
     private let menuItems: [MenuItem] = [
         .init(title: "New Prompt", subtitle: "Write your own instruction", action: .compose),
+        .init(title: "Commands", subtitle: "See available tools, operations, and config policy", action: .commands),
         .init(title: "History", subtitle: "Browse persisted threads and run transcripts", action: .history),
         .init(title: "Provider Settings", subtitle: "Switch backend and edit the active model", action: .settings),
-        .init(title: "Example: List Files", subtitle: "Run a quick filesystem task", action: .example("list files")),
-        .init(title: "Example: Read README", subtitle: "Read a file through the agent loop", action: .example("read README.md")),
-        .init(title: "Example: Shell ls", subtitle: "Run a shell command in the workspace", action: .example("shell: ls -la")),
         .init(title: "Help", subtitle: "Show keyboard shortcuts and behavior", action: .help),
         .init(title: "Quit", subtitle: "Exit Ashex", action: .quit),
     ]
@@ -75,17 +76,24 @@ final class TUIApp {
     private var modelInput = ""
     private var inputMode: InputMode = .prompt
     private var showHelp = false
+    private var showCommands = false
     private var showHistory = false
     private var showSettings = false
     private var statusLine = "Ready"
     private var runLines: [String] = []
     private var runFinished = true
     private var runTask: Task<Void, Never>?
+    private var workingIndicatorTask: Task<Void, Never>?
+    private var runStartedAt: Date?
+    private var workingFrameIndex = 0
+    private var transcriptScrollOffset = 0
+    private var showToolDetails = false
     private var providerStatus = ProviderStatusSnapshot.idle
     private var shouldQuit = false
     private var pendingApproval: PendingApproval?
     private var sessionProvider: String
     private var sessionModel: String
+    private var providerStartupIssue: String?
     private var historyThreads: [ThreadSummary] = []
     private var historyRuns: [UUID: [RunRecord]] = [:]
     private var historySelection = 0
@@ -99,13 +107,33 @@ final class TUIApp {
         self.approvalCoordinator = approvalCoordinator
         self.sessionProvider = configuration.provider
         self.sessionModel = configuration.model
-        self.runtime = try configuration.makeRuntime(
-            provider: configuration.provider,
-            model: configuration.model,
-            approvalPolicy: configuration.approvalMode == .guarded
-                ? TUIApprovalPolicy(coordinator: approvalCoordinator)
-                : TrustedApprovalPolicy()
-        )
+        let approvalPolicy: any ApprovalPolicy = configuration.approvalMode == .guarded
+            ? TUIApprovalPolicy(coordinator: approvalCoordinator)
+            : TrustedApprovalPolicy()
+        do {
+            self.runtime = try configuration.makeRuntime(
+                provider: configuration.provider,
+                model: configuration.model,
+                approvalPolicy: approvalPolicy
+            )
+        } catch {
+            self.runtime = try configuration.makeRuntime(
+                provider: "mock",
+                model: CLIConfiguration.defaultModel(for: "mock"),
+                approvalPolicy: approvalPolicy
+            )
+            self.providerStartupIssue = error.localizedDescription
+            self.providerStatus = .init(
+                headline: "Provider needs attention",
+                details: [
+                    error.localizedDescription,
+                    "The TUI is running with a safe mock fallback so you can still browse history and adjust Provider Settings.",
+                    Self.recoveryHint(for: configuration.provider)
+                ],
+                availableModels: [],
+                guardrailAssessment: nil
+            )
+        }
         approvalCoordinator.handler = { [weak self] request in
             guard let self else { return .deny("TUI is unavailable") }
             return await self.requestApproval(request)
@@ -113,6 +141,17 @@ final class TUIApp {
         try historyStore.initialize()
         Task { [weak self] in
             await self?.refreshProviderStatus()
+        }
+    }
+
+    private static func recoveryHint(for provider: String) -> String {
+        switch provider {
+        case "openai":
+            return "Set OPENAI_API_KEY, then open Provider Settings and refresh or keep using mock."
+        case "ollama":
+            return "Start Ollama with `ollama serve`, then open Provider Settings and refresh or switch to mock."
+        default:
+            return "Open Provider Settings to choose a working provider."
         }
     }
 
@@ -154,6 +193,16 @@ final class TUIApp {
             moveSelection(-1)
         case .character("j") where focus == .launcher:
             moveSelection(1)
+        case .character("k") where focus == .transcript:
+            scrollTranscript(by: 1)
+        case .character("j") where focus == .transcript:
+            scrollTranscript(by: -1)
+        case .character("e") where focus == .transcript:
+            showToolDetails.toggle()
+            statusLine = showToolDetails ? "Expanded tool details" : "Collapsed tool details"
+        case .character("E") where focus == .transcript:
+            showToolDetails.toggle()
+            statusLine = showToolDetails ? "Expanded tool details" : "Collapsed tool details"
         case .character(let character):
             handleCharacter(character)
         case .space:
@@ -171,6 +220,8 @@ final class TUIApp {
             case .history:
                 focus = .settings
             case .settings:
+                focus = .transcript
+            case .transcript:
                 focus = .input
             case .input:
                 focus = .launcher
@@ -186,6 +237,8 @@ final class TUIApp {
             case .launcher:
                 focus = .history
             case .history:
+                focus = .transcript
+            case .transcript:
                 focus = .input
             case .settings:
                 focus = .input
@@ -200,6 +253,8 @@ final class TUIApp {
 
         switch focus {
         case .launcher:
+            focus = .transcript
+        case .transcript:
             focus = .input
         case .history:
             focus = .input
@@ -222,6 +277,8 @@ final class TUIApp {
             refreshHistoryPreview()
         case .settings:
             settingsSelection = max(settingsSelection - 1, 0)
+        case .transcript:
+            scrollTranscript(by: 1)
         case .input, .approval:
             break
         }
@@ -236,6 +293,8 @@ final class TUIApp {
             refreshHistoryPreview()
         case .settings:
             settingsSelection = min(settingsSelection + 1, SettingsAction.allCases.count - 1)
+        case .transcript:
+            scrollTranscript(by: -1)
         case .input, .approval:
             break
         }
@@ -319,6 +378,13 @@ final class TUIApp {
             return
         }
 
+        if showCommands {
+            showCommands = false
+            focus = .launcher
+            statusLine = "Back to launcher"
+            return
+        }
+
         if showHistory {
             showHistory = false
             focus = .launcher
@@ -336,6 +402,7 @@ final class TUIApp {
         if !runFinished && !runLines.isEmpty {
             runTask?.cancel()
             runTask = nil
+            stopWorkingIndicator()
             runFinished = true
             runLines.append("[local] Run cancelled from TUI")
             statusLine = "Run cancelled"
@@ -358,6 +425,7 @@ final class TUIApp {
         if inputMode == .prompt {
             showHelp = false
             showSettings = false
+            showCommands = false
         }
     }
 
@@ -389,12 +457,21 @@ final class TUIApp {
             inputMode = .prompt
             showHistory = false
             showSettings = false
+            showCommands = false
             focus = .input
             showHelp = false
             statusLine = "Write a prompt below and press Enter"
+        case .commands:
+            showCommands = true
+            showHistory = false
+            showSettings = false
+            showHelp = false
+            focus = .launcher
+            statusLine = "Commands"
         case .history:
             showHistory = true
             showSettings = false
+            showCommands = false
             showHelp = false
             focus = .history
             loadHistory()
@@ -402,16 +479,15 @@ final class TUIApp {
         case .settings:
             showSettings = true
             showHistory = false
+            showCommands = false
             showHelp = false
             focus = .settings
             statusLine = "Provider settings"
-        case .example(let prompt):
-            inputMode = .prompt
-            startRun(prompt: prompt)
         case .help:
             showHelp = true
             showHistory = false
             showSettings = false
+            showCommands = false
             focus = .launcher
             statusLine = "Help"
         case .quit:
@@ -445,25 +521,12 @@ final class TUIApp {
         let providers = ["mock", "ollama", "openai"]
         let currentIndex = providers.firstIndex(of: sessionProvider) ?? 0
         let nextProvider = providers[(currentIndex + 1) % providers.count]
-        let previousDefault = CLIConfiguration.defaultModel(for: sessionProvider)
-        let keepDefaultModel = sessionModel == previousDefault
 
         sessionProvider = nextProvider
-        if keepDefaultModel {
-            sessionModel = CLIConfiguration.defaultModel(for: nextProvider)
-        }
-
-        do {
-            runtime = try makeSessionRuntime()
-            statusLine = "Provider switched to \(sessionProvider)"
-        } catch {
-            statusLine = "Provider switch failed"
-            providerStatus = .init(
-                headline: error.localizedDescription,
-                details: ["The provider configuration is incomplete. Update the model or environment and refresh."],
-                availableModels: []
-            )
-        }
+        sessionModel = CLIConfiguration.defaultModel(for: nextProvider)
+        refreshSessionRuntime()
+        persistSessionSettings()
+        statusLine = "Provider switched to \(sessionProvider)"
 
         Task { [weak self] in
             await self?.refreshProviderStatus()
@@ -481,20 +544,37 @@ final class TUIApp {
         inputMode = .prompt
         focus = showSettings ? .settings : .launcher
 
-        do {
-            runtime = try makeSessionRuntime()
-            statusLine = "Model updated to \(sessionModel)"
-        } catch {
-            statusLine = "Model update failed"
-            providerStatus = .init(
-                headline: error.localizedDescription,
-                details: ["The runtime could not be rebuilt with the selected model."],
-                availableModels: []
-            )
-        }
+        refreshSessionRuntime()
+        persistSessionSettings()
+        statusLine = "Model updated to \(sessionModel)"
 
         Task { [weak self] in
             await self?.refreshProviderStatus()
+        }
+    }
+
+    private func refreshSessionRuntime() {
+        do {
+            runtime = try makeSessionRuntime()
+        } catch {
+            runtime = try! configuration.makeRuntime(
+                provider: "mock",
+                model: CLIConfiguration.defaultModel(for: "mock"),
+                approvalPolicy: configuration.approvalMode == .guarded
+                    ? TUIApprovalPolicy(coordinator: approvalCoordinator)
+                    : TrustedApprovalPolicy()
+            )
+            providerStatus = .init(
+                headline: "Provider needs attention",
+                details: [
+                    error.localizedDescription,
+                    "Ashex kept the TUI running with a safe mock fallback.",
+                    Self.recoveryHint(for: sessionProvider)
+                ],
+                availableModels: [],
+                guardrailAssessment: nil
+            )
+            statusLine = "Provider needs attention"
         }
     }
 
@@ -504,35 +584,63 @@ final class TUIApp {
             "Prompt: \(prompt)",
             ""
         ]
+        transcriptScrollOffset = 0
         runFinished = false
+        runStartedAt = Date()
+        workingFrameIndex = 0
         promptText = ""
         inputMode = .prompt
         showSettings = false
         showHelp = false
-        focus = .input
-        statusLine = "Running"
-
-        let stream = runtime.run(.init(prompt: prompt, maxIterations: configuration.maxIterations))
+        showHistory = false
+        focus = .transcript
+        statusLine = "Checking model guardrails"
+        startWorkingIndicator()
         runTask = Task { [weak self] in
-            for await event in stream {
+            guard let self else { return }
+
+            do {
+                try await self.validateRunGuardrails()
                 await MainActor.run {
-                    self?.append(event: event)
+                    self.statusLine = "Running"
                 }
-            }
-            await MainActor.run {
-                self?.finishRun()
+
+                let stream = self.runtime.run(.init(prompt: prompt, maxIterations: self.configuration.maxIterations))
+                for await event in stream {
+                    await MainActor.run {
+                        self.append(event: event)
+                    }
+                }
+                await MainActor.run {
+                    self.finishRun()
+                }
+            } catch {
+                await MainActor.run {
+                    self.stopWorkingIndicator()
+                    self.runLines.append("[error] \(error.localizedDescription)")
+                    self.runFinished = true
+                    self.runStartedAt = nil
+                    self.statusLine = "Run blocked"
+                    self.render()
+                }
             }
         }
     }
 
     private func append(event: RuntimeEvent) {
+        let shouldFollowTail = isTranscriptNearBottom()
         runLines.append(contentsOf: renderLines(for: event.payload))
+        if shouldFollowTail {
+            transcriptScrollOffset = 0
+        }
 
         render()
     }
 
     private func finishRun() {
+        stopWorkingIndicator()
         runFinished = true
+        runStartedAt = nil
         if statusLine == "Running" {
             statusLine = "Run finished"
         }
@@ -554,7 +662,11 @@ final class TUIApp {
         case .approvalResolved(_, let toolName, let allowed, let reason):
             return ["[approval] \(toolName) \(allowed ? "approved" : "denied") - \(reason)"]
         case .toolCallStarted(_, _, let toolName, let arguments):
-            return ["[tool] \(toolName) started"] + JSONValue.object(arguments).prettyPrinted.split(separator: "\n").map(String.init)
+            var lines = [summarizeToolStart(toolName: toolName, arguments: arguments)]
+            if showToolDetails {
+                lines.append(contentsOf: JSONValue.object(arguments).prettyPrinted.split(separator: "\n").map(String.init))
+            }
+            return lines
         case .toolOutput(_, _, let stream, let chunk):
             let prefix = stream == .stderr ? "stderr" : "stdout"
             return chunk
@@ -563,8 +675,19 @@ final class TUIApp {
                 .filter { !$0.isEmpty }
                 .map { "[\(prefix)] \($0)" }
         case .toolCallFinished(_, _, let success, let summary):
+            if let data = summary.data(using: .utf8),
+               let structured = try? JSONDecoder().decode(JSONValue.self, from: data) {
+                var lines = [summarizeStructuredCompletion(success: success, value: structured)]
+                if showToolDetails {
+                    lines.append(contentsOf: renderStructuredValue(structured))
+                }
+                return lines
+            }
             return ["[tool] \(success ? "completed" : "failed") \(summary)"]
         case .finalAnswer(_, _, let text):
+            if let structured = formattedStructuredLines(from: text) {
+                return ["", "Final answer:"] + structured
+            }
             return ["", "Final answer:"] + text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         case .error(_, let message):
             return ["[error] \(message)"]
@@ -590,10 +713,11 @@ final class TUIApp {
         let title = "\(TerminalUIStyle.bold)\(gradientTitle())\(TerminalUIStyle.reset)"
         let mode = "\(TerminalUIStyle.faint)mode\(TerminalUIStyle.reset) \(TerminalUIStyle.ink)\(screenLabel)\(TerminalUIStyle.reset)"
         let left = "\(title)  \(mode)"
+        let purpose = "\(TerminalUIStyle.faint)local agent for workspace tasks: chat, inspect files, run shell, and keep history\(TerminalUIStyle.reset)"
 
         let provider = "\(TerminalUIStyle.faint)provider\(TerminalUIStyle.reset) \(TerminalUIStyle.blue)\(sessionProvider)\(TerminalUIStyle.reset)"
         let model = "\(TerminalUIStyle.faint)model\(TerminalUIStyle.reset) \(TerminalUIStyle.ink)\(sessionModel)\(TerminalUIStyle.reset)"
-        let status = "\(statusColor)\(statusLine.uppercased())\(TerminalUIStyle.reset)"
+        let status = "\(statusColor)\(displayStatusLine)\(TerminalUIStyle.reset)"
         let right = "\(provider)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(model)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(status)"
 
         let topLine = join(left: left, right: right, width: innerWidth)
@@ -602,13 +726,14 @@ final class TUIApp {
         return [
             TerminalUIStyle.border + "╭" + String(repeating: "─", count: innerWidth + 2) + "╮" + TerminalUIStyle.reset,
             "\(TerminalUIStyle.border)│ \(TerminalUIStyle.reset)\(TerminalUIStyle.padVisible(topLine, to: innerWidth))\(TerminalUIStyle.border) │\(TerminalUIStyle.reset)",
+            "\(TerminalUIStyle.border)│ \(TerminalUIStyle.reset)\(TerminalUIStyle.padVisible(TerminalUIStyle.truncateVisible(purpose, limit: innerWidth), to: innerWidth))\(TerminalUIStyle.border) │\(TerminalUIStyle.reset)",
             "\(TerminalUIStyle.border)│ \(TerminalUIStyle.reset)\(TerminalUIStyle.padVisible(workspace, to: innerWidth))\(TerminalUIStyle.border) │\(TerminalUIStyle.reset)",
             TerminalUIStyle.border + "╰" + String(repeating: "─", count: innerWidth + 2) + "╯" + TerminalUIStyle.reset
         ]
     }
 
     private func renderBody(width: Int, height: Int) -> [String] {
-        let chromeHeight = 10
+        let chromeHeight = 11
         let bodyHeight = max(height - chromeHeight, 10)
         let gap = 1
         let leftWidth = max(min(width / 3, 40), 30)
@@ -632,6 +757,9 @@ final class TUIApp {
         } else if showSettings {
             rightTitle = "Provider Settings"
             rightLines = renderSettingsLines(width: rightWidth - 4)
+        } else if showCommands {
+            rightTitle = "Commands"
+            rightLines = renderCommandCatalogLines(width: rightWidth - 4)
         } else if showHelp {
             rightTitle = "Controls"
             rightLines = renderHelpLines(width: rightWidth - 4)
@@ -671,23 +799,24 @@ final class TUIApp {
 
     private func renderRunLines(width: Int, maxBodyHeight: Int) -> [String] {
         let bodyLimit = max(maxBodyHeight - 3, 1)
-        let source = runLines.isEmpty ? ["No run yet. Choose an example or type a prompt below."] : runLines
+        let expanded = wrappedRunLines(width: width)
+        let maxOffset = max(expanded.count - bodyLimit, 0)
+        transcriptScrollOffset = min(max(transcriptScrollOffset, 0), maxOffset)
+        let endIndex = max(expanded.count - transcriptScrollOffset, 0)
+        let startIndex = max(endIndex - bodyLimit, 0)
+        let viewport = Array(expanded[startIndex..<endIndex])
 
-        var expanded: [String] = []
-        for line in source {
-            expanded.append(contentsOf: wrapRunLine(line, width: width))
-        }
-
-        var output = [transcriptHeader(width: width), ""]
-        output.append(contentsOf: Array(expanded.suffix(bodyLimit)))
+        var output = [transcriptHeader(width: width, totalLines: expanded.count, visibleLines: bodyLimit), ""]
+        output.append(contentsOf: viewport)
         return output
     }
 
     private func renderHelpLines(width: Int) -> [String] {
         [
             "\(TerminalUIStyle.ink)Navigation\(TerminalUIStyle.reset)",
-            "\(TerminalUIStyle.slate)Tab\(TerminalUIStyle.reset) Switch between launcher, settings, and input",
-            "\(TerminalUIStyle.slate)Up/Down or j/k\(TerminalUIStyle.reset) Move through launcher items",
+            "\(TerminalUIStyle.slate)Tab\(TerminalUIStyle.reset) Switch between launcher, transcript, settings/history, and input",
+            "\(TerminalUIStyle.slate)Up/Down or j/k\(TerminalUIStyle.reset) Move through launcher items or scroll the transcript",
+            "\(TerminalUIStyle.slate)e\(TerminalUIStyle.reset) Expand or collapse tool details in the transcript",
             "\(TerminalUIStyle.slate)Enter\(TerminalUIStyle.reset) Open launcher item or submit prompt",
             "\(TerminalUIStyle.slate)Esc or Left\(TerminalUIStyle.reset) Back out, cancel a run, or quit",
             "\(TerminalUIStyle.slate)Backspace\(TerminalUIStyle.reset) Delete text in the input bar",
@@ -696,12 +825,54 @@ final class TUIApp {
             "\(TerminalUIStyle.slate)Provider Settings\(TerminalUIStyle.reset) Switch backend and model without restarting",
             "\(TerminalUIStyle.slate)Refresh Status\(TerminalUIStyle.reset) Re-check environment and local models",
             "",
-            "\(TerminalUIStyle.ink)One-shot commands still work\(TerminalUIStyle.reset)",
-            "\(TerminalUIStyle.blue)\(TerminalUIStyle.truncateVisible("swift run ashex 'list files'", limit: width))\(TerminalUIStyle.reset)",
-            "\(TerminalUIStyle.blue)\(TerminalUIStyle.truncateVisible("swift run ashex --approval-mode guarded 'shell: pwd'", limit: width))\(TerminalUIStyle.reset)",
+            "\(TerminalUIStyle.ink)Commands Screen\(TerminalUIStyle.reset)",
+            "\(TerminalUIStyle.slate)Open Commands to see the currently available tools, operations, and config policy file.\(TerminalUIStyle.reset)",
             "",
             "\(TerminalUIStyle.faint)The TUI is a client over the same runtime used by one-shot mode and future app integrations.\(TerminalUIStyle.reset)"
         ]
+    }
+
+    private func renderCommandCatalogLines(width: Int) -> [String] {
+        let shellPolicy = configuration.userConfig.shell
+        var lines: [String] = [
+            "\(TerminalUIStyle.ink)Available Commands\(TerminalUIStyle.reset)",
+            "\(TerminalUIStyle.slate)This screen is meant to grow as Ashex gains more tools.\(TerminalUIStyle.reset)",
+            "",
+            "\(TerminalUIStyle.ink)Prompt Patterns\(TerminalUIStyle.reset)",
+            "\(TerminalUIStyle.blue)\(TerminalUIStyle.truncateVisible("Ask normally: summarize this project", limit: width))\(TerminalUIStyle.reset)",
+            "\(TerminalUIStyle.blue)\(TerminalUIStyle.truncateVisible("Read a file: read README.md", limit: width))\(TerminalUIStyle.reset)",
+            "\(TerminalUIStyle.blue)\(TerminalUIStyle.truncateVisible("List a directory: list files", limit: width))\(TerminalUIStyle.reset)",
+            "\(TerminalUIStyle.blue)\(TerminalUIStyle.truncateVisible("Run shell: shell: git status", limit: width))\(TerminalUIStyle.reset)",
+            "",
+            "\(TerminalUIStyle.ink)Filesystem Tool\(TerminalUIStyle.reset)",
+            "\(TerminalUIStyle.slate)read_text_file\(TerminalUIStyle.reset) Read UTF-8 text files inside the workspace",
+            "\(TerminalUIStyle.slate)write_text_file\(TerminalUIStyle.reset) Write text files and show diffs in the transcript",
+            "\(TerminalUIStyle.slate)list_directory\(TerminalUIStyle.reset) Explore a directory and render a tree",
+            "\(TerminalUIStyle.slate)create_directory\(TerminalUIStyle.reset) Create folders inside the workspace",
+            "",
+            "\(TerminalUIStyle.ink)Shell Tool\(TerminalUIStyle.reset)",
+            "\(TerminalUIStyle.slate)command\(TerminalUIStyle.reset) Execute a shell command from the workspace root",
+            "\(TerminalUIStyle.slate)timeout_seconds\(TerminalUIStyle.reset) Optional timeout for long-running commands",
+            "",
+            "\(TerminalUIStyle.ink)User Config\(TerminalUIStyle.reset)",
+            "\(TerminalUIStyle.slate)\(TerminalUIStyle.truncateVisible(configuration.userConfigFile.path, limit: width))\(TerminalUIStyle.reset)"
+        ]
+
+        if shellPolicy.allowList.isEmpty {
+            lines.append("\(TerminalUIStyle.slate)Allow list: empty (commands are allowed unless denied)\(TerminalUIStyle.reset)")
+        } else {
+            lines.append("\(TerminalUIStyle.slate)\(TerminalUIStyle.truncateVisible("Allow list prefixes: " + shellPolicy.allowList.joined(separator: ", "), limit: width))\(TerminalUIStyle.reset)")
+        }
+
+        if shellPolicy.denyList.isEmpty {
+            lines.append("\(TerminalUIStyle.slate)Deny list: empty\(TerminalUIStyle.reset)")
+        } else {
+            lines.append("\(TerminalUIStyle.slate)\(TerminalUIStyle.truncateVisible("Deny list prefixes: " + shellPolicy.denyList.joined(separator: ", "), limit: width))\(TerminalUIStyle.reset)")
+        }
+
+        lines.append("")
+        lines.append("\(TerminalUIStyle.faint)Ashex creates this config file on first run if it does not exist.\(TerminalUIStyle.reset)")
+        return lines
     }
 
     private func renderSettingsLines(width: Int) -> [String] {
@@ -744,6 +915,24 @@ final class TUIApp {
             lines.append("\(TerminalUIStyle.ink)Available Models\(TerminalUIStyle.reset)")
             for model in providerStatus.availableModels.prefix(6) {
                 lines.append("\(TerminalUIStyle.blue)\(TerminalUIStyle.truncateVisible(model, limit: width))\(TerminalUIStyle.reset)")
+            }
+        }
+
+        if let assessment = providerStatus.guardrailAssessment {
+            lines.append("")
+            lines.append("\(TerminalUIStyle.ink)Memory Guardrail\(TerminalUIStyle.reset)")
+            let severityColor: String
+            switch assessment.severity {
+            case .ok:
+                severityColor = TerminalUIStyle.green
+            case .warning:
+                severityColor = TerminalUIStyle.amber
+            case .blocked:
+                severityColor = TerminalUIStyle.red
+            }
+            lines.append("\(severityColor)\(assessment.headline)\(TerminalUIStyle.reset)")
+            for detail in assessment.details.prefix(3) {
+                lines.append("\(TerminalUIStyle.slate)\(TerminalUIStyle.truncateVisible(detail, limit: width))\(TerminalUIStyle.reset)")
             }
         }
 
@@ -875,7 +1064,7 @@ final class TUIApp {
 
     private func renderFooter(width: Int) -> String {
         let hint = pendingApproval == nil
-            ? "\(TerminalUIStyle.faint)tab\(TerminalUIStyle.reset) focus  \(TerminalUIStyle.faint)enter\(TerminalUIStyle.reset) run/open  \(TerminalUIStyle.faint)esc\(TerminalUIStyle.reset) back"
+            ? "\(TerminalUIStyle.faint)tab\(TerminalUIStyle.reset) focus  \(TerminalUIStyle.faint)e\(TerminalUIStyle.reset) details  \(TerminalUIStyle.faint)enter\(TerminalUIStyle.reset) run/open  \(TerminalUIStyle.faint)esc\(TerminalUIStyle.reset) back"
             : "\(TerminalUIStyle.faint)y\(TerminalUIStyle.reset) approve  \(TerminalUIStyle.faint)n\(TerminalUIStyle.reset) deny"
         let value = "\(TerminalUIStyle.faint)Ashex local agent runtime\(TerminalUIStyle.reset)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(TerminalUIStyle.faint)focus\(TerminalUIStyle.reset) \(focusLabel)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(hint)"
         return TerminalUIStyle.padVisible(TerminalUIStyle.truncateVisible(value, limit: width), to: width)
@@ -967,6 +1156,7 @@ final class TUIApp {
         if pendingApproval != nil { return "approval" }
         if showHistory { return "history" }
         if showSettings { return "settings" }
+        if showCommands { return "commands" }
         if showHelp { return "help" }
         return runFinished ? "workspace" : "live run"
     }
@@ -976,6 +1166,7 @@ final class TUIApp {
         case .launcher: return "launcher"
         case .history: return "history"
         case .settings: return "settings"
+        case .transcript: return "transcript"
         case .input: return "input"
         case .approval: return "approval"
         }
@@ -990,6 +1181,25 @@ final class TUIApp {
             return TerminalUIStyle.amber
         }
         return TerminalUIStyle.green
+    }
+
+    private var displayStatusLine: String {
+        guard !runFinished else {
+            return statusLine.uppercased()
+        }
+
+        let frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        let frame = frames[workingFrameIndex % frames.count]
+        let elapsedText = formattedElapsed
+        return "\(frame) Working\(elapsedText.map { " (\($0))" } ?? "")"
+    }
+
+    private var formattedElapsed: String? {
+        guard let runStartedAt else { return nil }
+        let elapsed = max(Int(Date().timeIntervalSince(runStartedAt)), 0)
+        let minutes = elapsed / 60
+        let seconds = elapsed % 60
+        return minutes > 0 ? "\(minutes)m \(seconds)s" : "\(seconds)s"
     }
 
     private func riskColor(for risk: ApprovalRisk) -> String {
@@ -1018,12 +1228,208 @@ final class TUIApp {
             .joined()
     }
 
-    private func transcriptHeader(width: Int) -> String {
+    private func transcriptHeader(width: Int, totalLines: Int, visibleLines: Int) -> String {
         let state = runLines.isEmpty ? "empty" : (runFinished ? "idle" : "streaming")
-        let focusInfo = "\(TerminalUIStyle.faint)stable transcript\(TerminalUIStyle.reset)"
+        let focusInfo = focus == .transcript
+            ? "\(TerminalUIStyle.cyan)\(transcriptScrollOffset == 0 ? "live tail" : "scroll +\(transcriptScrollOffset)")\(TerminalUIStyle.reset)"
+            : "\(TerminalUIStyle.faint)tab to scroll\(TerminalUIStyle.reset)"
         let left = "\(TerminalUIStyle.faint)state\(TerminalUIStyle.reset) \(state)"
-        let right = focusInfo
+        let detailMode = showToolDetails ? "\(TerminalUIStyle.amber)details\(TerminalUIStyle.reset)" : "\(TerminalUIStyle.faint)summary\(TerminalUIStyle.reset)"
+        let right = "\(TerminalUIStyle.faint)\(totalLines) lines / \(visibleLines) view\(TerminalUIStyle.reset)  \(detailMode)  \(focusInfo)"
         return join(left: left, right: right, width: width)
+    }
+
+    private func wrappedRunLines(width: Int) -> [String] {
+        let source = runLines.isEmpty ? ["No run yet. Choose an example or type a prompt below."] : runLines
+        var expanded: [String] = []
+        for line in source {
+            expanded.append(contentsOf: wrapRunLine(line, width: width))
+        }
+        return expanded
+    }
+
+    private func scrollTranscript(by delta: Int) {
+        let size = terminal.terminalSize()
+        let chromeHeight = 10
+        let bodyHeight = max(size.rows - chromeHeight, 10)
+        let leftWidth = max(min(size.columns / 3, 40), 30)
+        let rightWidth = max(size.columns - leftWidth - 1, 38)
+        let bodyLimit = max(bodyHeight - 3, 1)
+        let totalLines = wrappedRunLines(width: rightWidth - 4).count
+        let maxOffset = max(totalLines - bodyLimit, 0)
+        transcriptScrollOffset = min(max(transcriptScrollOffset + delta, 0), maxOffset)
+        statusLine = transcriptScrollOffset == 0 ? "Transcript at live tail" : "Transcript scroll +\(transcriptScrollOffset)"
+    }
+
+    private func isTranscriptNearBottom() -> Bool {
+        transcriptScrollOffset <= 1
+    }
+
+    private func startWorkingIndicator() {
+        workingIndicatorTask?.cancel()
+        workingIndicatorTask = Task { [weak self] in
+            while let self, !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(120))
+                await MainActor.run {
+                    guard !self.runFinished else { return }
+                    self.workingFrameIndex = (self.workingFrameIndex + 1) % 10
+                    self.render()
+                }
+            }
+        }
+    }
+
+    private func stopWorkingIndicator() {
+        workingIndicatorTask?.cancel()
+        workingIndicatorTask = nil
+    }
+
+    private func formattedStructuredLines(from text: String) -> [String]? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let first = trimmed.first, first == "{" || first == "[" else {
+            return nil
+        }
+
+        guard let data = trimmed.data(using: .utf8),
+              let value = try? JSONDecoder().decode(JSONValue.self, from: data) else {
+            return nil
+        }
+
+        return renderStructuredValue(value)
+    }
+
+    private func renderStructuredValue(_ value: JSONValue) -> [String] {
+        if let directoryTree = renderDirectoryTree(from: value) {
+            return directoryTree
+        }
+
+        if let fileWriteDetails = renderFileWriteDetails(from: value) {
+            return fileWriteDetails
+        }
+
+        return value.prettyPrinted.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+    }
+
+    private func summarizeToolStart(toolName: String, arguments: JSONObject) -> String {
+        if toolName == "filesystem" {
+            let operation = arguments["operation"]?.stringValue ?? "unknown"
+            let path = arguments["path"]?.stringValue ?? "."
+            switch operation {
+            case "list_directory":
+                return "[tool] exploring \(path)"
+            case "read_text_file":
+                return "[tool] reading \(path)"
+            case "write_text_file":
+                return "[tool] editing \(path)"
+            case "create_directory":
+                return "[tool] creating directory \(path)"
+            default:
+                return "[tool] filesystem \(operation)"
+            }
+        }
+
+        if toolName == "shell" {
+            let command = arguments["command"]?.stringValue ?? "<unknown>"
+            return "[tool] executing shell \(command)"
+        }
+
+        return "[tool] \(toolName) started"
+    }
+
+    private func summarizeStructuredCompletion(success: Bool, value: JSONValue) -> String {
+        guard case .object(let object) = value else {
+            return "[tool] \(success ? "completed" : "failed")"
+        }
+
+        if let operation = object["operation"]?.stringValue {
+            switch operation {
+            case "list_directory":
+                let path = object["path"]?.stringValue ?? "."
+                let childCount = (object["children"]?.arrayValue?.count) ?? (object["entries"]?.arrayValue?.count) ?? 0
+                return "[tool] explored \(path) (\(childCount) entries)"
+            case "write_text_file":
+                let path = object["path"]?.stringValue ?? "<unknown>"
+                let bytesWritten = object["bytes_written"]?.intValue ?? 0
+                return "[tool] edited \(path) (\(bytesWritten) chars)"
+            default:
+                break
+            }
+        }
+
+        if let command = object["command"]?.stringValue,
+           let exitCode = object["exit_code"]?.intValue {
+            return "[tool] shell finished exit \(exitCode) for \(command)"
+        }
+
+        return "[tool] \(success ? "completed" : "failed")"
+    }
+
+    private func renderDirectoryTree(from value: JSONValue) -> [String]? {
+        guard case .object(let object) = value,
+              let path = object["path"]?.stringValue else {
+            return nil
+        }
+
+        let childObjects: [JSONObject]
+        if case .array(let rawChildren)? = object["children"] {
+            childObjects = rawChildren.compactMap {
+                guard case .object(let child) = $0 else { return nil }
+                return child
+            }
+        } else if case .array(let rawEntries)? = object["entries"] {
+            childObjects = rawEntries.compactMap { entry in
+                guard let name = entry.stringValue else { return nil }
+                return ["name": .string(name), "kind": .string("file")]
+            }
+        } else {
+            return nil
+        }
+
+        guard !childObjects.isEmpty else {
+            return ["Directory \(path)", "`-- <empty>"]
+        }
+
+        let sortedChildren = childObjects.sorted { lhs, rhs in
+            let lhsIsDirectory = lhs["kind"]?.stringValue == "directory"
+            let rhsIsDirectory = rhs["kind"]?.stringValue == "directory"
+            if lhsIsDirectory != rhsIsDirectory {
+                return lhsIsDirectory && !rhsIsDirectory
+            }
+            return (lhs["name"]?.stringValue ?? "") < (rhs["name"]?.stringValue ?? "")
+        }
+
+        var lines = ["Directory \(path)"]
+        for (index, child) in sortedChildren.enumerated() {
+            let connector = index == sortedChildren.count - 1 ? "`--" : "|--"
+            let name = child["name"]?.stringValue ?? "<unknown>"
+            let isDirectory = child["kind"]?.stringValue == "directory"
+            lines.append("\(connector) \(name)\(isDirectory ? "/" : "")")
+        }
+        return lines
+    }
+
+    private func renderFileWriteDetails(from value: JSONValue) -> [String]? {
+        guard case .object(let object) = value,
+              object["operation"]?.stringValue == "write_text_file" else {
+            return nil
+        }
+
+        let path = object["path"]?.stringValue ?? "<unknown>"
+        let bytesWritten = object["bytes_written"]?.intValue ?? 0
+        let previousExists = object["previous_exists"] == .bool(true)
+        let diffLines = object["diff"]?.arrayValue?.compactMap(\.stringValue) ?? []
+
+        var lines = [
+            "Edited \(path)",
+            previousExists ? "Previous file existed" : "Created new file",
+            "Wrote \(bytesWritten) characters"
+        ]
+        if !diffLines.isEmpty {
+            lines.append("")
+            lines.append("Diff")
+            lines.append(contentsOf: diffLines)
+        }
+        return lines
     }
 
     private func wrapText(_ text: String, width: Int) -> [String] {
@@ -1088,6 +1494,15 @@ final class TUIApp {
         }
     }
 
+    private func persistSessionSettings() {
+        do {
+            try historyStore.upsertSetting(namespace: "ui.session", key: "default_provider", value: .string(sessionProvider), now: Date())
+            try historyStore.upsertSetting(namespace: "ui.session", key: "default_model", value: .string(sessionModel), now: Date())
+        } catch {
+            statusLine = "Failed to save settings"
+        }
+    }
+
     private func refreshHistoryPreview() {
         guard let thread = selectedHistoryThread,
               let runID = historyRuns[thread.id]?.first?.id ?? thread.latestRunID else {
@@ -1115,10 +1530,11 @@ final class TUIApp {
             let events = try historyStore.fetchEvents(runID: runID)
             runLines = ["History: thread \(thread.id.uuidString.prefix(8))", ""]
             runLines.append(contentsOf: events.flatMap { renderLines(for: $0.payload) })
+            transcriptScrollOffset = 0
             runFinished = true
             showHistory = false
-            focus = .launcher
-            statusLine = "Loaded history preview"
+            focus = .transcript
+            statusLine = "Loaded history transcript"
         } catch {
             statusLine = "Failed to load history"
             runLines = ["[error] \(error.localizedDescription)"]
@@ -1138,10 +1554,35 @@ final class TUIApp {
     private func refreshProviderStatus() async {
         let snapshot = await ProviderInspector.inspect(provider: sessionProvider, model: sessionModel)
         providerStatus = snapshot
+        if let providerStartupIssue {
+            statusLine = "Provider needs attention"
+            runLines = [
+                "[startup] Provider '\(sessionProvider)' is unavailable",
+                providerStartupIssue,
+                Self.recoveryHint(for: sessionProvider)
+            ]
+            runFinished = true
+            transcriptScrollOffset = 0
+            self.providerStartupIssue = nil
+            render()
+            return
+        }
         if showSettings || statusLine == "Ready" {
             statusLine = snapshot.headline
         }
         render()
+    }
+
+    private func validateRunGuardrails() async throws {
+        guard sessionProvider == "ollama" else { return }
+        if ProcessInfo.processInfo.environment["ASHEX_ALLOW_LARGE_MODELS"] == "1" { return }
+
+        let snapshot = await ProviderInspector.inspect(provider: sessionProvider, model: sessionModel)
+        providerStatus = snapshot
+        if let assessment = snapshot.guardrailAssessment, assessment.severity == .blocked {
+            let details = ([assessment.headline] + assessment.details).joined(separator: " ")
+            throw AshexError.model(details + " Set ASHEX_ALLOW_LARGE_MODELS=1 to override this guardrail.")
+        }
     }
 
     private static func timeString(_ date: Date) -> String {
@@ -1374,14 +1815,6 @@ private enum TerminalUIStyle {
 }
 
 private enum ProviderInspector {
-    private struct OllamaTagsResponse: Decodable {
-        let models: [OllamaModel]
-
-        struct OllamaModel: Decodable {
-            let name: String
-        }
-    }
-
     static func inspect(provider: String, model: String) async -> TUIApp.ProviderStatusSnapshot {
         switch provider {
         case "mock":
@@ -1391,57 +1824,89 @@ private enum ProviderInspector {
                     "Rule-based local adapter is active.",
                     "Use this path for quick runtime and tool-loop testing."
                 ],
-                availableModels: ["mock"]
+                availableModels: ["mock"],
+                guardrailAssessment: nil
             )
         case "openai":
             guard let apiKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"], !apiKey.isEmpty else {
                 return .init(
                     headline: "OpenAI API key missing",
                     details: [
-                        "Set OPENAI_API_KEY before using the openai provider.",
-                        "The selected model is \(model)."
+                        "OpenAI needs an API key before it can fetch models or run prompts.",
+                        "Set OPENAI_API_KEY in the shell that launches Ashex, then choose Refresh Status.",
+                        "Example: export OPENAI_API_KEY=sk-..."
                     ],
-                    availableModels: []
+                    availableModels: [],
+                    guardrailAssessment: nil
                 )
             }
 
-            return .init(
-                headline: "OpenAI configuration looks ready",
-                details: [
-                    "OPENAI_API_KEY is present in the environment.",
-                    "The selected model is \(model)."
-                ],
-                availableModels: [model, ProcessInfo.processInfo.environment["OPENAI_MODEL"]].compactMap { $0 }
-            )
-        case "ollama":
-            let endpoint = URL(string: ProcessInfo.processInfo.environment["OLLAMA_BASE_URL"] ?? "http://localhost:11434/api/chat")!
-            let tagsURL = endpoint.deletingLastPathComponent().appendingPathComponent("tags")
             do {
-                let (data, response) = try await URLSession.shared.data(from: tagsURL)
-                guard let httpResponse = response as? HTTPURLResponse, (200..<300).contains(httpResponse.statusCode) else {
-                    return .init(
-                        headline: "Ollama endpoint is unreachable",
-                        details: [
-                            "Expected a healthy response from \(tagsURL.absoluteString).",
-                            "Make sure `ollama serve` is running."
-                        ],
-                        availableModels: []
-                    )
+                let models = try await OpenAIModelsClient.fetchModels(apiKey: apiKey)
+                let curated = OpenAIModelsClient.curateModels(models)
+                let selectedAvailable = curated.contains(model)
+                return .init(
+                    headline: selectedAvailable ? "OpenAI configuration looks ready" : "Selected OpenAI model not found",
+                    details: [
+                        "OPENAI_API_KEY is present in the environment.",
+                        selectedAvailable
+                            ? "The selected model is \(model)."
+                            : "The current model \(model) was not returned by the OpenAI models API.",
+                        selectedAvailable
+                            ? "Choose Refresh Status anytime to fetch the current model list again."
+                            : "Pick one of the fetched models below or enter a known model name manually."
+                    ],
+                    availableModels: curated,
+                    guardrailAssessment: nil
+                )
+            } catch {
+                return .init(
+                    headline: "OpenAI model list fetch failed",
+                    details: [
+                        error.localizedDescription,
+                        "Check OPENAI_API_KEY, your network connection, and then choose Refresh Status."
+                    ],
+                    availableModels: [],
+                    guardrailAssessment: nil
+                )
+            }
+        case "ollama":
+            do {
+                let baseURL = CLIConfiguration.ollamaBaseURL()
+                let models = try await OllamaCatalogClient().fetchModels(baseURL: baseURL)
+                let assessment = LocalModelGuardrails.assessOllamaModel(
+                    model: model,
+                    installedModels: models,
+                    resources: .current()
+                )
+                let activeStatus: String
+                switch assessment.severity {
+                case .ok:
+                    activeStatus = "Ollama ready with selected model"
+                case .warning:
+                    activeStatus = assessment.headline
+                case .blocked:
+                    activeStatus = assessment.headline
                 }
-
-                let payload = try JSONDecoder().decode(OllamaTagsResponse.self, from: data)
-                let models = payload.models.map(\.name).sorted()
-                let activeStatus = models.contains(model)
-                    ? "Ollama ready with selected model"
-                    : "Ollama reachable, selected model not installed"
                 var details = [
-                    "Connected to \(tagsURL.deletingLastPathComponent().absoluteString).",
-                    models.contains(model) ? "The selected model \(model) is installed." : "Pull \(model) or choose one of the installed models."
+                    "Connected to \(baseURL.deletingLastPathComponent().absoluteString).",
+                    assessment.details.first ?? "The selected model is \(model)."
                 ]
                 if models.isEmpty {
                     details.append("No local models were returned by Ollama.")
                 }
-                return .init(headline: activeStatus, details: details, availableModels: models)
+                let displayModels = models.sorted { $0.name < $1.name }.map { model in
+                    if let sizeBytes = model.sizeBytes {
+                        return "\(model.name) • \(LocalModelGuardrails.formatBytes(sizeBytes))"
+                    }
+                    return model.name
+                }
+                return .init(
+                    headline: activeStatus,
+                    details: details + assessment.details.dropFirst(),
+                    availableModels: displayModels,
+                    guardrailAssessment: assessment
+                )
             } catch {
                 return .init(
                     headline: "Ollama connection failed",
@@ -1449,16 +1914,72 @@ private enum ProviderInspector {
                         error.localizedDescription,
                         "Start Ollama and refresh status again."
                     ],
-                    availableModels: []
+                    availableModels: [],
+                    guardrailAssessment: nil
                 )
             }
         default:
             return .init(
                 headline: "Unknown provider",
                 details: ["Ashex does not know how to inspect \(provider)."],
-                availableModels: []
+                availableModels: [],
+                guardrailAssessment: nil
             )
         }
+    }
+}
+
+private enum OpenAIModelsClient {
+    private struct Envelope: Decodable {
+        let data: [Model]
+    }
+
+    private struct Model: Decodable {
+        let id: String
+        let ownedBy: String?
+
+        enum CodingKeys: String, CodingKey {
+            case id
+            case ownedBy = "owned_by"
+        }
+    }
+
+    static func fetchModels(
+        apiKey: String,
+        baseURL: URL = URL(string: "https://api.openai.com/v1/models")!,
+        session: URLSession = .shared
+    ) async throws -> [String] {
+        var request = URLRequest(url: baseURL)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw AshexError.model("OpenAI model list did not return an HTTP response")
+        }
+
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            throw AshexError.model("OpenAI model list request failed with status \(httpResponse.statusCode)")
+        }
+
+        let envelope = try JSONDecoder().decode(Envelope.self, from: data)
+        return envelope.data.map(\.id)
+    }
+
+    static func curateModels(_ models: [String]) -> [String] {
+        models
+            .filter { model in
+                let lowered = model.lowercased()
+                let excludedTerms = [
+                    "embedding", "whisper", "tts", "transcribe", "moderation",
+                    "image", "dall", "realtime", "audio"
+                ]
+                if excludedTerms.contains(where: lowered.contains) {
+                    return false
+                }
+                return lowered.hasPrefix("gpt") || lowered.hasPrefix("o") || lowered.hasPrefix("codex")
+            }
+            .sorted()
     }
 }
 

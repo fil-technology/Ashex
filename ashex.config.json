@@ -1,0 +1,19 @@
+{
+  "shell" : {
+    "allowList" : [
+
+    ],
+    "denyList" : [
+      "rm ",
+      "sudo ",
+      "shutdown",
+      "reboot",
+      "mkfs",
+      "dd ",
+      "chown ",
+      "launchctl bootout"
+    ],
+    "requireApprovalForUnknownCommands" : false
+  },
+  "version" : 1
+}

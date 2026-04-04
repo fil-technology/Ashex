@@ -33,11 +33,20 @@ public struct FileSystemTool: Tool {
             let createDirectories = arguments["create_directories"] == .bool(true)
             let url = try workspaceGuard.resolve(path: path)
             do {
+                let previousContent = try? String(contentsOf: url, encoding: .utf8)
                 if createDirectories {
                     try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
                 }
                 try content.write(to: url, atomically: true, encoding: .utf8)
-                return .text("Wrote \(content.count) characters to \(path)")
+                let payload: JSONValue = .object([
+                    "operation": .string("write_text_file"),
+                    "path": .string(path),
+                    "status": .string("written"),
+                    "bytes_written": .number(Double(content.count)),
+                    "previous_exists": .bool(previousContent != nil),
+                    "diff": .array(Self.diffPreview(old: previousContent ?? "", new: content).map(JSONValue.string)),
+                ])
+                return .structured(payload)
             } catch {
                 throw AshexError.fileSystem("Failed to write file \(path): \(error.localizedDescription)")
             }
@@ -46,10 +55,19 @@ public struct FileSystemTool: Tool {
             let path = arguments["path"]?.stringValue ?? "."
             let url = try workspaceGuard.resolve(path: path)
             do {
-                let entries = try FileManager.default.contentsOfDirectory(atPath: url.path).sorted()
+                let entryNames = try FileManager.default.contentsOfDirectory(atPath: url.path).sorted()
+                let children: [JSONValue] = entryNames.map { entry in
+                    let childURL = url.appendingPathComponent(entry)
+                    let isDirectory = (try? childURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+                    return .object([
+                        "name": .string(entry),
+                        "kind": .string(isDirectory ? "directory" : "file"),
+                    ])
+                }
                 let payload: JSONValue = .object([
                     "path": .string(path),
-                    "entries": .array(entries.map(JSONValue.string)),
+                    "entries": .array(entryNames.map(JSONValue.string)),
+                    "children": .array(children),
                 ])
                 return .structured(payload)
             } catch {
@@ -76,5 +94,34 @@ public struct FileSystemTool: Tool {
             throw AshexError.invalidToolArguments("filesystem.\(key) must be a non-empty string")
         }
         return value
+    }
+
+    private static func diffPreview(old: String, new: String) -> [String] {
+        if old == new {
+            return ["<no content changes>"]
+        }
+
+        let oldLines = old.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let newLines = new.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+
+        var prefix = 0
+        while prefix < oldLines.count, prefix < newLines.count, oldLines[prefix] == newLines[prefix] {
+            prefix += 1
+        }
+
+        var oldSuffix = oldLines.count
+        var newSuffix = newLines.count
+        while oldSuffix > prefix, newSuffix > prefix, oldLines[oldSuffix - 1] == newLines[newSuffix - 1] {
+            oldSuffix -= 1
+            newSuffix -= 1
+        }
+
+        let removed = Array(oldLines[prefix..<oldSuffix])
+        let added = Array(newLines[prefix..<newSuffix])
+
+        var diff = ["@@ -\(prefix + 1),\(removed.count) +\(prefix + 1),\(added.count) @@"]
+        diff.append(contentsOf: removed.map { "- \($0)" })
+        diff.append(contentsOf: added.map { "+ \($0)" })
+        return diff
     }
 }

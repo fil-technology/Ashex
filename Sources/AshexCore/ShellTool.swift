@@ -6,16 +6,20 @@ public struct ShellTool: Tool {
 
     private let executionRuntime: any ExecutionRuntime
     private let workspaceURL: URL
+    private let commandPolicy: ShellCommandPolicy
 
-    public init(executionRuntime: any ExecutionRuntime, workspaceURL: URL) {
+    public init(executionRuntime: any ExecutionRuntime, workspaceURL: URL, commandPolicy: ShellCommandPolicy) {
         self.executionRuntime = executionRuntime
         self.workspaceURL = workspaceURL
+        self.commandPolicy = commandPolicy
     }
 
     public func execute(arguments: JSONObject, context: ToolContext) async throws -> ToolContent {
         guard let command = arguments["command"]?.stringValue, !command.isEmpty else {
             throw AshexError.invalidToolArguments("shell.command must be a non-empty string")
         }
+
+        try commandPolicy.validate(command: command)
 
         let timeoutSeconds = TimeInterval(arguments["timeout_seconds"]?.intValue ?? 30)
         let result = try await executionRuntime.execute(

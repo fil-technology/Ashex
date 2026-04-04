@@ -14,5 +14,8 @@ public protocol PersistenceStore: Sendable {
     func listThreads(limit: Int) throws -> [ThreadSummary]
     func fetchRuns(threadID: UUID) throws -> [RunRecord]
     func fetchEvents(runID: UUID) throws -> [RuntimeEvent]
+    func upsertSetting(namespace: String, key: String, value: JSONValue, now: Date) throws
+    func fetchSetting(namespace: String, key: String) throws -> PersistedSetting?
+    func listSettings(namespace: String) throws -> [PersistedSetting]
     func fetchRun(runID: UUID) throws -> RunRecord?
 }

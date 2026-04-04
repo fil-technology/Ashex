@@ -65,6 +65,13 @@ public final class SQLitePersistenceStore: PersistenceStore, @unchecked Sendable
                 payload_json TEXT NOT NULL,
                 created_at REAL NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS settings (
+                namespace TEXT NOT NULL,
+                key TEXT NOT NULL,
+                value_json TEXT NOT NULL,
+                updated_at REAL NOT NULL,
+                PRIMARY KEY (namespace, key)
+            );
             """)
         }
     }
@@ -274,6 +281,66 @@ public final class SQLitePersistenceStore: PersistenceStore, @unchecked Sendable
                 events.append(try decoder.decode(RuntimeEvent.self, from: data))
             }
             return events
+        }
+    }
+
+    public func upsertSetting(namespace: String, key: String, value: JSONValue, now: Date) throws {
+        try queue.sync {
+            let valueJSON = try encodeJSONString(value)
+            try exec(
+                """
+                INSERT INTO settings (namespace, key, value_json, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(namespace, key) DO UPDATE SET
+                    value_json = excluded.value_json,
+                    updated_at = excluded.updated_at
+                """,
+                bind: [
+                    .text(namespace),
+                    .text(key),
+                    .text(valueJSON),
+                    .double(now.timeIntervalSince1970),
+                ]
+            )
+        }
+    }
+
+    public func fetchSetting(namespace: String, key: String) throws -> PersistedSetting? {
+        try queue.sync {
+            let sql = "SELECT value_json, updated_at FROM settings WHERE namespace = ? AND key = ? LIMIT 1"
+            var statement: OpaquePointer?
+            defer { sqlite3_finalize(statement) }
+            try prepare(sql, statement: &statement)
+            bindText(namespace, to: statement, index: 1)
+            bindText(key, to: statement, index: 2)
+            guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+
+            let decoder = JSONDecoder()
+            let valueJSON = columnText(statement, index: 0)
+            let value = try decoder.decode(JSONValue.self, from: Data(valueJSON.utf8))
+            let updatedAt = Date(timeIntervalSince1970: sqlite3_column_double(statement, 1))
+            return PersistedSetting(namespace: namespace, key: key, value: value, updatedAt: updatedAt)
+        }
+    }
+
+    public func listSettings(namespace: String) throws -> [PersistedSetting] {
+        try queue.sync {
+            let sql = "SELECT key, value_json, updated_at FROM settings WHERE namespace = ? ORDER BY key ASC"
+            var statement: OpaquePointer?
+            defer { sqlite3_finalize(statement) }
+            try prepare(sql, statement: &statement)
+            bindText(namespace, to: statement, index: 1)
+
+            let decoder = JSONDecoder()
+            var settings: [PersistedSetting] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                let key = columnText(statement, index: 0)
+                let valueJSON = columnText(statement, index: 1)
+                let value = try decoder.decode(JSONValue.self, from: Data(valueJSON.utf8))
+                let updatedAt = Date(timeIntervalSince1970: sqlite3_column_double(statement, 2))
+                settings.append(PersistedSetting(namespace: namespace, key: key, value: value, updatedAt: updatedAt))
+            }
+            return settings
         }
     }
 
