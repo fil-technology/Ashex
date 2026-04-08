@@ -875,7 +875,9 @@ final class TUIApp {
             historyStore = store
             inputMode = .prompt
             workspacePathInput = ""
-            focus = .settings
+            focus = .transcript
+            showSettings = false
+            showWorkspaces = false
             runLines = ["[local] Switched workspace to \(proposed.path)"]
             runFinished = true
             transcriptScrollOffset = 0
@@ -1002,17 +1004,17 @@ final class TUIApp {
 
     @discardableResult
     private func handleLocalPromptCommand(_ prompt: String) -> Bool {
-        let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.hasPrefix(":") || trimmed == "pwd" || trimmed.hasPrefix("cd ") else {
+        guard let command = LocalPromptCommand.parse(prompt) else {
             return false
         }
 
-        if trimmed == "pwd" || trimmed == ":pwd" {
+        switch command {
+        case .showWorkspace:
             runTask?.cancel()
             runExecutionControl = nil
             stopWorkingIndicator()
             runLines = [
-                "Prompt: \(trimmed)",
+                "Prompt: /pwd",
                 "",
                 "[local] Current workspace",
                 sessionWorkspaceRoot.path
@@ -1028,39 +1030,43 @@ final class TUIApp {
             focus = .transcript
             statusLine = "Workspace shown"
             return true
-        }
-
-        let workspacePath: String?
-        if trimmed.hasPrefix(":workspace ") {
-            workspacePath = String(trimmed.dropFirst(":workspace ".count))
-        } else if trimmed.hasPrefix(":cd ") {
-            workspacePath = String(trimmed.dropFirst(":cd ".count))
-        } else if trimmed.hasPrefix("cd ") {
-            workspacePath = String(trimmed.dropFirst(3))
-        } else {
-            workspacePath = nil
-        }
-
-        guard let workspacePath else {
+        case .openWorkspaces:
             runLines = [
-                "Prompt: \(trimmed)",
+                "Prompt: /workspaces",
                 "",
-                "[local] Unknown local command",
-                "Use :workspace /full/path, cd /full/path, or pwd"
+                "[local] Workspaces",
+                "Open the Workspaces view to preview and switch recent project roots."
             ]
             transcriptScrollOffset = 0
             runFinished = true
             runStartedAt = nil
             promptText = ""
+            inputMode = .prompt
+            showHistory = false
+            showHelp = false
+            showCommands = false
+            showSettings = false
+            showWorkspaces = true
+            loadRecentWorkspaces()
+            focus = .workspaces
+            statusLine = recentWorkspaces.isEmpty ? "No recent workspaces yet" : "Workspaces"
+            return true
+        case .showHelp:
+            runLines = ["Prompt: \(prompt.trimmingCharacters(in: .whitespacesAndNewlines))", ""] + LocalPromptCommand.helpLines
+            transcriptScrollOffset = 0
+            runFinished = true
+            runStartedAt = nil
+            promptText = ""
+            inputMode = .prompt
             focus = .transcript
-            statusLine = "Unknown local command"
+            statusLine = "Workspace command help"
+            return true
+        case .switchWorkspace(let workspacePath):
+            promptText = ""
+            workspacePathInput = workspacePath
+            commitWorkspacePathInput()
             return true
         }
-
-        promptText = ""
-        workspacePathInput = workspacePath
-        commitWorkspacePathInput()
-        return true
     }
 
     private func startRun(prompt: String) {
@@ -1452,7 +1458,9 @@ final class TUIApp {
             "",
             "\(TerminalUIStyle.ink)Workspace Controls\(TerminalUIStyle.reset)",
             "\(TerminalUIStyle.slate)Workspaces\(TerminalUIStyle.reset) Open recent project roots and switch sessions quickly",
-            "\(TerminalUIStyle.slate):workspace /path\(TerminalUIStyle.reset) Switch the current session to a new project root",
+            "\(TerminalUIStyle.slate)/workspace /path\(TerminalUIStyle.reset) Switch the current session to a new project root",
+            "\(TerminalUIStyle.slate)/workspaces\(TerminalUIStyle.reset) Open recent workspaces from the input bar",
+            "\(TerminalUIStyle.slate)/pwd\(TerminalUIStyle.reset) Show the current active workspace",
             "",
             "\(TerminalUIStyle.ink)Commands Screen\(TerminalUIStyle.reset)",
             "\(TerminalUIStyle.slate)Open Commands to see the currently available tools, operations, and config policy file.\(TerminalUIStyle.reset)",
@@ -1472,9 +1480,10 @@ final class TUIApp {
             "\(TerminalUIStyle.blue)\(TerminalUIStyle.truncateVisible("Read a file: read README.md", limit: width))\(TerminalUIStyle.reset)",
             "\(TerminalUIStyle.blue)\(TerminalUIStyle.truncateVisible("List a directory: list files", limit: width))\(TerminalUIStyle.reset)",
             "\(TerminalUIStyle.blue)\(TerminalUIStyle.truncateVisible("Run shell: shell: git status", limit: width))\(TerminalUIStyle.reset)",
-            "\(TerminalUIStyle.blue)\(TerminalUIStyle.truncateVisible("Switch workspace live: :workspace /full/path/to/project", limit: width))\(TerminalUIStyle.reset)",
-            "\(TerminalUIStyle.blue)\(TerminalUIStyle.truncateVisible("Terminal-style alias: cd /full/path/to/project", limit: width))\(TerminalUIStyle.reset)",
-            "\(TerminalUIStyle.blue)\(TerminalUIStyle.truncateVisible("Show current workspace: pwd", limit: width))\(TerminalUIStyle.reset)",
+            "\(TerminalUIStyle.blue)\(TerminalUIStyle.truncateVisible("Switch workspace live: /workspace /full/path/to/project", limit: width))\(TerminalUIStyle.reset)",
+            "\(TerminalUIStyle.blue)\(TerminalUIStyle.truncateVisible("Aliases: :workspace /path, workspace /path, cd /path, /cd /path", limit: width))\(TerminalUIStyle.reset)",
+            "\(TerminalUIStyle.blue)\(TerminalUIStyle.truncateVisible("Show current workspace: /pwd", limit: width))\(TerminalUIStyle.reset)",
+            "\(TerminalUIStyle.blue)\(TerminalUIStyle.truncateVisible("Open recent workspaces: /workspaces", limit: width))\(TerminalUIStyle.reset)",
             "\(TerminalUIStyle.blue)\(TerminalUIStyle.truncateVisible("Open side terminal: press t or choose Terminal in the launcher", limit: width))\(TerminalUIStyle.reset)",
             "",
             "\(TerminalUIStyle.ink)Filesystem Tool\(TerminalUIStyle.reset)",

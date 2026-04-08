@@ -32,6 +32,10 @@ let package = Package(
             name: "AshexCoreTests",
             dependencies: ["AshexCore"]
         ),
+        .testTarget(
+            name: "AshexCLITests",
+            dependencies: ["AshexCLI", "AshexCore"]
+        ),
     ],
     swiftLanguageModes: [.v6]
 )

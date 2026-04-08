@@ -69,6 +69,7 @@ TUI highlights:
 - Store provider API keys in macOS Keychain instead of SQLite settings
 - Persist provider/model defaults across launches
 - Switch the active workspace live from the TUI or with `:workspace /path`
+- Switch the active workspace live from the input bar with `/workspace /path`
 - Browse and switch recent workspaces from a dedicated Workspaces screen
 - Browse persisted thread/run history and load prior transcripts back into the viewer
 - Open a side terminal pane for quick workspace commands
@@ -146,6 +147,13 @@ TUI controls:
 - `t`: toggle the side terminal pane
 - `x`: skip the current planned step
 - `y` / `n`: approve or deny guarded actions
+
+Live workspace commands in the running TUI:
+
+- `/workspace /full/path/to/project`: switch the current session to a different workspace
+- `/workspaces`: open the recent-workspaces picker
+- `/pwd`: show the current active workspace
+- supported aliases: `:workspace /path`, `workspace /path`, `cd /path`, `/cd /path`
 
 ## Runtime boundary
 
