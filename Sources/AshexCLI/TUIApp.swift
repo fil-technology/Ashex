@@ -1193,6 +1193,10 @@ final class TUIApp {
             return ["[plan] step \(index)/\(total) started - \(title)"]
         case .taskStepFinished(_, let index, let total, let title, let outcome):
             return ["[plan] step \(index)/\(total) \(outcome) - \(title)"]
+        case .subagentStarted(_, let title, let maxIterations):
+            return ["[subagent] started - \(title) (max \(maxIterations) iterations)"]
+        case .subagentFinished(_, let title, let summary):
+            return ["[subagent] finished - \(title)"] + summary.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         case .changedFilesTracked(_, let paths):
             return ["[change] " + paths.joined(separator: ", ")]
         case .status(_, let message):

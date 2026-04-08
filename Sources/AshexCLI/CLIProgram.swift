@@ -69,6 +69,11 @@ struct AshexCLI {
             print("[plan] step \(index)/\(total) started - \(title)")
         case .taskStepFinished(_, let index, let total, let title, let outcome):
             print("[plan] step \(index)/\(total) \(outcome) - \(title)")
+        case .subagentStarted(_, let title, let maxIterations):
+            print("[subagent] started - \(title) (max \(maxIterations) iterations)")
+        case .subagentFinished(_, let title, let summary):
+            print("[subagent] finished - \(title)")
+            print(summary)
         case .changedFilesTracked(_, let paths):
             print("[change] \(paths.joined(separator: ", "))")
         case .status(_, let message):

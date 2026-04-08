@@ -311,18 +311,19 @@ Most important remaining work:
 - even stronger longer-session memory quality and thread continuation behavior
 - deeper secrets, safety, and sandboxing hardening beyond the current Keychain storage and shell-policy enforcement
 - richer multi-workspace/session UX beyond the new recent-workspace picker and previews
+- richer delegated-agent orchestration beyond the current bounded subtask flow
 - bounded subagents later
 
 Likely next highest-value step:
 
-- Production-grade coding-agent behavior on top of the current harness:
+- Production-grade coding-agent behavior refinement on top of the current harness:
   - deeper automatic exploration and file targeting for coding tasks
   - stronger validation execution and check selection
   - richer patch planning and multi-file edit workflows
   - even stronger longer-session memory quality and thread continuation behavior
-  - secrets, safety, and sandboxing hardening
+  - stronger multi-agent orchestration beyond the current bounded delegation layer
+  - deeper safety/sandbox hardening
 
 After that:
 
-- bounded delegated subagents on top of the current single-agent runtime
 - SwiftUI integration when the terminal/runtime workflow is stable enough

@@ -181,19 +181,40 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                     try emitter.emit(.messageAppended(runID: run.id, messageID: systemMessage.id, role: .system), runID: run.id)
                 }
 
-                let outcome = try await executeStep(
-                    thread: thread,
-                    run: run,
-                    stepPrompt: stepMessage,
-                    stepTitle: step.title,
+                let outcome: StepExecutionOutcome
+                if Self.shouldDelegateStep(
+                    phase: step.phase,
                     taskKind: taskKind,
-                    stepPhase: step.phase,
-                    existingChangedFiles: changedFiles,
-                    maxIterations: request.maxIterations,
-                    cancellation: cancellation,
-                    executionControl: request.executionControl,
-                    emitter: emitter
-                )
+                    totalSteps: steps.count,
+                    maxIterations: request.maxIterations
+                ) {
+                    outcome = try await executeDelegatedStep(
+                        thread: thread,
+                        run: run,
+                        stepPrompt: stepMessage,
+                        stepTitle: step.title,
+                        taskKind: taskKind,
+                        stepPhase: step.phase,
+                        existingChangedFiles: changedFiles,
+                        maxIterations: min(max(request.maxIterations / 2, 2), 4),
+                        cancellation: cancellation,
+                        emitter: emitter
+                    )
+                } else {
+                    outcome = try await executeStep(
+                        thread: thread,
+                        run: run,
+                        stepPrompt: stepMessage,
+                        stepTitle: step.title,
+                        taskKind: taskKind,
+                        stepPhase: step.phase,
+                        existingChangedFiles: changedFiles,
+                        maxIterations: request.maxIterations,
+                        cancellation: cancellation,
+                        executionControl: request.executionControl,
+                        emitter: emitter
+                    )
+                }
                 stepSummaries.append(outcome.summary)
                 validationNotes.append(contentsOf: outcome.validationNotes)
                 remainingItems.append(contentsOf: outcome.remainingItems)
@@ -252,6 +273,52 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         } catch {
             await finalizeFailure(error: error, emitter: emitter)
         }
+    }
+
+    private static func shouldDelegateStep(
+        phase: PlannedStepPhase,
+        taskKind: TaskKind,
+        totalSteps: Int,
+        maxIterations: Int
+    ) -> Bool {
+        guard totalSteps >= 4, maxIterations >= 4 else { return false }
+        guard phase == .exploration || phase == .planning else { return false }
+
+        switch taskKind {
+        case .bugFix, .feature, .refactor, .analysis, .general:
+            return true
+        case .docs, .git, .shell:
+            return phase == .exploration
+        }
+    }
+
+    private func executeDelegatedStep(
+        thread: ThreadRecord,
+        run: RunRecord,
+        stepPrompt: String,
+        stepTitle: String,
+        taskKind: TaskKind,
+        stepPhase: PlannedStepPhase,
+        existingChangedFiles: [ChangedArtifact],
+        maxIterations: Int,
+        cancellation: CancellationToken,
+        emitter: EventEmitter
+    ) async throws -> StepExecutionOutcome {
+        try emitter.emit(.subagentStarted(runID: run.id, title: stepTitle, maxIterations: maxIterations), runID: run.id)
+        let outcome = try await executeSubagentLoop(
+            thread: thread,
+            run: run,
+            stepPrompt: stepPrompt,
+            stepTitle: stepTitle,
+            taskKind: taskKind,
+            stepPhase: stepPhase,
+            existingChangedFiles: existingChangedFiles,
+            maxIterations: maxIterations,
+            cancellation: cancellation,
+            emitter: emitter
+        )
+        try emitter.emit(.subagentFinished(runID: run.id, title: stepTitle, summary: outcome.summary), runID: run.id)
+        return outcome
     }
 
     private func executeStep(
@@ -454,6 +521,195 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
             changedFiles: changedFiles,
             validationNotes: [],
             remainingItems: ["Iteration budget reached for step: \(stepTitle)"]
+        )
+    }
+
+    private func executeSubagentLoop(
+        thread: ThreadRecord,
+        run: RunRecord,
+        stepPrompt: String,
+        stepTitle: String,
+        taskKind: TaskKind,
+        stepPhase: PlannedStepPhase,
+        existingChangedFiles: [ChangedArtifact],
+        maxIterations: Int,
+        cancellation: CancellationToken,
+        emitter: EventEmitter
+    ) async throws -> StepExecutionOutcome {
+        var localMessages: [MessageRecord] = [
+            MessageRecord(
+                id: UUID(),
+                threadID: thread.id,
+                runID: run.id,
+                role: .user,
+                content: """
+                Delegated subtask:
+                \(stepPrompt)
+
+                You are a bounded subagent. Stay within this step only, do not expand scope, and finish with a concise summary.
+                """,
+                createdAt: clock()
+            )
+        ]
+        var repeatedToolCallSignature: String?
+        var repeatedToolCallCount = 0
+        var lastSafeToolResult: String?
+        var noProgressIterations = 0
+        var validationBlocks = 0
+        var workflowState = StepWorkflowState()
+        var changedFiles: [ChangedArtifact] = existingChangedFiles
+
+        for iteration in 0..<maxIterations {
+            try await cancellation.checkCancellation()
+            try emitter.emit(.status(runID: run.id, message: "Subagent iteration \(iteration + 1): working on \(stepTitle)"), runID: run.id)
+
+            let refreshedRun = try persistence.fetchRun(runID: run.id) ?? run
+            let workspaceSnapshotRecord = try persistence.fetchWorkspaceSnapshot(runID: run.id)
+            let workingMemoryRecord = try persistence.fetchWorkingMemory(runID: run.id)
+            let preparedContext = ContextManager.prepare(
+                context: .init(
+                    thread: thread,
+                    run: refreshedRun,
+                    messages: localMessages,
+                    availableTools: toolRegistry.schema(),
+                    workspaceSnapshot: workspaceSnapshotRecord,
+                    workingMemory: workingMemoryRecord
+                ),
+                provider: modelAdapter.providerID,
+                model: modelAdapter.modelID
+            )
+            try emitter.emit(
+                .contextPrepared(
+                    runID: run.id,
+                    retainedMessages: preparedContext.retainedMessages.count,
+                    droppedMessages: preparedContext.droppedMessageCount,
+                    clippedMessages: preparedContext.clippedMessageCount,
+                    estimatedTokens: preparedContext.estimatedTokenCount,
+                    estimatedContextWindow: preparedContext.estimatedContextWindow
+                ),
+                runID: run.id
+            )
+
+            let action = try await modelAdapter.nextAction(for: .init(
+                thread: thread,
+                run: refreshedRun,
+                messages: localMessages,
+                availableTools: toolRegistry.schema(),
+                workspaceSnapshot: workspaceSnapshotRecord,
+                workingMemory: workingMemoryRecord
+            ))
+
+            switch action {
+            case .finalAnswer(let answer):
+                if stepPhase == .validation,
+                   !changedFiles.isEmpty,
+                   !workflowState.hasValidationEvidence(for: changedFiles.map(\.path)) {
+                    validationBlocks += 1
+                    let validationReminder = "Validation is incomplete: inspect changed files, git diffs, or run a relevant check before concluding."
+                    localMessages.append(MessageRecord(
+                        id: UUID(),
+                        threadID: thread.id,
+                        runID: run.id,
+                        role: .tool,
+                        content: validationReminder,
+                        createdAt: clock()
+                    ))
+                    try emitter.emit(.status(runID: run.id, message: "Subagent validation gate blocked completion. Asking for concrete verification first."), runID: run.id)
+                    if validationBlocks >= 2 {
+                        return .init(
+                            summary: "Subagent stopped validation early after repeated attempts without concrete verification.",
+                            changedFiles: changedFiles,
+                            validationNotes: [],
+                            remainingItems: ["Revisit delegated validation: \(stepTitle)"]
+                        )
+                    }
+                    continue
+                }
+                let finalValidationNotes = stepPhase == .validation && !changedFiles.isEmpty
+                    ? ["Validation completed with concrete verification for the changed files."]
+                    : []
+                return .init(summary: answer, changedFiles: changedFiles, validationNotes: finalValidationNotes, remainingItems: [])
+
+            case .toolCall(let call):
+                let callSignature = Self.toolCallSignature(toolName: call.toolName, arguments: call.arguments)
+                if callSignature == repeatedToolCallSignature {
+                    repeatedToolCallCount += 1
+                } else {
+                    repeatedToolCallSignature = callSignature
+                    repeatedToolCallCount = 1
+                }
+
+                if repeatedToolCallCount >= 2,
+                   let lastSafeToolResult,
+                   Self.isSafeRepeatedToolCall(toolName: call.toolName, arguments: call.arguments) {
+                    return .init(
+                        summary: "Subagent reused the latest safe tool result after repeated identical read-only calls.\n\n\(lastSafeToolResult)",
+                        changedFiles: changedFiles,
+                        validationNotes: [],
+                        remainingItems: []
+                    )
+                }
+
+                let execution = try await toolExecutor.execute(
+                    call: call,
+                    threadID: thread.id,
+                    runID: run.id,
+                    preconditions: .init(hasPriorInspection: workflowState.hasPriorInspection, phase: stepPhase),
+                    cancellation: cancellation,
+                    emitter: emitter
+                )
+
+                switch execution {
+                case .retryableFailure:
+                    lastSafeToolResult = nil
+                    noProgressIterations += 1
+                    localMessages.append(MessageRecord(
+                        id: UUID(),
+                        threadID: thread.id,
+                        runID: run.id,
+                        role: .tool,
+                        content: "Tool error: bounded subagent requested a retry.",
+                        createdAt: clock()
+                    ))
+                    if noProgressIterations >= 2 {
+                        return .init(
+                            summary: "Subagent stopped after repeated unproductive retries.",
+                            changedFiles: changedFiles,
+                            validationNotes: [],
+                            remainingItems: ["Revisit delegated step: \(stepTitle)"]
+                        )
+                    }
+                case .completed(let text, let safeToReuse, let metadata):
+                    lastSafeToolResult = safeToReuse ? text : nil
+                    workflowState.record(metadata: metadata)
+                    noProgressIterations = metadata.representsProgress ? 0 : (noProgressIterations + 1)
+                    let newChanges = metadata.changedPaths.map { ChangedArtifact(path: $0, reason: stepTitle) }
+                    changedFiles.append(contentsOf: newChanges)
+                    localMessages.append(MessageRecord(
+                        id: UUID(),
+                        threadID: thread.id,
+                        runID: run.id,
+                        role: .tool,
+                        content: text,
+                        createdAt: clock()
+                    ))
+                    if noProgressIterations >= 2 {
+                        return .init(
+                            summary: "Subagent stopped because recent tool activity was no longer making useful progress.",
+                            changedFiles: changedFiles,
+                            validationNotes: [],
+                            remainingItems: ["Revisit delegated step: \(stepTitle)"]
+                        )
+                    }
+                }
+            }
+        }
+
+        return .init(
+            summary: "Subagent stopped after reaching its bounded iteration budget for this step.",
+            changedFiles: changedFiles,
+            validationNotes: [],
+            remainingItems: ["Delegated step hit its iteration budget: \(stepTitle)"]
         )
     }
 

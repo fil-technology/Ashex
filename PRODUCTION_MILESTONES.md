@@ -53,7 +53,7 @@ This file tracks the remaining work to move Ashex from a serious local MVP towar
 
 ## Milestone 8: Bounded Subagents
 
-- [ ] Add delegated subtasks on top of the single-agent harness
-- [ ] Keep delegated scope bounded by files, context, and task depth
-- [ ] Preserve the existing persistence and approval model
-- [ ] Verify with targeted runtime and unit tests
+- [x] Add delegated subtasks on top of the single-agent harness
+- [x] Keep delegated scope bounded by files, context, and task depth
+- [x] Preserve the existing persistence and approval model
+- [x] Verify with targeted runtime and unit tests

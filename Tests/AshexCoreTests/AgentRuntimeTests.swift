@@ -265,6 +265,48 @@ private let testShellPolicy = ShellCommandPolicy(config: .default)
     #expect(sawExplorationPlan)
 }
 
+@Test func runtimeCanDelegateBoundedSubagentSteps() async throws {
+    let fileManager = FileManager.default
+    let root = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let dbURL = root.appendingPathComponent(".ashex/test.sqlite")
+    try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+
+    let runtime = try AgentRuntime(
+        modelAdapter: SequencedModelAdapter(actions: [
+            .finalAnswer("Explored the relevant files."),
+            .finalAnswer("Planned a small implementation."),
+            .finalAnswer("Applied the requested change."),
+            .finalAnswer("Validated the result."),
+        ]),
+        toolRegistry: ToolRegistry(tools: [
+            FileSystemTool(workspaceGuard: WorkspaceGuard(rootURL: root)),
+            ShellTool(executionRuntime: ProcessExecutionRuntime(), workspaceURL: root, commandPolicy: testShellPolicy),
+        ]),
+        persistence: SQLitePersistenceStore(databaseURL: dbURL),
+        workspaceSnapshot: WorkspaceSnapshot(
+            rootURL: root,
+            topLevelEntries: ["Sources/"],
+            instructionFiles: [],
+            gitBranch: "main",
+            gitStatusSummary: "## main"
+        )
+    )
+
+    var sawSubagentStart = false
+    var sawSubagentFinish = false
+    for await event in runtime.run(RunRequest(prompt: "implement a new feature in the runtime, validate it carefully, and summarize what remains")) {
+        if case .subagentStarted = event.payload {
+            sawSubagentStart = true
+        }
+        if case .subagentFinished = event.payload {
+            sawSubagentFinish = true
+        }
+    }
+
+    #expect(sawSubagentStart)
+    #expect(sawSubagentFinish)
+}
+
 @Test func runtimeRequiresConcreteValidationAfterChanges() async throws {
     let fileManager = FileManager.default
     let root = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)

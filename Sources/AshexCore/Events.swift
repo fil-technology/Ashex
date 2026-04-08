@@ -15,6 +15,8 @@ public enum RuntimeEventPayload: Codable, Sendable {
     case taskPlanCreated(runID: UUID, steps: [String])
     case taskStepStarted(runID: UUID, index: Int, total: Int, title: String)
     case taskStepFinished(runID: UUID, index: Int, total: Int, title: String, outcome: String)
+    case subagentStarted(runID: UUID, title: String, maxIterations: Int)
+    case subagentFinished(runID: UUID, title: String, summary: String)
     case changedFilesTracked(runID: UUID, paths: [String])
     case status(runID: UUID, message: String)
     case messageAppended(runID: UUID, messageID: UUID, role: MessageRole)
