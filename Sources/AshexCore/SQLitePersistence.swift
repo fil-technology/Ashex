@@ -86,6 +86,9 @@ public final class SQLitePersistenceStore: PersistenceStore, @unchecked Sendable
                 current_phase TEXT,
                 inspected_paths_json TEXT NOT NULL,
                 changed_paths_json TEXT NOT NULL,
+                recent_findings_json TEXT NOT NULL DEFAULT '[]',
+                completed_steps_json TEXT NOT NULL DEFAULT '[]',
+                unresolved_items_json TEXT NOT NULL DEFAULT '[]',
                 validation_suggestions_json TEXT NOT NULL,
                 summary TEXT NOT NULL,
                 updated_at REAL NOT NULL
@@ -114,6 +117,9 @@ public final class SQLitePersistenceStore: PersistenceStore, @unchecked Sendable
                 PRIMARY KEY (namespace, key)
             );
             """)
+            try ensureColumnExists(table: "working_memory", column: "recent_findings_json", definition: "TEXT NOT NULL DEFAULT '[]'")
+            try ensureColumnExists(table: "working_memory", column: "completed_steps_json", definition: "TEXT NOT NULL DEFAULT '[]'")
+            try ensureColumnExists(table: "working_memory", column: "unresolved_items_json", definition: "TEXT NOT NULL DEFAULT '[]'")
         }
     }
 
@@ -303,6 +309,9 @@ public final class SQLitePersistenceStore: PersistenceStore, @unchecked Sendable
         currentPhase: String?,
         inspectedPaths: [String],
         changedPaths: [String],
+        recentFindings: [String],
+        completedStepSummaries: [String],
+        unresolvedItems: [String],
         validationSuggestions: [String],
         summary: String,
         now: Date
@@ -316,6 +325,9 @@ public final class SQLitePersistenceStore: PersistenceStore, @unchecked Sendable
                 currentPhase: currentPhase,
                 inspectedPaths: inspectedPaths,
                 changedPaths: changedPaths,
+                recentFindings: recentFindings,
+                completedStepSummaries: completedStepSummaries,
+                unresolvedItems: unresolvedItems,
                 validationSuggestions: validationSuggestions,
                 summary: summary,
                 updatedAt: now
@@ -323,8 +335,8 @@ public final class SQLitePersistenceStore: PersistenceStore, @unchecked Sendable
             try exec(
                 """
                 INSERT OR REPLACE INTO working_memory
-                (id, run_id, current_task, current_phase, inspected_paths_json, changed_paths_json, validation_suggestions_json, summary, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, run_id, current_task, current_phase, inspected_paths_json, changed_paths_json, recent_findings_json, completed_steps_json, unresolved_items_json, validation_suggestions_json, summary, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 bind: [
                     .text(record.id.uuidString),
@@ -333,6 +345,9 @@ public final class SQLitePersistenceStore: PersistenceStore, @unchecked Sendable
                     .text(record.currentPhase),
                     .text(try encodeJSONString(record.inspectedPaths)),
                     .text(try encodeJSONString(record.changedPaths)),
+                    .text(try encodeJSONString(record.recentFindings)),
+                    .text(try encodeJSONString(record.completedStepSummaries)),
+                    .text(try encodeJSONString(record.unresolvedItems)),
                     .text(try encodeJSONString(record.validationSuggestions)),
                     .text(record.summary),
                     .double(now.timeIntervalSince1970),
@@ -685,20 +700,20 @@ public final class SQLitePersistenceStore: PersistenceStore, @unchecked Sendable
         }
     }
 
-    private func queryStrings(_ sql: String) throws -> [String] {
+    private func queryStrings(_ sql: String, columnIndex: Int32 = 0) throws -> [String] {
         var statement: OpaquePointer?
         defer { sqlite3_finalize(statement) }
         try prepare(sql, statement: &statement)
         var values: [String] = []
         while sqlite3_step(statement) == SQLITE_ROW {
-            values.append(columnText(statement, index: 0))
+            values.append(columnText(statement, index: columnIndex))
         }
         return values
     }
 
     private func fetchWorkingMemoryLocked(runID: UUID) throws -> WorkingMemoryRecord? {
         let sql = """
-        SELECT id, current_task, current_phase, inspected_paths_json, changed_paths_json, validation_suggestions_json, summary, updated_at
+        SELECT id, current_task, current_phase, inspected_paths_json, changed_paths_json, recent_findings_json, completed_steps_json, unresolved_items_json, validation_suggestions_json, summary, updated_at
         FROM working_memory
         WHERE run_id = ?
         LIMIT 1
@@ -715,10 +730,19 @@ public final class SQLitePersistenceStore: PersistenceStore, @unchecked Sendable
             currentPhase: columnNullableText(statement, index: 2),
             inspectedPaths: try decodeStringArrayJSON(columnText(statement, index: 3)),
             changedPaths: try decodeStringArrayJSON(columnText(statement, index: 4)),
-            validationSuggestions: try decodeStringArrayJSON(columnText(statement, index: 5)),
-            summary: columnText(statement, index: 6),
-            updatedAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 7))
+            recentFindings: try decodeStringArrayJSON(columnText(statement, index: 5)),
+            completedStepSummaries: try decodeStringArrayJSON(columnText(statement, index: 6)),
+            unresolvedItems: try decodeStringArrayJSON(columnText(statement, index: 7)),
+            validationSuggestions: try decodeStringArrayJSON(columnText(statement, index: 8)),
+            summary: columnText(statement, index: 9),
+            updatedAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 10))
         )
+    }
+
+    private func ensureColumnExists(table: String, column: String, definition: String) throws {
+        let existingColumns = try queryStrings("PRAGMA table_info(\(table))", columnIndex: 1)
+        guard !existingColumns.contains(column) else { return }
+        try exec("ALTER TABLE \(table) ADD COLUMN \(column) \(definition)")
     }
 
     private func prepare(_ sql: String, statement: inout OpaquePointer?) throws {

@@ -2578,6 +2578,9 @@ final class TUIApp {
             if let memory, let phase = memory.currentPhase {
                 lines.append("[history] memory phase \(phase) • \(memory.changedPaths.count) changed")
             }
+            if let memory, !memory.unresolvedItems.isEmpty {
+                lines.append("[history] unresolved \(memory.unresolvedItems.count)")
+            }
             if !steps.isEmpty {
                 lines.append("[history] \(steps.count) persisted steps")
                 lines.append(contentsOf: steps.suffix(2).map { "[history] step \($0.index) \($0.state.rawValue) - \($0.title)" })
@@ -2634,6 +2637,15 @@ final class TUIApp {
                 }
                 if !memory.changedPaths.isEmpty {
                     runLines.append("  changed \(memory.changedPaths.joined(separator: ", "))")
+                }
+                if !memory.recentFindings.isEmpty {
+                    runLines.append("  findings \(memory.recentFindings.joined(separator: " | "))")
+                }
+                if !memory.completedStepSummaries.isEmpty {
+                    runLines.append("  completed \(memory.completedStepSummaries.joined(separator: " | "))")
+                }
+                if !memory.unresolvedItems.isEmpty {
+                    runLines.append("  unresolved \(memory.unresolvedItems.joined(separator: " | "))")
                 }
                 if !memory.validationSuggestions.isEmpty {
                     runLines.append("  validate \(memory.validationSuggestions.joined(separator: ", "))")

@@ -264,6 +264,9 @@ public struct WorkingMemoryRecord: Codable, Sendable, Equatable {
     public let currentPhase: String?
     public let inspectedPaths: [String]
     public let changedPaths: [String]
+    public let recentFindings: [String]
+    public let completedStepSummaries: [String]
+    public let unresolvedItems: [String]
     public let validationSuggestions: [String]
     public let summary: String
     public let updatedAt: Date
@@ -275,6 +278,9 @@ public struct WorkingMemoryRecord: Codable, Sendable, Equatable {
         currentPhase: String?,
         inspectedPaths: [String],
         changedPaths: [String],
+        recentFindings: [String],
+        completedStepSummaries: [String],
+        unresolvedItems: [String],
         validationSuggestions: [String],
         summary: String,
         updatedAt: Date
@@ -285,6 +291,9 @@ public struct WorkingMemoryRecord: Codable, Sendable, Equatable {
         self.currentPhase = currentPhase
         self.inspectedPaths = inspectedPaths
         self.changedPaths = changedPaths
+        self.recentFindings = recentFindings
+        self.completedStepSummaries = completedStepSummaries
+        self.unresolvedItems = unresolvedItems
         self.validationSuggestions = validationSuggestions
         self.summary = summary
         self.updatedAt = updatedAt

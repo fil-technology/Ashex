@@ -143,6 +143,7 @@ Ashex is now split a bit more like a real coding-agent harness instead of pushin
 - `ContextManager` prepares the active turn context, estimates token pressure, and compacts older transcript history when needed
 - `WorkspaceSnapshotBuilder` captures stable repo facts up front, like top-level entries, instruction files, and lightweight git state
 - `WorkingMemory` keeps a distilled per-run view of the current task, phase, inspected paths, changed paths, and suggested validation
+- working memory now also keeps recent findings, completed step summaries, and unresolved items for better long-session continuity
 - `ToolExecutor` owns tool resolution, approval checks, execution, persistence, and streaming tool events
 - `AgentRuntime` coordinates run lifecycle, step execution, and durable run-step state while staying smaller than before
 
@@ -171,6 +172,7 @@ The first compaction strategy is intentionally simple but real:
 - older messages are not only dropped; they are summarized into a synthetic compaction summary
 - each compaction is persisted in SQLite as a `context_compactions` record
 - each run also persists a `workspace_snapshots` record and a rolling `working_memory` record
+- history replay surfaces the persisted working-memory state so resume context is inspectable instead of hidden in raw transcript only
 - the runtime emits both `contextPrepared` and `contextCompacted` events so the CLI/TUI can surface what happened
 
 This keeps the current single-agent runtime small while creating clean seams for future:
@@ -191,6 +193,6 @@ Ashex is now a serious local coding-agent foundation, but it is still not at Cod
 - deeper automatic exploration and file targeting for large coding tasks
 - stronger validation execution and check selection beyond the current gating and suggestion layer
 - richer patch planning and multi-file edit workflows
-- longer-session memory quality and resume behavior
+- even stronger longer-session memory quality and thread continuation behavior
 - more reliable large-task execution
 - bounded subagents later, on top of the current single-agent harness

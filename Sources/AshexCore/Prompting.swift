@@ -466,6 +466,15 @@ public enum PromptBuilder {
         if !memory.changedPaths.isEmpty {
             lines.append("Changed paths: \(memory.changedPaths.joined(separator: ", "))")
         }
+        if !memory.recentFindings.isEmpty {
+            lines.append("Recent findings: \(memory.recentFindings.joined(separator: " | "))")
+        }
+        if !memory.completedStepSummaries.isEmpty {
+            lines.append("Completed steps: \(memory.completedStepSummaries.joined(separator: " | "))")
+        }
+        if !memory.unresolvedItems.isEmpty {
+            lines.append("Unresolved items: \(memory.unresolvedItems.joined(separator: " | "))")
+        }
         if !memory.validationSuggestions.isEmpty {
             lines.append("Suggested validation: \(memory.validationSuggestions.joined(separator: ", "))")
         }

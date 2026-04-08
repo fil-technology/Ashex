@@ -25,10 +25,10 @@ This file tracks the remaining work to move Ashex from a serious local MVP towar
 
 ## Milestone 4: Better Long-Context Handling
 
-- [ ] Strengthen working memory quality for long coding tasks
-- [ ] Improve compaction and deduplication quality beyond the current simple strategy
-- [ ] Improve session resume continuity across long threads
-- [ ] Verify with targeted runtime and unit tests
+- [x] Strengthen working memory quality for long coding tasks
+- [x] Improve compaction and deduplication quality beyond the current simple strategy
+- [x] Improve session resume continuity across long threads
+- [x] Verify with targeted runtime and unit tests
 
 ## Milestone 5: Large-Task Reliability
 

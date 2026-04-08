@@ -370,6 +370,9 @@ private let testShellPolicy = ShellCommandPolicy(config: .default)
         currentPhase: "exploration",
         inspectedPaths: ["Sources/AshexCore/Prompting.swift"],
         changedPaths: ["README.md"],
+        recentFindings: ["Inspected Prompting.swift and found compaction entry points."],
+        completedStepSummaries: ["Explored the harness files."],
+        unresolvedItems: ["Need to validate context persistence."],
         validationSuggestions: ["git diff", "run targeted tests"],
         summary: "Collected relevant harness files.",
         now: now
@@ -385,6 +388,9 @@ private let testShellPolicy = ShellCommandPolicy(config: .default)
     #expect(memory?.currentPhase == "exploration")
     #expect(memory?.inspectedPaths == ["Sources/AshexCore/Prompting.swift"])
     #expect(memory?.changedPaths == ["README.md"])
+    #expect(memory?.recentFindings == ["Inspected Prompting.swift and found compaction entry points."])
+    #expect(memory?.completedStepSummaries == ["Explored the harness files."])
+    #expect(memory?.unresolvedItems == ["Need to validate context persistence."])
 }
 
 @Test func ollamaGuardrailWarnsForMemoryHeavyModel() {

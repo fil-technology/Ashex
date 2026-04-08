@@ -100,6 +100,9 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                 currentPhase: nil,
                 inspectedPaths: [],
                 changedPaths: [],
+                recentFindings: [],
+                completedStepSummaries: [],
+                unresolvedItems: [],
                 validationSuggestions: Self.validationSuggestions(for: request.prompt, taskKind: taskKind),
                 summary: "Run created and waiting for planning/execution.",
                 now: clock()
@@ -148,6 +151,8 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                     workflowState: nil,
                     changedFiles: changedFiles,
                     summary: "Current step \(index + 1)/\(steps.count): \(step.title)",
+                    completedStepSummaries: stepSummaries,
+                    unresolvedItems: stepSummaries.filter { $0.hasPrefix("Skipped:") },
                     overrideSuggestions: Self.validationSuggestions(for: request.prompt, taskKind: taskKind, phase: step.phase)
                 )
                 try emitter.emit(.taskStepStarted(runID: run.id, index: index + 1, total: steps.count, title: step.title), runID: run.id)
@@ -224,6 +229,8 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                 workflowState: nil,
                 changedFiles: changedFiles,
                 summary: finalAnswerText,
+                completedStepSummaries: stepSummaries,
+                unresolvedItems: stepSummaries.filter { $0.hasPrefix("Skipped:") },
                 overrideSuggestions: []
             )
 
@@ -383,6 +390,8 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                         workflowState: workflowState,
                         changedFiles: changedFiles,
                         summary: metadata.summary.isEmpty ? text : metadata.summary,
+                        completedStepSummaries: [],
+                        unresolvedItems: [],
                         overrideSuggestions: Self.validationSuggestions(for: stepPrompt, taskKind: taskKind, phase: stepPhase, changedFiles: changedFiles.map(\.path))
                     )
                     if !newChanges.isEmpty {
@@ -505,10 +514,13 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         workflowState: StepWorkflowState?,
         changedFiles: [ChangedArtifact],
         summary: String,
+        completedStepSummaries: [String] = [],
+        unresolvedItems: [String] = [],
         overrideSuggestions: [String]? = nil
     ) throws {
         let inspectedPaths = workflowState.map { Array($0.inspectedArtifacts).sorted() } ?? []
         let changedPaths = Self.orderedUniqueChanges(from: changedFiles).map(\.path)
+        let recentFindings = workflowState?.recentFindings ?? []
         let suggestions = overrideSuggestions ?? Self.validationSuggestions(for: currentTask, taskKind: TaskPlanner.classify(prompt: currentTask), phase: currentPhase, changedFiles: changedPaths)
         _ = try persistence.upsertWorkingMemory(
             runID: runID,
@@ -516,6 +528,9 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
             currentPhase: currentPhase?.rawValue,
             inspectedPaths: inspectedPaths,
             changedPaths: changedPaths,
+            recentFindings: recentFindings,
+            completedStepSummaries: completedStepSummaries.suffix(6).map { $0 },
+            unresolvedItems: unresolvedItems,
             validationSuggestions: suggestions,
             summary: summary,
             now: clock()
@@ -660,6 +675,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
 private struct StepWorkflowState {
     private(set) var inspectedArtifacts: Set<String> = []
     private(set) var validationArtifacts: Set<String> = []
+    private(set) var recentFindings: [String] = []
 
     var hasPriorInspection: Bool {
         !inspectedArtifacts.isEmpty
@@ -679,6 +695,12 @@ private struct StepWorkflowState {
     mutating func record(metadata: ToolExecutionMetadata) {
         inspectedArtifacts.formUnion(metadata.inspectedPaths)
         validationArtifacts.formUnion(metadata.validationArtifacts)
+        if !metadata.summary.isEmpty {
+            recentFindings.append(metadata.summary)
+            if recentFindings.count > 6 {
+                recentFindings.removeFirst(recentFindings.count - 6)
+            }
+        }
     }
 
     private func normalizePath(_ path: String) -> String {
