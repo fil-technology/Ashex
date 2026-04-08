@@ -289,6 +289,8 @@ Already implemented in the repo:
   - Anthropic
   - Ollama
 - Guarded approvals and shell policy config
+- Provider secrets moved to Keychain with legacy SQLite credential migration
+- Shell command policy can escalate unknown commands into guarded approval flow
 - Task planning and phase-aware execution
 - Inspect-before-mutate enforcement
 - Working memory and workspace snapshot persistence
@@ -306,7 +308,7 @@ Most important remaining work:
 - stronger validation execution and check selection beyond the current gating layer
 - richer patch planning and multi-file edit workflows
 - even stronger longer-session memory quality and thread continuation behavior
-- secrets, safety, and sandboxing hardening
+- deeper secrets, safety, and sandboxing hardening beyond the current Keychain storage and shell-policy enforcement
 - bounded subagents later
 
 Likely next highest-value step:

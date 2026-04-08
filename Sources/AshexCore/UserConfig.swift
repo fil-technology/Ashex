@@ -49,23 +49,75 @@ public struct ShellCommandPolicyConfig: Codable, Sendable {
 public struct ShellCommandPolicy: Sendable {
     public let config: ShellCommandPolicyConfig
 
+    public enum Assessment: Sendable, Equatable {
+        case allow
+        case requireApproval(String)
+        case deny(String)
+    }
+
     public init(config: ShellCommandPolicyConfig) {
         self.config = config
     }
 
-    public func validate(command: String) throws {
-        let normalized = command.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    public func assess(command: String) -> Assessment {
+        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalized = trimmed.lowercased()
 
         if let denied = config.denyList.first(where: { normalized.hasPrefix($0.lowercased()) }) {
-            throw AshexError.shell("Command denied by config policy: '\(command)'. It matches deny rule '\(denied)'. Update ashex.config.json if you want to allow it.")
+            return .deny("Command denied by config policy: '\(command)'. It matches deny rule '\(denied)'. Update ashex.config.json if you want to allow it.")
         }
 
-        guard !config.allowList.isEmpty else { return }
-
-        let allowed = config.allowList.contains { normalized.hasPrefix($0.lowercased()) }
-        if !allowed {
-            throw AshexError.shell("Command blocked by config policy: '\(command)'. It does not match the current allow list in ashex.config.json.")
+        if !config.allowList.isEmpty {
+            let allowed = config.allowList.contains { normalized.hasPrefix($0.lowercased()) }
+            if allowed {
+                return .allow
+            }
+            if config.requireApprovalForUnknownCommands {
+                return .requireApproval("Command '\(trimmed)' is outside the configured allow list and requires approval before execution.")
+            }
+            return .deny("Command blocked by config policy: '\(command)'. It does not match the current allow list in ashex.config.json.")
         }
+
+        guard config.requireApprovalForUnknownCommands else {
+            return .allow
+        }
+
+        if knownSafePrefixes.contains(where: { normalized.hasPrefix($0) }) {
+            return .allow
+        }
+
+        return .requireApproval("Command '\(trimmed)' is not on the recognized safe command list and requires approval before execution.")
+    }
+
+    public func validate(command: String) throws {
+        switch assess(command: command) {
+        case .allow:
+            return
+        case .requireApproval(let message), .deny(let message):
+            throw AshexError.shell(message)
+        }
+    }
+
+    private var knownSafePrefixes: [String] {
+        [
+            "ls",
+            "pwd",
+            "cat ",
+            "sed ",
+            "head ",
+            "tail ",
+            "wc ",
+            "rg ",
+            "find ",
+            "grep ",
+            "git status",
+            "git diff",
+            "git log",
+            "git show",
+            "swift build",
+            "swift test",
+            "xcodebuild -list",
+        ]
     }
 }
 

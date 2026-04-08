@@ -39,10 +39,10 @@ This file tracks the remaining work to move Ashex from a serious local MVP towar
 
 ## Milestone 6: Secrets, Safety, and Sandboxing
 
-- [ ] Move provider secrets to a safer local storage mechanism
-- [ ] Tighten command and mutation safety boundaries
-- [ ] Improve approval auditing and safety UX
-- [ ] Verify with targeted runtime and unit tests
+- [x] Move provider secrets to a safer local storage mechanism
+- [x] Tighten command and mutation safety boundaries
+- [x] Improve approval auditing and safety UX
+- [x] Verify with targeted runtime and unit tests
 
 ## Milestone 7: Multi-Workspace and Session UX
 

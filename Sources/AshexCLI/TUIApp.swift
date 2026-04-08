@@ -64,6 +64,7 @@ final class TUIApp {
     private let configuration: CLIConfiguration
     private var runtime: AgentRuntime
     private var historyStore: SQLitePersistenceStore
+    private let secretStore: any SecretStore
     private let terminal = TerminalController()
     private let surface = TerminalSurface()
     private let approvalCoordinator: TUIApprovalCoordinator
@@ -127,6 +128,7 @@ final class TUIApp {
         let historyStore = SQLitePersistenceStore(databaseURL: configuration.storageRoot.appendingPathComponent("ashex.sqlite"))
         self.configuration = configuration
         self.historyStore = historyStore
+        self.secretStore = configuration.makeSecretStore()
         self.approvalCoordinator = approvalCoordinator
         self.sessionWorkspaceRoot = configuration.workspaceRoot
         self.sessionStorageRoot = configuration.storageRoot
@@ -893,12 +895,7 @@ final class TUIApp {
 
         do {
             let keyName = CLIConfiguration.apiKeySettingKey(for: sessionProvider)
-            try historyStore.upsertSetting(
-                namespace: "provider.credentials",
-                key: keyName,
-                value: .string(normalized),
-                now: Date()
-            )
+            try secretStore.writeSecret(namespace: "provider.credentials", key: keyName, value: normalized)
             apiKeyInput = ""
             inputMode = .prompt
             focus = .settings
@@ -1442,6 +1439,10 @@ final class TUIApp {
             lines.append("\(TerminalUIStyle.slate)\(TerminalUIStyle.truncateVisible("Deny list prefixes: " + shellPolicy.denyList.joined(separator: ", "), limit: width))\(TerminalUIStyle.reset)")
         }
 
+        lines.append(
+            "\(TerminalUIStyle.slate)Unknown commands require approval: \(shellPolicy.requireApprovalForUnknownCommands ? "yes" : "no")\(TerminalUIStyle.reset)"
+        )
+
         lines.append("")
         lines.append("\(TerminalUIStyle.faint)Ashex creates this config file on first run if it does not exist.\(TerminalUIStyle.reset)")
         return lines
@@ -1534,9 +1535,9 @@ final class TUIApp {
         }
 
         do {
-            if let persisted = try historyStore.fetchSetting(namespace: "provider.credentials", key: CLIConfiguration.apiKeySettingKey(for: provider))?.value.stringValue,
+            if let persisted = try secretStore.readSecret(namespace: "provider.credentials", key: CLIConfiguration.apiKeySettingKey(for: provider)),
                !persisted.isEmpty {
-                return "Saved locally (\(maskSecret(persisted)))"
+                return "Saved in Keychain (\(maskSecret(persisted)))"
             }
         } catch {
             return "Lookup failed"
@@ -2691,6 +2692,7 @@ final class TUIApp {
 
         let modelAdapter = try configuration.makeModelAdapter(provider: provider, model: model)
         let persistence = SQLitePersistenceStore(databaseURL: sessionStorageRoot.appendingPathComponent("ashex.sqlite"))
+        let shellPolicy = ShellCommandPolicy(config: sessionUserConfig.shell)
         return try AgentRuntime(
             modelAdapter: modelAdapter,
             toolRegistry: ToolRegistry(tools: [
@@ -2702,11 +2704,12 @@ final class TUIApp {
                 ShellTool(
                     executionRuntime: ProcessExecutionRuntime(),
                     workspaceURL: sessionWorkspaceRoot,
-                    commandPolicy: ShellCommandPolicy(config: sessionUserConfig.shell)
+                    commandPolicy: shellPolicy
                 ),
             ]),
             persistence: persistence,
             approvalPolicy: approvalPolicy,
+            shellCommandPolicy: shellPolicy,
             workspaceSnapshot: WorkspaceSnapshotBuilder.capture(workspaceRoot: sessionWorkspaceRoot)
         )
     }

@@ -66,6 +66,7 @@ TUI highlights:
 - Switch between `mock`, `ollama`, `openai`, and `anthropic` without restarting
 - Edit the active model name from the TUI
 - Save provider API keys from the TUI settings screen
+- Store provider API keys in macOS Keychain instead of SQLite settings
 - Persist provider/model defaults across launches
 - Switch the active workspace live from the TUI or with `:workspace /path`
 - Browse persisted thread/run history and load prior transcripts back into the viewer
@@ -106,6 +107,18 @@ Provider environment variables:
 - `OLLAMA_BASE_URL`: optional Ollama chat endpoint, default `http://localhost:11434/api/chat`
 - `ASHEX_ALLOW_LARGE_MODELS=1`: optional override if you intentionally want to bypass local-model memory guardrails
 
+Shell policy config in `ashex.config.json`:
+
+- `allowList`: explicit command prefixes that are allowed to run
+- `denyList`: explicit command prefixes that are blocked
+- `requireApprovalForUnknownCommands`: when enabled, commands outside the configured allow list or outside the built-in recognized safe list require approval in guarded mode
+
+Provider secrets:
+
+- OpenAI and Anthropic API keys entered in the TUI are stored in macOS Keychain
+- environment variables still take precedence over locally saved secrets
+- older SQLite-stored provider secrets are migrated forward automatically when read
+
 Guarded mode examples:
 
 ```bash
@@ -118,6 +131,7 @@ In guarded mode:
 - shell commands require approval
 - filesystem writes and mutating filesystem operations require approval
 - read-only filesystem operations continue without prompting
+- shell commands outside configured allow/safe rules can also be escalated into the same approval flow
 
 TUI controls:
 

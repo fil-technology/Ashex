@@ -22,6 +22,7 @@ struct ToolExecutor: Sendable {
     let toolRegistry: ToolRegistry
     let persistence: PersistenceStore
     let approvalPolicy: any ApprovalPolicy
+    let shellCommandPolicy: ShellCommandPolicy?
     let clock: @Sendable () -> Date
 
     func execute(
@@ -51,7 +52,17 @@ struct ToolExecutor: Sendable {
 
         let toolCall = try persistence.recordToolCall(runID: runID, toolName: tool.name, arguments: call.arguments, now: clock())
 
-        if let approvalRequest = ApprovalClassifier.requestForTool(runID: runID, toolName: tool.name, arguments: call.arguments),
+        if let shellPolicyViolation = shellPolicyViolation(for: call) {
+            let toolMessage = try persistence.appendMessage(threadID: threadID, runID: runID, role: .tool, content: shellPolicyViolation, now: clock())
+            try emitter.emit(.messageAppended(runID: runID, messageID: toolMessage.id, role: .tool), runID: runID)
+            try persistence.finishToolCall(toolCallID: toolCall.id, status: "blocked", output: shellPolicyViolation, finishedAt: clock())
+            try emitter.emit(.toolCallFinished(runID: runID, toolCallID: toolCall.id, success: false, summary: shellPolicyViolation), runID: runID)
+            throw AshexError.shell(shellPolicyViolation)
+        }
+
+        let policyDrivenApprovalRequest = shellApprovalRequest(for: call, runID: runID)
+
+        if let approvalRequest = policyDrivenApprovalRequest ?? ApprovalClassifier.requestForTool(runID: runID, toolName: tool.name, arguments: call.arguments),
            approvalPolicy.mode == .guarded {
             try emitter.emit(.approvalRequested(
                 runID: runID,
@@ -134,6 +145,45 @@ struct ToolExecutor: Sendable {
         try emitter.emit(.messageAppended(runID: runID, messageID: toolMessage.id, role: .tool), runID: runID)
         try emitter.emit(.status(runID: runID, message: "Model requested an invalid tool action. Asking for a corrected tool call."), runID: runID)
         return true
+    }
+
+    private func shellPolicyViolation(for call: ToolCallRequest) -> String? {
+        guard call.toolName == "shell",
+              let command = call.arguments["command"]?.stringValue,
+              let shellCommandPolicy else {
+            return nil
+        }
+
+        switch shellCommandPolicy.assess(command: command) {
+        case .allow:
+            return nil
+        case .requireApproval(let message):
+            guard approvalPolicy.mode != .guarded else { return nil }
+            return "Tool error: \(message) Run Ashex in guarded approval mode to approve it interactively, or add the command prefix to ashex.config.json."
+        case .deny(let message):
+            return "Tool error: \(message)"
+        }
+    }
+
+    private func shellApprovalRequest(for call: ToolCallRequest, runID: UUID) -> ApprovalRequest? {
+        guard call.toolName == "shell",
+              let command = call.arguments["command"]?.stringValue,
+              let shellCommandPolicy else {
+            return nil
+        }
+
+        guard case .requireApproval(let message) = shellCommandPolicy.assess(command: command) else {
+            return nil
+        }
+
+        return ApprovalRequest(
+            runID: runID,
+            toolName: "shell",
+            arguments: call.arguments,
+            summary: "Shell command outside config allow rules",
+            reason: "\(command)\n\(message)",
+            risk: .medium
+        )
     }
 
     private func inspectBeforeMutateViolation(for call: ToolCallRequest, preconditions: ToolExecutionPreconditions) -> String? {

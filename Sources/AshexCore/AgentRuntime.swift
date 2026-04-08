@@ -30,6 +30,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         toolRegistry: ToolRegistry,
         persistence: PersistenceStore,
         approvalPolicy: any ApprovalPolicy = TrustedApprovalPolicy(),
+        shellCommandPolicy: ShellCommandPolicy? = nil,
         workspaceSnapshot: WorkspaceSnapshot? = nil,
         clock: @escaping @Sendable () -> Date = Date.init
     ) throws {
@@ -43,6 +44,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
             toolRegistry: toolRegistry,
             persistence: persistence,
             approvalPolicy: approvalPolicy,
+            shellCommandPolicy: shellCommandPolicy,
             clock: clock
         )
         try persistence.initialize()

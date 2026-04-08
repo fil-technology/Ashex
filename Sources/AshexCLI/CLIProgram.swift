@@ -241,6 +241,7 @@ struct CLIConfiguration {
         let workspaceURL = workspaceRoot.standardizedFileURL
         let persistence = SQLitePersistenceStore(databaseURL: storageRoot.appendingPathComponent("ashex.sqlite"))
         let workspaceSnapshot = WorkspaceSnapshotBuilder.capture(workspaceRoot: workspaceURL)
+        let shellPolicy = ShellCommandPolicy(config: userConfig.shell)
         return try AgentRuntime(
             modelAdapter: makeModelAdapter(provider: provider, model: model),
             toolRegistry: ToolRegistry(tools: [
@@ -252,11 +253,12 @@ struct CLIConfiguration {
                 ShellTool(
                     executionRuntime: ProcessExecutionRuntime(),
                     workspaceURL: workspaceURL,
-                    commandPolicy: ShellCommandPolicy(config: userConfig.shell)
+                    commandPolicy: shellPolicy
                 ),
             ]),
             persistence: persistence,
             approvalPolicy: approvalPolicy,
+            shellCommandPolicy: shellPolicy,
             workspaceSnapshot: workspaceSnapshot
         )
     }
@@ -321,8 +323,20 @@ struct CLIConfiguration {
             return envKey
         }
 
+        let secretStore = makeSecretStore()
+        if let stored = try secretStore.readSecret(namespace: SessionSetting.credentialsNamespace, key: Self.apiKeySettingKey(for: provider)),
+           !stored.isEmpty {
+            return stored
+        }
+
         let store = try Self.makeSettingsStore(storageRoot: storageRoot)
-        return try store.fetchSetting(namespace: SessionSetting.credentialsNamespace, key: Self.apiKeySettingKey(for: provider))?.value.stringValue
+        if let legacy = try store.fetchSetting(namespace: SessionSetting.credentialsNamespace, key: Self.apiKeySettingKey(for: provider))?.value.stringValue,
+           !legacy.isEmpty {
+            try? secretStore.writeSecret(namespace: SessionSetting.credentialsNamespace, key: Self.apiKeySettingKey(for: provider), value: legacy)
+            return legacy
+        }
+
+        return nil
     }
 
     static func environmentAPIKeyName(for provider: String) -> String {
@@ -346,17 +360,40 @@ struct CLIConfiguration {
     ) throws -> String? {
         guard let persistedModel, persistedModel != "mock" else { return nil }
 
+        let secretStore = KeychainSecretStore()
+        let hasOpenAISecret = (try secretStore.readSecret(
+            namespace: SessionSetting.credentialsNamespace,
+            key: apiKeySettingKey(for: "openai")
+        ))?.isEmpty == false
+        let hasLegacyOpenAISecret = try store.fetchSetting(
+            namespace: SessionSetting.credentialsNamespace,
+            key: apiKeySettingKey(for: "openai")
+        )?.value.stringValue?.isEmpty == false
+
         if persistedModel.hasPrefix("gpt-"),
-           try store.fetchSetting(namespace: SessionSetting.credentialsNamespace, key: apiKeySettingKey(for: "openai"))?.value.stringValue?.isEmpty == false {
+           hasOpenAISecret || hasLegacyOpenAISecret {
             return "openai"
         }
 
+        let hasAnthropicSecret = (try secretStore.readSecret(
+            namespace: SessionSetting.credentialsNamespace,
+            key: apiKeySettingKey(for: "anthropic")
+        ))?.isEmpty == false
+        let hasLegacyAnthropicSecret = try store.fetchSetting(
+            namespace: SessionSetting.credentialsNamespace,
+            key: apiKeySettingKey(for: "anthropic")
+        )?.value.stringValue?.isEmpty == false
+
         if persistedModel.hasPrefix("claude"),
-           try store.fetchSetting(namespace: SessionSetting.credentialsNamespace, key: apiKeySettingKey(for: "anthropic"))?.value.stringValue?.isEmpty == false {
+           hasAnthropicSecret || hasLegacyAnthropicSecret {
             return "anthropic"
         }
 
         return nil
+    }
+
+    func makeSecretStore() -> any SecretStore {
+        KeychainSecretStore()
     }
 
     private static func makeSettingsStore(storageRoot: URL) throws -> SQLitePersistenceStore {
