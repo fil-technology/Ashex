@@ -18,10 +18,10 @@ This file tracks the remaining work to move Ashex from a serious local MVP towar
 
 ## Milestone 3: First-Class Patch/Edit Workflow
 
-- [ ] Add a structured patch/edit tool flow instead of relying mainly on raw writes and replaces
-- [ ] Improve diff-native summaries of edits
-- [ ] Make per-file changes easier to inspect in the TUI/history
-- [ ] Verify with targeted runtime and unit tests
+- [x] Add a structured patch/edit tool flow instead of relying mainly on raw writes and replaces
+- [x] Improve diff-native summaries of edits
+- [x] Make per-file changes easier to inspect in the TUI/history
+- [x] Verify with targeted runtime and unit tests
 
 ## Milestone 4: Better Long-Context Handling
 

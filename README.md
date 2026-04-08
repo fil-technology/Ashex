@@ -163,6 +163,7 @@ Current runtime capabilities also include:
 - inspect-before-mutate enforcement for coding and edit tasks
 - changed-file tracking during the run
 - validation gating that asks the model for concrete verification before concluding an edited run
+- a structured `apply_patch` file-edit path for multi-edit diff-native mutations
 - final summaries that can include changed files, why they changed, and what remains
 
 The first compaction strategy is intentionally simple but real:
@@ -189,7 +190,7 @@ Ashex is now a serious local coding-agent foundation, but it is still not at Cod
 
 - deeper automatic exploration and file targeting for large coding tasks
 - stronger validation execution and check selection beyond the current gating and suggestion layer
-- first-class patch/edit workflows
+- richer patch planning and multi-file edit workflows
 - longer-session memory quality and resume behavior
 - more reliable large-task execution
 - bounded subagents later, on top of the current single-agent harness

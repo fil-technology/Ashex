@@ -82,6 +82,50 @@ private let testShellPolicy = ShellCommandPolicy(config: .default)
     #expect(sawFinalAnswer)
 }
 
+@Test func filesystemToolAppliesStructuredPatchEdits() async throws {
+    let fileManager = FileManager.default
+    let root = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+    let fileURL = root.appendingPathComponent("note.txt")
+    try "alpha\nbeta\ngamma\n".write(to: fileURL, atomically: true, encoding: .utf8)
+
+    let tool = FileSystemTool(workspaceGuard: WorkspaceGuard(rootURL: root))
+    let result = try await tool.execute(
+        arguments: [
+            "operation": .string("apply_patch"),
+            "path": .string("note.txt"),
+            "edits": .array([
+                .object([
+                    "old_text": .string("alpha"),
+                    "new_text": .string("ALPHA"),
+                    "replace_all": .bool(false),
+                ]),
+                .object([
+                    "old_text": .string("gamma"),
+                    "new_text": .string("GAMMA"),
+                    "replace_all": .bool(false),
+                ]),
+            ]),
+        ],
+        context: ToolContext(runID: UUID(), emit: { _ in }, cancellation: CancellationToken())
+    )
+
+    let updatedContent = try String(contentsOf: fileURL, encoding: .utf8)
+    #expect(updatedContent.contains("ALPHA"))
+    #expect(updatedContent.contains("GAMMA"))
+    #expect(updatedContent.contains("beta"))
+
+    guard case .structured(let payload) = result,
+          let object = payload.objectValue else {
+        Issue.record("Expected structured apply_patch payload")
+        return
+    }
+
+    #expect(object["operation"]?.stringValue == "apply_patch")
+    #expect(object["edit_count"]?.intValue == 2)
+    #expect((object["diff"]?.arrayValue?.count ?? 0) > 0)
+}
+
 @Test func runtimeRecoversFromMalformedToolCall() async throws {
     let fileManager = FileManager.default
     let root = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)

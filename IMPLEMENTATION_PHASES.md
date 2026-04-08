@@ -296,12 +296,13 @@ Already implemented in the repo:
 - Task-type-aware exploration and validation guidance
 - Workspace-aware exploration strategy with concrete inspect/search/read recommendations
 - Validation gating that requires concrete verification before concluding edited runs
+- Structured patch-style file editing with diff-native summaries
 
 Most important remaining work:
 
 - deeper automatic exploration and file targeting for bigger coding tasks
 - stronger validation execution and check selection beyond the current gating layer
-- first-class patch/edit workflow
+- richer patch planning and multi-file edit workflows
 - longer-session memory quality and resume behavior
 - bounded subagents later
 
@@ -310,7 +311,7 @@ Likely next highest-value step:
 - Production-grade coding-agent behavior on top of the current harness:
   - deeper automatic exploration and file targeting for coding tasks
   - stronger validation execution and check selection
-  - first-class patch/edit workflow
+  - richer patch planning and multi-file edit workflows
   - longer-session memory quality and resume behavior
 
 After that:

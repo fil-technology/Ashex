@@ -147,7 +147,7 @@ struct ToolExecutor: Sendable {
         switch call.toolName {
         case "filesystem":
             let operation = call.arguments["operation"]?.stringValue ?? ""
-            return ["write_text_file", "replace_in_file", "create_directory", "delete_path", "move_path", "copy_path"].contains(operation)
+            return ["write_text_file", "replace_in_file", "apply_patch", "create_directory", "delete_path", "move_path", "copy_path"].contains(operation)
         case "shell":
             let command = call.arguments["command"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             return isMutatingShellCommand(command)
@@ -194,7 +194,7 @@ struct ToolExecutor: Sendable {
             let inspected = [path].compactMap { $0 }
             let validationArtifacts = operation == "read_text_file" || operation == "file_info" ? inspected : []
             return .init(inspectedPaths: inspected, changedPaths: [], validationArtifacts: validationArtifacts, summary: "inspected \(inspected.joined(separator: ", "))")
-        case "write_text_file", "replace_in_file", "create_directory", "delete_path":
+        case "write_text_file", "replace_in_file", "apply_patch", "create_directory", "delete_path":
             let changed = [path].compactMap { $0 }
             return .init(inspectedPaths: [], changedPaths: changed, validationArtifacts: [], summary: "changed \(changed.joined(separator: ", "))")
         case "move_path", "copy_path":

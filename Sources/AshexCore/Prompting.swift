@@ -363,15 +363,18 @@ public enum PromptBuilder {
             title: "Tool Contract",
             body: """
             For filesystem tool calls, always use the `operation` field with one of:
-            `read_text_file`, `write_text_file`, `replace_in_file`, `list_directory`, `create_directory`, `delete_path`, `move_path`, `copy_path`, `file_info`, `find_files`, `search_text`.
+            `read_text_file`, `write_text_file`, `replace_in_file`, `apply_patch`, `list_directory`, `create_directory`, `delete_path`, `move_path`, `copy_path`, `file_info`, `find_files`, `search_text`.
             For git tool calls, always use the `operation` field with one of:
             `status`, `current_branch`, `diff_unstaged`, `diff_staged`, `log`, `show_commit`.
             For shell tool calls, always send `command` and optional `timeout_seconds`.
+
+            Prefer `apply_patch` when multiple targeted edits are needed in the same file. Use `edits` as an array of objects with `old_text`, `new_text`, and `replace_all`.
 
             Canonical tool-call examples:
             {"type":"tool_call","final_answer":null,"tool_name":"filesystem","arguments":{"operation":"list_directory","path":"."}}
             {"type":"tool_call","final_answer":null,"tool_name":"filesystem","arguments":{"operation":"read_text_file","path":"README.md"}}
             {"type":"tool_call","final_answer":null,"tool_name":"filesystem","arguments":{"operation":"search_text","path":"Sources","query":"ApprovalPolicy","max_results":20}}
+            {"type":"tool_call","final_answer":null,"tool_name":"filesystem","arguments":{"operation":"apply_patch","path":"README.md","edits":[{"old_text":"old","new_text":"new","replace_all":false}]}}
             {"type":"tool_call","final_answer":null,"tool_name":"git","arguments":{"operation":"status","limit":null,"commit":null}}
             {"type":"tool_call","final_answer":null,"tool_name":"shell","arguments":{"command":"ls -la","timeout_seconds":30}}
             """,

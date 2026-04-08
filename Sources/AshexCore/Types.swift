@@ -61,6 +61,16 @@ public enum JSONValue: Codable, Sendable, Equatable {
         if case .array(let value) = self { return value }
         return nil
     }
+
+    public var objectValue: JSONObject? {
+        if case .object(let value) = self { return value }
+        return nil
+    }
+
+    public var boolValue: Bool? {
+        if case .bool(let value) = self { return value }
+        return nil
+    }
 }
 
 public enum MessageRole: String, Codable, Sendable {

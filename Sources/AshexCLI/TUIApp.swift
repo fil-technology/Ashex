@@ -1404,6 +1404,7 @@ final class TUIApp {
             "\(TerminalUIStyle.slate)read_text_file\(TerminalUIStyle.reset) Read UTF-8 text files inside the workspace",
             "\(TerminalUIStyle.slate)write_text_file\(TerminalUIStyle.reset) Write text files and show diffs in the transcript",
             "\(TerminalUIStyle.slate)replace_in_file\(TerminalUIStyle.reset) Replace text in a file and show the exact diff",
+            "\(TerminalUIStyle.slate)apply_patch\(TerminalUIStyle.reset) Apply multiple targeted edits to one file and show a combined diff",
             "\(TerminalUIStyle.slate)list_directory\(TerminalUIStyle.reset) Explore a directory and render a tree",
             "\(TerminalUIStyle.slate)create_directory\(TerminalUIStyle.reset) Create folders inside the workspace",
             "\(TerminalUIStyle.slate)delete_path\(TerminalUIStyle.reset) Delete files or folders in the workspace",
@@ -2132,6 +2133,8 @@ final class TUIApp {
                 return "[tool] editing \(path)"
             case "replace_in_file":
                 return "[tool] replacing text in \(path)"
+            case "apply_patch":
+                return "[tool] patching \(path)"
             case "create_directory":
                 return "[tool] creating directory \(path)"
             case "delete_path":
@@ -2188,6 +2191,10 @@ final class TUIApp {
             case "replace_in_file":
                 let path = object["path"]?.stringValue ?? "<unknown>"
                 return "[tool] replaced text in \(path)"
+            case "apply_patch":
+                let path = object["path"]?.stringValue ?? "<unknown>"
+                let editCount = object["edit_count"]?.intValue ?? object["applied_edits"]?.arrayValue?.count ?? 0
+                return "[tool] patched \(path) (\(editCount) edits)"
             case "delete_path":
                 let path = object["path"]?.stringValue ?? "<unknown>"
                 return "[tool] deleted \(path)"
@@ -2304,6 +2311,17 @@ final class TUIApp {
             let path = object["path"]?.stringValue ?? "<unknown>"
             let diffLines = object["diff"]?.arrayValue?.compactMap(\.stringValue) ?? []
             var lines = ["Updated \(path)"]
+            if !diffLines.isEmpty {
+                lines.append("")
+                lines.append("Diff")
+                lines.append(contentsOf: diffLines)
+            }
+            return lines
+        case "apply_patch":
+            let path = object["path"]?.stringValue ?? "<unknown>"
+            let editCount = object["edit_count"]?.intValue ?? object["applied_edits"]?.arrayValue?.count ?? 0
+            let diffLines = object["diff"]?.arrayValue?.compactMap(\.stringValue) ?? []
+            var lines = ["Patched \(path)", "Applied \(editCount) edit\(editCount == 1 ? "" : "s")"]
             if !diffLines.isEmpty {
                 lines.append("")
                 lines.append("Diff")

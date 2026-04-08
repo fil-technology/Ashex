@@ -4,6 +4,12 @@ public struct ToolContext: Sendable {
     public let runID: UUID
     public let emit: RuntimeEventHandler
     public let cancellation: CancellationToken
+
+    public init(runID: UUID, emit: @escaping RuntimeEventHandler, cancellation: CancellationToken) {
+        self.runID = runID
+        self.emit = emit
+        self.cancellation = cancellation
+    }
 }
 
 public protocol Tool: Sendable {

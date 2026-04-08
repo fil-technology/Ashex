@@ -101,6 +101,32 @@ private enum ModelPromptRenderer {
                     "new_text": .object([
                         "type": .array([.string("string"), .string("null")]),
                     ]),
+                    "edits": .object([
+                        "type": .array([
+                            .string("array"),
+                            .string("null"),
+                        ]),
+                        "items": .object([
+                            "type": .string("object"),
+                            "properties": .object([
+                                "old_text": .object([
+                                    "type": .array([.string("string"), .string("null")]),
+                                ]),
+                                "new_text": .object([
+                                    "type": .array([.string("string"), .string("null")]),
+                                ]),
+                                "replace_all": .object([
+                                    "type": .array([.string("boolean"), .string("null")]),
+                                ]),
+                            ]),
+                            "required": .array([
+                                .string("old_text"),
+                                .string("new_text"),
+                                .string("replace_all"),
+                            ]),
+                            "additionalProperties": .bool(false),
+                        ]),
+                    ]),
                     "replace_all": .object([
                         "type": .array([.string("boolean"), .string("null")]),
                     ]),
@@ -130,6 +156,7 @@ private enum ModelPromptRenderer {
                     .string("max_results"),
                     .string("old_text"),
                     .string("new_text"),
+                    .string("edits"),
                     .string("replace_all"),
                     .string("limit"),
                     .string("commit"),
@@ -666,6 +693,8 @@ private enum ToolCallArgumentNormalizer {
                 normalized["operation"] = .string("write_text_file")
             case "replace", "replace_text", "replace_in_file", "edit":
                 normalized["operation"] = .string("replace_in_file")
+            case "patch", "apply_patch", "multi_replace":
+                normalized["operation"] = .string("apply_patch")
             case "mkdir", "create_directory", "create_dir":
                 normalized["operation"] = .string("create_directory")
             case "delete", "remove", "delete_path", "rm":
@@ -762,9 +791,28 @@ private enum ToolCallArgumentNormalizer {
         }
         normalized.removeValue(forKey: "all")
 
+        if normalized["edits"] == nil,
+           let patches = arguments["patches"]?.arrayValue ?? arguments["changes"]?.arrayValue {
+            normalized["edits"] = .array(patches)
+        }
+        normalized.removeValue(forKey: "patches")
+        normalized.removeValue(forKey: "changes")
+
         if normalized["operation"]?.stringValue == "write_text_file",
            normalized["create_directories"] == nil {
             normalized["create_directories"] = .bool(true)
+        }
+
+        if normalized["operation"]?.stringValue == "apply_patch",
+           normalized["edits"] == nil,
+           let oldText = normalized["old_text"]?.stringValue {
+            normalized["edits"] = .array([
+                .object([
+                    "old_text": .string(oldText),
+                    "new_text": normalized["new_text"] ?? .string(""),
+                    "replace_all": normalized["replace_all"] ?? .bool(false),
+                ])
+            ])
         }
 
         return normalized

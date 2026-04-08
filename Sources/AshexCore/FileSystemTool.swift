@@ -90,6 +90,60 @@ public struct FileSystemTool: Tool {
                 throw AshexError.fileSystem("Failed to replace text in \(path): \(error.localizedDescription)")
             }
 
+        case "apply_patch":
+            let path = try requiredString("path", in: arguments)
+            let edits = try requiredPatchEdits(in: arguments)
+            let url = try workspaceGuard.resolve(path: path)
+            do {
+                let original = try String(contentsOf: url, encoding: .utf8)
+                var updated = original
+                var appliedEdits: [JSONValue] = []
+
+                for edit in edits {
+                    let replacementCount = updated.components(separatedBy: edit.oldText).count - 1
+                    guard replacementCount > 0 else {
+                        throw AshexError.fileSystem("Could not find requested patch text in \(path)")
+                    }
+
+                    if edit.replaceAll {
+                        updated = updated.replacingOccurrences(of: edit.oldText, with: edit.newText)
+                    } else {
+                        guard let range = updated.range(of: edit.oldText) else {
+                            throw AshexError.fileSystem("Could not find requested patch text in \(path)")
+                        }
+                        updated = updated.replacingCharacters(in: range, with: edit.newText)
+                    }
+
+                    appliedEdits.append(.object([
+                        "old_text": .string(edit.oldText),
+                        "new_text": .string(edit.newText),
+                        "replace_all": .bool(edit.replaceAll),
+                    ]))
+                }
+
+                guard updated != original else {
+                    return .structured(.object([
+                        "operation": .string("apply_patch"),
+                        "path": .string(path),
+                        "status": .string("unchanged"),
+                        "applied_edits": .array(appliedEdits),
+                        "diff": .array([.string("<no content changes>")]),
+                    ]))
+                }
+
+                try updated.write(to: url, atomically: true, encoding: .utf8)
+                return .structured(.object([
+                    "operation": .string("apply_patch"),
+                    "path": .string(path),
+                    "status": .string("patched"),
+                    "edit_count": .number(Double(edits.count)),
+                    "applied_edits": .array(appliedEdits),
+                    "diff": .array(Self.diffPreview(old: original, new: updated).map(JSONValue.string)),
+                ]))
+            } catch {
+                throw AshexError.fileSystem("Failed to apply patch in \(path): \(error.localizedDescription)")
+            }
+
         case "list_directory":
             let path = arguments["path"]?.stringValue ?? "."
             let url = try workspaceGuard.resolve(path: path)
@@ -242,6 +296,42 @@ public struct FileSystemTool: Tool {
         return value
     }
 
+    private func requiredPatchEdits(in arguments: JSONObject) throws -> [PatchEdit] {
+        if let edits = arguments["edits"]?.arrayValue {
+            let parsed = try edits.map(parsePatchEdit(_:))
+            guard !parsed.isEmpty else {
+                throw AshexError.invalidToolArguments("filesystem.edits must contain at least one patch edit")
+            }
+            return parsed
+        }
+
+        if let oldText = arguments["old_text"]?.stringValue {
+            return [
+                PatchEdit(
+                    oldText: oldText,
+                    newText: arguments["new_text"]?.stringValue ?? "",
+                    replaceAll: arguments["replace_all"]?.boolValue == true
+                )
+            ]
+        }
+
+        throw AshexError.invalidToolArguments("filesystem.apply_patch requires edits or old_text/new_text")
+    }
+
+    private func parsePatchEdit(_ value: JSONValue) throws -> PatchEdit {
+        guard let object = value.objectValue else {
+            throw AshexError.invalidToolArguments("filesystem.edits entries must be objects")
+        }
+        guard let oldText = object["old_text"]?.stringValue, !oldText.isEmpty else {
+            throw AshexError.invalidToolArguments("filesystem.edits.old_text must be a non-empty string")
+        }
+        return PatchEdit(
+            oldText: oldText,
+            newText: object["new_text"]?.stringValue ?? "",
+            replaceAll: object["replace_all"]?.boolValue == true
+        )
+    }
+
     private func findFiles(rootURL: URL, basePath: String, query: String, maxResults: Int) throws -> [String] {
         guard let enumerator = FileManager.default.enumerator(at: rootURL, includingPropertiesForKeys: [.isDirectoryKey]) else {
             return []
@@ -308,4 +398,10 @@ public struct FileSystemTool: Tool {
         diff.append(contentsOf: added.map { "+ \($0)" })
         return diff
     }
+}
+
+private struct PatchEdit {
+    let oldText: String
+    let newText: String
+    let replaceAll: Bool
 }
