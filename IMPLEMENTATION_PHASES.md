@@ -298,6 +298,7 @@ Already implemented in the repo:
 - Validation gating that requires concrete verification before concluding edited runs
 - Structured patch-style file editing with diff-native summaries
 - Richer working memory with recent findings, completed steps, unresolved items, and better history replay context
+- Stalled-step recovery and stronger final summaries for larger tasks
 
 Most important remaining work:
 
@@ -305,6 +306,7 @@ Most important remaining work:
 - stronger validation execution and check selection beyond the current gating layer
 - richer patch planning and multi-file edit workflows
 - even stronger longer-session memory quality and thread continuation behavior
+- secrets, safety, and sandboxing hardening
 - bounded subagents later
 
 Likely next highest-value step:
@@ -314,6 +316,7 @@ Likely next highest-value step:
   - stronger validation execution and check selection
   - richer patch planning and multi-file edit workflows
   - even stronger longer-session memory quality and thread continuation behavior
+  - secrets, safety, and sandboxing hardening
 
 After that:
 

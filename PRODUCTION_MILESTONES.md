@@ -32,10 +32,10 @@ This file tracks the remaining work to move Ashex from a serious local MVP towar
 
 ## Milestone 5: Large-Task Reliability
 
-- [ ] Improve decomposition and stalled-loop recovery for bigger tasks
-- [ ] Detect weak plans and unproductive retries earlier
-- [ ] Improve final summaries with changed files, rationale, validation, and remaining work
-- [ ] Verify with targeted runtime and unit tests
+- [x] Improve decomposition and stalled-loop recovery for bigger tasks
+- [x] Detect weak plans and unproductive retries earlier
+- [x] Improve final summaries with changed files, rationale, validation, and remaining work
+- [x] Verify with targeted runtime and unit tests
 
 ## Milestone 6: Secrets, Safety, and Sandboxing
 

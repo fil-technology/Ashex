@@ -323,6 +323,96 @@ private let testShellPolicy = ShellCommandPolicy(config: .default)
     #expect(finalAnswer.contains("Validated the file contents"))
 }
 
+@Test func runtimeRecoversFromRepeatedUnproductiveRetries() async throws {
+    let fileManager = FileManager.default
+    let root = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let dbURL = root.appendingPathComponent(".ashex/test.sqlite")
+    try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+
+    let runtime = try AgentRuntime(
+        modelAdapter: SequencedModelAdapter(actions: [
+            .toolCall(.init(toolName: "missing-tool", arguments: [:])),
+            .toolCall(.init(toolName: "missing-tool", arguments: [:])),
+            .toolCall(.init(toolName: "missing-tool", arguments: [:])),
+            .finalAnswer("should not be needed"),
+            .finalAnswer("should not be needed"),
+            .finalAnswer("should not be needed"),
+            .finalAnswer("should not be needed"),
+        ]),
+        toolRegistry: ToolRegistry(tools: [
+            FileSystemTool(workspaceGuard: WorkspaceGuard(rootURL: root)),
+            ShellTool(executionRuntime: ProcessExecutionRuntime(), workspaceURL: root, commandPolicy: testShellPolicy),
+        ]),
+        persistence: SQLitePersistenceStore(databaseURL: dbURL)
+    )
+
+    var finalAnswer = ""
+    for await event in runtime.run(RunRequest(prompt: "implement a feature that currently has a weak plan and needs reliability")) {
+        if case .finalAnswer(_, _, let text) = event.payload {
+            finalAnswer = text
+        }
+    }
+
+    #expect(finalAnswer.contains("repeated unproductive retries"))
+    #expect(finalAnswer.contains("What remains:"))
+}
+
+@Test func finalSummaryIncludesValidationSectionForPlannedRuns() async throws {
+    let fileManager = FileManager.default
+    let root = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let dbURL = root.appendingPathComponent(".ashex/test.sqlite")
+    try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+    try "hello".write(to: root.appendingPathComponent("note.txt"), atomically: true, encoding: .utf8)
+
+    let runtime = try AgentRuntime(
+        modelAdapter: SequencedModelAdapter(actions: [
+            .toolCall(.init(toolName: "filesystem", arguments: [
+                "operation": .string("read_text_file"),
+                "path": .string("note.txt"),
+            ])),
+            .finalAnswer("Explored note.txt."),
+            .finalAnswer("Planned the minimal change."),
+            .toolCall(.init(toolName: "filesystem", arguments: [
+                "operation": .string("read_text_file"),
+                "path": .string("note.txt"),
+            ])),
+            .toolCall(.init(toolName: "filesystem", arguments: [
+                "operation": .string("apply_patch"),
+                "path": .string("note.txt"),
+                "edits": .array([
+                    .object([
+                        "old_text": .string("hello"),
+                        "new_text": .string("updated"),
+                        "replace_all": .bool(false),
+                    ])
+                ]),
+            ])),
+            .finalAnswer("Applied the patch."),
+            .toolCall(.init(toolName: "filesystem", arguments: [
+                "operation": .string("read_text_file"),
+                "path": .string("note.txt"),
+            ])),
+            .finalAnswer("Validated the patched file contents."),
+        ]),
+        toolRegistry: ToolRegistry(tools: [
+            FileSystemTool(workspaceGuard: WorkspaceGuard(rootURL: root)),
+            ShellTool(executionRuntime: ProcessExecutionRuntime(), workspaceURL: root, commandPolicy: testShellPolicy),
+        ]),
+        persistence: SQLitePersistenceStore(databaseURL: dbURL)
+    )
+
+    var finalAnswer = ""
+    for await event in runtime.run(RunRequest(prompt: "implement a feature in note.txt and validate it carefully before summarizing")) {
+        if case .finalAnswer(_, _, let text) = event.payload {
+            finalAnswer = text
+        }
+    }
+
+    #expect(finalAnswer.contains("Validation:"))
+    #expect(finalAnswer.contains("Validation completed with concrete verification"))
+    #expect(finalAnswer.contains("Changed files:"))
+}
+
 @Test func sqlitePersistenceRoundTripsGenericSettings() throws {
     let fileManager = FileManager.default
     let root = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)

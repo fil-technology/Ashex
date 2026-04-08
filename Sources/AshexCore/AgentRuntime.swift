@@ -109,6 +109,8 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
             )
             let plan = TaskPlanner.plan(for: request.prompt)
             var stepSummaries: [String] = []
+            var validationNotes: [String] = []
+            var remainingItems: [String] = []
             var changedFiles: [ChangedArtifact] = []
 
             if let plan, plan.steps.count > 1 {
@@ -191,6 +193,8 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                     emitter: emitter
                 )
                 stepSummaries.append(outcome.summary)
+                validationNotes.append(contentsOf: outcome.validationNotes)
+                remainingItems.append(contentsOf: outcome.remainingItems)
                 changedFiles = Self.mergeChangedArtifacts(changedFiles, outcome.changedFiles)
                 try persistence.transitionRunStep(stepID: stepRecords[index].id, to: .completed, summary: outcome.summary, now: clock())
                 if steps.count > 1 {
@@ -212,14 +216,16 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                     base: stepSummaries.last ?? "Task finished.",
                     request: request.prompt,
                     changedFiles: changedFiles,
-                    remainingItems: []
+                    validationNotes: validationNotes,
+                    remainingItems: remainingItems
                 )
             } else {
                 finalAnswerText = Self.decorateFinalSummary(
                     base: Self.compilePlannedRunSummary(request: request.prompt, steps: steps, summaries: stepSummaries),
                     request: request.prompt,
                     changedFiles: changedFiles,
-                    remainingItems: stepSummaries.filter { $0.hasPrefix("Skipped:") }
+                    validationNotes: validationNotes,
+                    remainingItems: remainingItems + stepSummaries.filter { $0.hasPrefix("Skipped:") }
                 )
             }
             try persistWorkingMemory(
@@ -262,13 +268,15 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         var repeatedToolCallSignature: String?
         var repeatedToolCallCount = 0
         var lastSafeToolResult: String?
+        var noProgressIterations = 0
+        var validationBlocks = 0
         var workflowState = StepWorkflowState()
         var changedFiles: [ChangedArtifact] = existingChangedFiles
 
         for iteration in 0..<maxIterations {
             try await cancellation.checkCancellation()
             if let executionControl, await executionControl.consumeSkipCurrentStep() {
-                return .init(summary: "Skipped current step", changedFiles: [])
+                return .init(summary: "Skipped current step", changedFiles: [], validationNotes: [], remainingItems: [])
             }
 
             try emitter.emit(.status(runID: run.id, message: "Iteration \(iteration + 1): requesting next model action"), runID: run.id)
@@ -342,13 +350,26 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                 if stepPhase == .validation,
                    !changedFiles.isEmpty,
                    !workflowState.hasValidationEvidence(for: changedFiles.map(\.path)) {
+                    validationBlocks += 1
                     let validationReminder = "Validation is incomplete: inspect changed files, git diffs, or run a relevant check before concluding."
                     let toolMessage = try persistence.appendMessage(threadID: thread.id, runID: run.id, role: .tool, content: validationReminder, now: clock())
                     try emitter.emit(.messageAppended(runID: run.id, messageID: toolMessage.id, role: .tool), runID: run.id)
                     try emitter.emit(.status(runID: run.id, message: "Validation gate blocked completion. Asking the model to produce concrete verification first."), runID: run.id)
+                    if validationBlocks >= 3 {
+                        let note = "Validation did not produce enough concrete verification before the step ended."
+                        return .init(
+                            summary: "Stopped validation early after repeated attempts without concrete verification.",
+                            changedFiles: changedFiles,
+                            validationNotes: [],
+                            remainingItems: [note]
+                        )
+                    }
                     continue
                 }
-                return .init(summary: answer, changedFiles: changedFiles)
+                let finalValidationNotes = stepPhase == .validation && !changedFiles.isEmpty
+                    ? ["Validation completed with concrete verification for the changed files."]
+                    : []
+                return .init(summary: answer, changedFiles: changedFiles, validationNotes: finalValidationNotes, remainingItems: [])
 
             case .toolCall(let call):
                 let callSignature = Self.toolCallSignature(toolName: call.toolName, arguments: call.arguments)
@@ -363,7 +384,12 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                    let lastSafeToolResult,
                    Self.isSafeRepeatedToolCall(toolName: call.toolName, arguments: call.arguments) {
                     try emitter.emit(.status(runID: run.id, message: "Detected a repeated identical read-only tool call. Returning the previous result."), runID: run.id)
-                    return .init(summary: "Using the latest tool result because the model repeated the same read-only call.\n\n\(lastSafeToolResult)", changedFiles: changedFiles)
+                    return .init(
+                        summary: "Using the latest tool result because the model repeated the same read-only call.\n\n\(lastSafeToolResult)",
+                        changedFiles: changedFiles,
+                        validationNotes: [],
+                        remainingItems: []
+                    )
                 }
 
                 let execution = try await toolExecutor.execute(
@@ -377,10 +403,21 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                 switch execution {
                 case .retryableFailure:
                     lastSafeToolResult = nil
+                    noProgressIterations += 1
+                    if noProgressIterations >= 3 {
+                        try emitter.emit(.status(runID: run.id, message: "Detected repeated unproductive retries. Ending the current step with a recoverable summary."), runID: run.id)
+                        return .init(
+                            summary: "Stopped the current step after repeated unproductive retries.",
+                            changedFiles: changedFiles,
+                            validationNotes: [],
+                            remainingItems: ["Revisit step: \(stepTitle)"]
+                        )
+                    }
                     continue
                 case .completed(let text, let safeToReuse, let metadata):
                     lastSafeToolResult = safeToReuse ? text : nil
                     workflowState.record(metadata: metadata)
+                    noProgressIterations = metadata.representsProgress ? 0 : (noProgressIterations + 1)
                     let newChanges = metadata.changedPaths.map { ChangedArtifact(path: $0, reason: stepTitle) }
                     changedFiles.append(contentsOf: newChanges)
                     try persistWorkingMemory(
@@ -397,11 +434,25 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                     if !newChanges.isEmpty {
                         try emitter.emit(.changedFilesTracked(runID: run.id, paths: newChanges.map(\.path)), runID: run.id)
                     }
+                    if noProgressIterations >= 3 {
+                        try emitter.emit(.status(runID: run.id, message: "Tool activity is no longer making useful progress. Ending the step with a recoverable summary."), runID: run.id)
+                        return .init(
+                            summary: "Stopped the current step because recent tool activity was no longer making useful progress.",
+                            changedFiles: changedFiles,
+                            validationNotes: [],
+                            remainingItems: ["Revisit step: \(stepTitle)"]
+                        )
+                    }
                 }
             }
         }
 
-        throw AshexError.maxIterationsReached(maxIterations)
+        return .init(
+            summary: "Stopped after reaching the iteration budget for this step.",
+            changedFiles: changedFiles,
+            validationNotes: [],
+            remainingItems: ["Iteration budget reached for step: \(stepTitle)"]
+        )
     }
 
     private func finalizeFailure(error: Error, emitter: EventEmitter) async {
@@ -465,6 +516,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         base: String,
         request: String,
         changedFiles: [ChangedArtifact],
+        validationNotes: [String],
         remainingItems: [String]
     ) -> String {
         let uniqueChanges = orderedUniqueChanges(from: changedFiles)
@@ -487,6 +539,14 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         lines.append("- To fulfill: \(request)")
 
         lines.append("")
+        lines.append("Validation:")
+        if validationNotes.isEmpty {
+            lines.append("- No explicit validation note recorded in this run.")
+        } else {
+            lines.append(contentsOf: orderedUniqueStrings(from: validationNotes).map { "- \($0)" })
+        }
+
+        lines.append("")
         lines.append("What remains:")
         if remainingItems.isEmpty {
             lines.append("- No unresolved follow-up recorded in this run.")
@@ -505,6 +565,11 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
             result.append(change)
         }
         return result
+    }
+
+    private static func orderedUniqueStrings(from values: [String]) -> [String] {
+        var seen: Set<String> = []
+        return values.filter { seen.insert($0).inserted }
     }
 
     private func persistWorkingMemory(
@@ -711,6 +776,8 @@ private struct StepWorkflowState {
 private struct StepExecutionOutcome {
     let summary: String
     let changedFiles: [ChangedArtifact]
+    let validationNotes: [String]
+    let remainingItems: [String]
 }
 
 private struct ChangedArtifact {
