@@ -13,6 +13,49 @@ private let testShellPolicy = ShellCommandPolicy(config: .default)
     }
 }
 
+@Test func taskPlannerClassifiesCodingTaskKinds() {
+    #expect(TaskPlanner.classify(prompt: "fix the failing parser bug in ModelAdapter") == .bugFix)
+    #expect(TaskPlanner.classify(prompt: "refactor the runtime to simplify compaction") == .refactor)
+    #expect(TaskPlanner.classify(prompt: "update README and docs for installation") == .docs)
+    #expect(TaskPlanner.classify(prompt: "show git diff and branch status") == .git)
+}
+
+@Test func taskPlannerUsesTaskAwareDefaultSteps() {
+    let plan = TaskPlanner.plan(for: "implement a new feature in the runtime with careful testing and validation for the final result")
+
+    #expect(plan != nil)
+    #expect(plan?.taskKind == .feature)
+    #expect(plan?.steps.count == 4)
+    #expect(plan?.steps.first?.phase == .exploration)
+    #expect(plan?.steps.first?.title.contains("locate the files") == true)
+    #expect(plan?.steps.last?.phase == .validation)
+}
+
+@Test func explorationStrategyBuildsCodingFocusedSequence() {
+    let snapshot = WorkspaceSnapshotRecord(
+        id: UUID(),
+        runID: UUID(),
+        workspaceRootPath: "/tmp/project",
+        topLevelEntries: ["Sources/", "Tests/", "README.md"],
+        instructionFiles: ["README.md"],
+        gitBranch: "main",
+        gitStatusSummary: "## main",
+        createdAt: Date()
+    )
+
+    let plan = ExplorationStrategy.recommend(
+        taskKind: .feature,
+        prompt: "implement provider settings for OpenAIModelAdapter in Sources/AshexCore/ModelAdapter.swift",
+        workspaceSnapshot: snapshot
+    )
+
+    #expect(plan.summary.contains("Explore"))
+    #expect(plan.recommendations.contains { $0.contains("find_files") })
+    #expect(plan.recommendations.contains { $0.contains("search_text") })
+    #expect(plan.recommendations.contains { $0.contains("read_text_file") })
+    #expect(plan.recommendations.contains { $0.contains("README.md") })
+}
+
 @Test func runtimeCompletesSimpleFilesystemRun() async throws {
     let fileManager = FileManager.default
     let root = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -141,6 +184,41 @@ private let testShellPolicy = ShellCommandPolicy(config: .default)
     #expect(updatedContent == "updated")
     #expect(finalAnswer.contains("Changed files:"))
     #expect(finalAnswer.contains("note.txt"))
+}
+
+@Test func runtimeEmitsExplorationPlanForLargeCodingTask() async throws {
+    let fileManager = FileManager.default
+    let root = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let dbURL = root.appendingPathComponent(".ashex/test.sqlite")
+    try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+    try fileManager.createDirectory(at: root.appendingPathComponent("Sources"), withIntermediateDirectories: true)
+
+    let snapshot = WorkspaceSnapshot(
+        rootURL: root,
+        topLevelEntries: ["Sources/"],
+        instructionFiles: [],
+        gitBranch: "main",
+        gitStatusSummary: "## main"
+    )
+
+    let runtime = try AgentRuntime(
+        modelAdapter: SequencedModelAdapter(actions: [.finalAnswer("done"), .finalAnswer("done"), .finalAnswer("done"), .finalAnswer("done")]),
+        toolRegistry: ToolRegistry(tools: [
+            FileSystemTool(workspaceGuard: WorkspaceGuard(rootURL: root)),
+            ShellTool(executionRuntime: ProcessExecutionRuntime(), workspaceURL: root, commandPolicy: testShellPolicy),
+        ]),
+        persistence: SQLitePersistenceStore(databaseURL: dbURL),
+        workspaceSnapshot: snapshot
+    )
+
+    var sawExplorationPlan = false
+    for await event in runtime.run(RunRequest(prompt: "implement provider settings in the runtime and validate the result carefully")) {
+        if case .status(_, let message) = event.payload, message.contains("Exploration plan:") {
+            sawExplorationPlan = true
+        }
+    }
+
+    #expect(sawExplorationPlan)
 }
 
 @Test func sqlitePersistenceRoundTripsGenericSettings() throws {

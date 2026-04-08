@@ -5,13 +5,16 @@ Ashex is a minimal local agent runtime foundation for macOS, built as a small Sw
 ## What this MVP includes
 
 - A real single-agent loop with max-iteration and cancellation guards
-- Exactly two tools: `filesystem` and `shell`
+- Multiple local coding tools behind a typed runtime:
+  - `filesystem`
+  - `git`
+  - `shell`
 - Live streaming runtime events for CLI or future UI consumers
 - SQLite persistence for threads, messages, runs, tool calls, and append-only events
 - Generic SQLite-backed persisted settings for session defaults and future runtime preferences
 - Restart normalization that marks previously running work as `interrupted`
-- A replaceable model boundary with mock, OpenAI, and local Ollama-backed adapters
-- A terminal TUI with provider switching, local history browsing, and guarded approvals
+- A replaceable model boundary with `mock`, OpenAI, Anthropic, and local Ollama-backed adapters
+- A terminal TUI with provider switching, workspace switching, local history browsing, side terminal, and guarded approvals
 
 ## Package layout
 
@@ -60,10 +63,13 @@ You can also install somewhere else:
 
 TUI highlights:
 
-- Switch between `mock`, `ollama`, and `openai` without restarting
+- Switch between `mock`, `ollama`, `openai`, and `anthropic` without restarting
 - Edit the active model name from the TUI
+- Save provider API keys from the TUI settings screen
 - Persist provider/model defaults across launches
+- Switch the active workspace live from the TUI or with `:workspace /path`
 - Browse persisted thread/run history and load prior transcripts back into the viewer
+- Open a side terminal pane for quick workspace commands
 - Review guarded approval requests with shell/file previews before allowing execution
 - Apply local-model memory guardrails based on the Mac's available RAM and installed model sizes
 
@@ -87,13 +93,14 @@ CLI options:
 - `--workspace PATH`: workspace root enforced by `WorkspaceGuard`
 - `--storage PATH`: persistence directory, default `WORKSPACE/.ashex`
 - `--max-iterations N`: loop limit, default `8`
-- `--provider mock|openai|ollama`: model adapter selection, default `mock`
-- `--model MODEL`: model name for provider-backed mode. Defaults to `gpt-5.4-mini` for OpenAI and `llama3.2` for Ollama.
+- `--provider mock|openai|anthropic|ollama`: model adapter selection
+- `--model MODEL`: model name for provider-backed mode
 - `--approval-mode trusted|guarded`: execution policy, default `trusted`
 
 Provider environment variables:
 
 - `OPENAI_API_KEY`: required for `--provider openai`
+- `ANTHROPIC_API_KEY`: required for `--provider anthropic`
 - `OPENAI_MODEL`: optional default model for `openai`
 - `OLLAMA_MODEL`: optional default model for `ollama`
 - `OLLAMA_BASE_URL`: optional Ollama chat endpoint, default `http://localhost:11434/api/chat`
@@ -109,7 +116,7 @@ swift run ashex --approval-mode guarded
 In guarded mode:
 
 - shell commands require approval
-- filesystem writes and directory creation require approval
+- filesystem writes and mutating filesystem operations require approval
 - read-only filesystem operations continue without prompting
 
 TUI controls:
@@ -121,6 +128,7 @@ TUI controls:
 - `Enter`: open the selected item or submit the current input
 - `Esc` or `Left`: back out, cancel, or quit
 - `t`: toggle the side terminal pane
+- `x`: skip the current planned step
 - `y` / `n`: approve or deny guarded actions
 
 ## Runtime boundary
@@ -138,6 +146,24 @@ Ashex is now split a bit more like a real coding-agent harness instead of pushin
 - `ToolExecutor` owns tool resolution, approval checks, execution, persistence, and streaming tool events
 - `AgentRuntime` coordinates run lifecycle, step execution, and durable run-step state while staying smaller than before
 
+The workflow layer is now more deliberate than a generic loop:
+
+- tasks are classified into kinds such as bug fix, feature, refactor, docs, git, shell, and analysis
+- exploration and validation guidance changes by task kind
+- exploration steps now carry a concrete recommended inspect/search/read sequence based on the task and workspace snapshot
+- the runtime carries those hints into the phased execution flow so coding tasks explore and validate more intentionally
+
+Current runtime capabilities also include:
+
+- phased runs:
+  - exploration
+  - planning
+  - mutation
+  - validation
+- inspect-before-mutate enforcement for coding and edit tasks
+- changed-file tracking during the run
+- final summaries that can include changed files, why they changed, and what remains
+
 The first compaction strategy is intentionally simple but real:
 
 - older messages are not only dropped; they are summarized into a synthetic compaction summary
@@ -154,4 +180,15 @@ This keeps the current single-agent runtime small while creating clean seams for
 
 ## Current model behavior
 
-`MockModelAdapter` remains the fastest local test path. `OpenAIResponsesModelAdapter` and `OllamaChatModelAdapter` add real remote and local-provider paths while keeping the same runtime loop and typed `ModelAction` contract. The runtime also repairs malformed tool calls when safe and breaks repeated read-only local-model loops by returning the last good tool result.
+`MockModelAdapter` remains the fastest local test path. `OpenAIResponsesModelAdapter`, `AnthropicMessagesModelAdapter`, and `OllamaChatModelAdapter` add real remote and local-provider paths while keeping the same runtime loop and typed `ModelAction` contract. The runtime also repairs malformed tool calls when safe, clips oversized tool output before reusing it in prompt context, and breaks repeated read-only local-model loops by returning the last good tool result.
+
+## Current limitations
+
+Ashex is now a serious local coding-agent foundation, but it is still not at Codex/Claude Code production maturity yet. The biggest remaining gaps are:
+
+- deeper automatic exploration and file targeting for large coding tasks
+- stronger validation execution and check selection
+- first-class patch/edit workflows
+- longer-session memory quality and resume behavior
+- more reliable large-task execution
+- bounded subagents later, on top of the current single-agent harness

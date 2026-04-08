@@ -168,7 +168,26 @@ Exit criteria:
 
 - Users can revisit, inspect, and continue prior work cleanly
 
-## Phase 9: SwiftUI App Integration Boundary
+## Phase 9: Harness and Context Quality
+
+Goal: make the runtime behave more like a serious coding-agent harness instead of a thin tool loop.
+
+- Introduce shared prompt assembly instead of provider-specific prompt building
+- Add explicit context preparation and compaction
+- Persist context compaction records
+- Capture stable workspace snapshot facts per run
+- Add rolling working-memory state per run
+- Extract tool execution lifecycle into its own boundary
+- Make exploration and validation guidance task-type aware
+- Improve inspect-before-mutate reliability and changed-file tracking
+
+Exit criteria:
+
+- The runtime has durable harness state instead of relying only on raw transcript replay
+- Prompt assembly, context management, and tool execution are clearly separated
+- Coding tasks explore and validate more deliberately than a generic tool loop
+
+## Phase 10: SwiftUI App Integration Boundary
 
 Goal: make integration into the macOS app straightforward.
 
@@ -188,7 +207,7 @@ Exit criteria:
 
 - A SwiftUI client can consume and control the runtime without domain refactors
 
-## Phase 10: MVP Hardening
+## Phase 11: MVP Hardening
 
 Goal: make the MVP reliable enough for regular local use.
 
@@ -222,7 +241,6 @@ It should not yet include:
 
 - Multi-agent orchestration
 - Vector memory or retrieval systems
-- Interactive terminal TUI as a required MVP milestone
 - Marketplace/plugin ecosystem
 - Complex cloud sync
 - Large provider matrix
@@ -241,8 +259,9 @@ If we want the fastest path to something convincingly usable, the best order is:
 6. Real model provider
 7. Approvals and safer execution
 8. Better conversation and run UX
-9. SwiftUI integration boundary
-10. Hardening
+9. Harness and context quality
+10. SwiftUI integration boundary
+11. Hardening
 
 ## Current Status
 
@@ -250,20 +269,50 @@ Already implemented in the repo:
 
 - Foundation/package structure
 - Minimal agent loop
-- Filesystem tool
+- Filesystem tool with read/search/write/move/copy/delete/info operations
 - Shell tool
+- Git inspection tool
 - Streaming event model
 - SQLite persistence
 - Restart normalization for interrupted runs
 - Thin CLI adapter
-- Real model provider boundary with OpenAI-backed adapter and mock fallback
+- Terminal TUI with:
+  - provider/model switching
+  - API key entry
+  - workspace switching
+  - history browsing
+  - side terminal pane
+  - approvals
+- Real model provider boundary with:
+  - mock
+  - OpenAI
+  - Anthropic
+  - Ollama
+- Guarded approvals and shell policy config
+- Task planning and phase-aware execution
+- Inspect-before-mutate enforcement
+- Working memory and workspace snapshot persistence
+- Context compaction with clipping and dedup of repeated old tool reads
+- Task-type-aware exploration and validation guidance
+- Workspace-aware exploration strategy with concrete inspect/search/read recommendations
+
+Most important remaining work:
+
+- deeper automatic exploration and file targeting for bigger coding tasks
+- stronger validation execution and check selection
+- first-class patch/edit workflow
+- longer-session memory quality and resume behavior
+- bounded subagents later
 
 Likely next highest-value step:
 
-- Phase 7: approvals and safer execution
-
-- Replace or augment the current model layer with a real provider integration while keeping the runtime contract stable
+- Production-grade coding-agent behavior on top of the current harness:
+  - deeper automatic exploration and file targeting for coding tasks
+  - stronger validation execution and check selection
+  - first-class patch/edit workflow
+  - longer-session memory quality and resume behavior
 
 After that:
 
-- Add approvals and safer execution hooks before expanding presentation surfaces
+- bounded delegated subagents on top of the current single-agent runtime
+- SwiftUI integration when the terminal/runtime workflow is stable enough

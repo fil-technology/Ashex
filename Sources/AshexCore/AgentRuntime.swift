@@ -93,13 +93,14 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
 
             let userMessage = try persistence.appendMessage(threadID: thread.id, runID: run.id, role: .user, content: request.prompt, now: clock())
             try emitter.emit(.messageAppended(runID: run.id, messageID: userMessage.id, role: .user), runID: run.id)
+            let taskKind = TaskPlanner.classify(prompt: request.prompt)
             _ = try persistence.upsertWorkingMemory(
                 runID: run.id,
                 currentTask: request.prompt,
                 currentPhase: nil,
                 inspectedPaths: [],
                 changedPaths: [],
-                validationSuggestions: Self.validationSuggestions(for: request.prompt),
+                validationSuggestions: Self.validationSuggestions(for: request.prompt, taskKind: taskKind),
                 summary: "Run created and waiting for planning/execution.",
                 now: clock()
             )
@@ -120,6 +121,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
             let stepRecords = try persistence.createRunSteps(runID: run.id, steps: steps.map(\.title), now: clock())
             for (index, step) in steps.enumerated() {
                 try await cancellation.checkCancellation()
+                let workspaceSnapshotRecord = try persistence.fetchWorkspaceSnapshot(runID: run.id)
 
                 if let control = request.executionControl,
                    await control.consumeSkipCurrentStep() {
@@ -131,6 +133,14 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
 
                 try persistence.transitionRunStep(stepID: stepRecords[index].id, to: .running, summary: nil, now: clock())
                 try emitter.emit(.workflowPhaseChanged(runID: run.id, phase: step.phase.rawValue, title: step.title), runID: run.id)
+                if step.phase == .exploration {
+                    let explorationPlan = ExplorationStrategy.recommend(
+                        taskKind: taskKind,
+                        prompt: request.prompt,
+                        workspaceSnapshot: workspaceSnapshotRecord
+                    )
+                    try emitter.emit(.status(runID: run.id, message: "Exploration plan: \(explorationPlan.recommendations.first ?? explorationPlan.summary)"), runID: run.id)
+                }
                 try persistWorkingMemory(
                     runID: run.id,
                     currentTask: request.prompt,
@@ -138,13 +148,21 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                     workflowState: nil,
                     changedFiles: changedFiles,
                     summary: "Current step \(index + 1)/\(steps.count): \(step.title)",
-                    overrideSuggestions: Self.validationSuggestions(for: request.prompt, phase: step.phase)
+                    overrideSuggestions: Self.validationSuggestions(for: request.prompt, taskKind: taskKind, phase: step.phase)
                 )
                 try emitter.emit(.taskStepStarted(runID: run.id, index: index + 1, total: steps.count, title: step.title), runID: run.id)
                 let stepMessage = steps.count > 1
                     ? """
                     Work on only this step of the larger task.
                     Step \(index + 1) of \(steps.count): \(step.title)
+                    Task kind: \(taskKind.rawValue)
+                    Phase guidance: \(Self.phaseGuidance(for: taskKind, phase: step.phase))
+                    \(Self.phaseStrategyBlock(
+                        prompt: request.prompt,
+                        taskKind: taskKind,
+                        phase: step.phase,
+                        workspaceSnapshot: workspaceSnapshotRecord
+                    ))
                     Overall user request: \(request.prompt)
                     """
                     : request.prompt
@@ -159,6 +177,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                     run: run,
                     stepPrompt: stepMessage,
                     stepTitle: step.title,
+                    taskKind: taskKind,
                     stepPhase: step.phase,
                     maxIterations: request.maxIterations,
                     cancellation: cancellation,
@@ -224,6 +243,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         run: RunRecord,
         stepPrompt: String,
         stepTitle: String,
+        taskKind: TaskKind,
         stepPhase: PlannedStepPhase,
         maxIterations: Int,
         cancellation: CancellationToken,
@@ -352,7 +372,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                         workflowState: workflowState,
                         changedFiles: changedFiles,
                         summary: metadata.summary.isEmpty ? text : metadata.summary,
-                        overrideSuggestions: Self.validationSuggestions(for: stepPrompt, phase: stepPhase, changedFiles: changedFiles.map(\.path))
+                        overrideSuggestions: Self.validationSuggestions(for: stepPrompt, taskKind: taskKind, phase: stepPhase, changedFiles: changedFiles.map(\.path))
                     )
                     if !newChanges.isEmpty {
                         try emitter.emit(.changedFilesTracked(runID: run.id, paths: newChanges.map(\.path)), runID: run.id)
@@ -478,7 +498,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
     ) throws {
         let inspectedPaths = workflowState.map { Array($0.inspectedArtifacts).sorted() } ?? []
         let changedPaths = Self.orderedUniqueChanges(from: changedFiles).map(\.path)
-        let suggestions = overrideSuggestions ?? Self.validationSuggestions(for: currentTask, phase: currentPhase, changedFiles: changedPaths)
+        let suggestions = overrideSuggestions ?? Self.validationSuggestions(for: currentTask, taskKind: TaskPlanner.classify(prompt: currentTask), phase: currentPhase, changedFiles: changedPaths)
         _ = try persistence.upsertWorkingMemory(
             runID: runID,
             currentTask: currentTask,
@@ -493,6 +513,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
 
     private static func validationSuggestions(
         for request: String,
+        taskKind: TaskKind,
         phase: PlannedStepPhase? = nil,
         changedFiles: [String] = []
     ) -> [String] {
@@ -513,9 +534,9 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
             suggestions.append("inspect git status")
         }
         if phase == .exploration {
-            suggestions.insert("find_files/search_text/read_text_file", at: 0)
+            suggestions.insert(explorationSuggestion(for: taskKind), at: 0)
         } else if phase == .validation {
-            suggestions.insert("confirm changed files match intent", at: 0)
+            suggestions.insert(validationHeadline(for: taskKind), at: 0)
         }
 
         if suggestions.isEmpty {
@@ -524,6 +545,99 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
 
         var seen: Set<String> = []
         return suggestions.filter { seen.insert($0).inserted }
+    }
+
+    private static func phaseGuidance(for taskKind: TaskKind, phase: PlannedStepPhase) -> String {
+        switch phase {
+        case .exploration:
+            return explorationSuggestion(for: taskKind)
+        case .planning:
+            switch taskKind {
+            case .bugFix:
+                return "prefer the smallest safe fix and identify the exact validation path before editing"
+            case .feature:
+                return "identify the minimal file set, expected behavior, and validation checks before implementing"
+            case .refactor:
+                return "define safe refactor boundaries and preserve behavior"
+            case .docs:
+                return "identify the exact docs to update and the intended wording changes"
+            case .git:
+                return "decide the exact git inspection or repo operation outcome needed"
+            case .shell:
+                return "choose the smallest command sequence that proves the result"
+            case .analysis, .general:
+                return "plan the smallest effective sequence of reads, changes, and checks"
+            }
+        case .mutation:
+            return "apply only the changes justified by the inspection and plan"
+        case .validation:
+            return validationHeadline(for: taskKind)
+        }
+    }
+
+    private static func phaseStrategyBlock(
+        prompt: String,
+        taskKind: TaskKind,
+        phase: PlannedStepPhase,
+        workspaceSnapshot: WorkspaceSnapshotRecord?
+    ) -> String {
+        switch phase {
+        case .exploration:
+            let plan = ExplorationStrategy.recommend(
+                taskKind: taskKind,
+                prompt: prompt,
+                workspaceSnapshot: workspaceSnapshot
+            )
+            return """
+            Recommended exploration sequence:
+            \(plan.formatted)
+            """
+        case .validation:
+            return """
+            Suggested validation focus:
+            \(validationSuggestions(for: prompt, taskKind: taskKind, phase: phase).joined(separator: "\n"))
+            """
+        case .planning, .mutation:
+            return ""
+        }
+    }
+
+    private static func explorationSuggestion(for taskKind: TaskKind) -> String {
+        switch taskKind {
+        case .bugFix:
+            return "prefer search_text, find_files, git diff/status, and focused reads around the failing area"
+        case .feature:
+            return "prefer find_files, search_text, list_directory, and read_text_file to locate the implementation surface"
+        case .refactor:
+            return "prefer search_text, file_info, and focused reads to understand dependencies before changing structure"
+        case .docs:
+            return "prefer read_text_file and find_files for README, docs, changelog, and instruction files"
+        case .git:
+            return "prefer git status, diff, log, and show_commit before taking repo actions"
+        case .shell:
+            return "prefer list_directory, file_info, and minimal shell inspection before mutating commands"
+        case .analysis, .general:
+            return "prefer find_files, search_text, read_text_file, and read-only git inspection before mutation"
+        }
+    }
+
+    private static func validationHeadline(for taskKind: TaskKind) -> String {
+        switch taskKind {
+        case .bugFix:
+            return "confirm the fix with targeted reads, diffs, and the most relevant test or repro check"
+        case .feature:
+            return "confirm the changed files, expected behavior, and relevant build or test checks"
+        case .refactor:
+            return "confirm behavior preservation with diffs, targeted reads, and available checks"
+        case .docs:
+            return "confirm wording and file diffs match the requested documentation update"
+        case .git:
+            return "confirm repository state, branch, and diffs match the intended result"
+        case .shell:
+            return "confirm command outputs, exit codes, and resulting artifacts match the goal"
+        case .analysis, .general:
+            return "confirm changed files match intent before concluding"
+        }
     }
 }
 
