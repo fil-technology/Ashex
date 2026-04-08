@@ -2748,6 +2748,9 @@ final class TUIApp {
             if let memory, let phase = memory.currentPhase {
                 lines.append("[history] memory phase \(phase) • \(memory.changedPaths.count) changed")
             }
+            if let memory, !memory.pendingExplorationTargets.isEmpty {
+                lines.append("[history] pending exploration \(memory.pendingExplorationTargets.count)")
+            }
             if let memory, !memory.unresolvedItems.isEmpty {
                 lines.append("[history] unresolved \(memory.unresolvedItems.count)")
             }
@@ -2801,6 +2804,12 @@ final class TUIApp {
                 runLines.append("  task \(memory.currentTask)")
                 if let phase = memory.currentPhase {
                     runLines.append("  phase \(phase)")
+                }
+                if !memory.explorationTargets.isEmpty {
+                    runLines.append("  targets \(memory.explorationTargets.joined(separator: ", "))")
+                }
+                if !memory.pendingExplorationTargets.isEmpty {
+                    runLines.append("  pending \(memory.pendingExplorationTargets.joined(separator: ", "))")
                 }
                 if !memory.inspectedPaths.isEmpty {
                     runLines.append("  inspected \(memory.inspectedPaths.joined(separator: ", "))")

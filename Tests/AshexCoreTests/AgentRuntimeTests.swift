@@ -54,6 +54,8 @@ private let testShellPolicy = ShellCommandPolicy(config: .default)
     #expect(plan.recommendations.contains { $0.contains("search_text") })
     #expect(plan.recommendations.contains { $0.contains("read_text_file") })
     #expect(plan.recommendations.contains { $0.contains("README.md") })
+    #expect(plan.targetPaths.contains("Sources/AshexCore/ModelAdapter.swift"))
+    #expect(plan.suggestedQueries.contains { $0.contains("OpenAIModelAdapter") })
 }
 
 @Test func runtimeCompletesSimpleFilesystemRun() async throws {
@@ -500,6 +502,8 @@ private let testShellPolicy = ShellCommandPolicy(config: .default)
         runID: run.id,
         currentTask: "Fix harness architecture",
         currentPhase: "exploration",
+        explorationTargets: ["Sources/AshexCore/Prompting.swift", "Tests/AshexCoreTests/AgentRuntimeTests.swift"],
+        pendingExplorationTargets: ["Tests/AshexCoreTests/AgentRuntimeTests.swift"],
         inspectedPaths: ["Sources/AshexCore/Prompting.swift"],
         changedPaths: ["README.md"],
         recentFindings: ["Inspected Prompting.swift and found compaction entry points."],
@@ -518,6 +522,8 @@ private let testShellPolicy = ShellCommandPolicy(config: .default)
     #expect(snapshot?.instructionFiles == ["README.md"])
     #expect(memory?.currentTask == "Fix harness architecture")
     #expect(memory?.currentPhase == "exploration")
+    #expect(memory?.explorationTargets == ["Sources/AshexCore/Prompting.swift", "Tests/AshexCoreTests/AgentRuntimeTests.swift"])
+    #expect(memory?.pendingExplorationTargets == ["Tests/AshexCoreTests/AgentRuntimeTests.swift"])
     #expect(memory?.inspectedPaths == ["Sources/AshexCore/Prompting.swift"])
     #expect(memory?.changedPaths == ["README.md"])
     #expect(memory?.recentFindings == ["Inspected Prompting.swift and found compaction entry points."])

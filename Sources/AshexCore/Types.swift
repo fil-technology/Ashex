@@ -262,6 +262,8 @@ public struct WorkingMemoryRecord: Codable, Sendable, Equatable {
     public let runID: UUID
     public let currentTask: String
     public let currentPhase: String?
+    public let explorationTargets: [String]
+    public let pendingExplorationTargets: [String]
     public let inspectedPaths: [String]
     public let changedPaths: [String]
     public let recentFindings: [String]
@@ -276,6 +278,8 @@ public struct WorkingMemoryRecord: Codable, Sendable, Equatable {
         runID: UUID,
         currentTask: String,
         currentPhase: String?,
+        explorationTargets: [String],
+        pendingExplorationTargets: [String],
         inspectedPaths: [String],
         changedPaths: [String],
         recentFindings: [String],
@@ -289,6 +293,8 @@ public struct WorkingMemoryRecord: Codable, Sendable, Equatable {
         self.runID = runID
         self.currentTask = currentTask
         self.currentPhase = currentPhase
+        self.explorationTargets = explorationTargets
+        self.pendingExplorationTargets = pendingExplorationTargets
         self.inspectedPaths = inspectedPaths
         self.changedPaths = changedPaths
         self.recentFindings = recentFindings

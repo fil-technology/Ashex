@@ -160,6 +160,7 @@ Ashex is now split a bit more like a real coding-agent harness instead of pushin
 - `WorkspaceSnapshotBuilder` captures stable repo facts up front, like top-level entries, instruction files, and lightweight git state
 - `WorkingMemory` keeps a distilled per-run view of the current task, phase, inspected paths, changed paths, and suggested validation
 - working memory now also keeps recent findings, completed step summaries, and unresolved items for better long-session continuity
+- working memory now also keeps exploration targets and still-pending exploration targets for better file targeting during larger coding tasks
 - `ToolExecutor` owns tool resolution, approval checks, execution, persistence, and streaming tool events
 - `AgentRuntime` coordinates run lifecycle, step execution, and durable run-step state while staying smaller than before
 
@@ -168,6 +169,7 @@ The workflow layer is now more deliberate than a generic loop:
 - tasks are classified into kinds such as bug fix, feature, refactor, docs, git, shell, and analysis
 - exploration and validation guidance changes by task kind
 - exploration steps now carry a concrete recommended inspect/search/read sequence based on the task and workspace snapshot
+- exploration targeting now persists likely files, roots, and search queries so history and resumed runs can see what the harness thought was worth inspecting
 - the runtime carries those hints into the phased execution flow so coding tasks explore and validate more intentionally
 
 Current runtime capabilities also include:
@@ -214,3 +216,5 @@ Ashex is now a serious local coding-agent foundation, but it is still not at Cod
 - even stronger longer-session memory quality and thread continuation behavior
 - even more reliable large-task execution under drift and weak planning
 - richer delegated-agent orchestration beyond the current bounded subtask flow
+
+The current next-stage roadmap for those areas lives in `PRODUCTION_REFINEMENT_ROADMAP.md`.

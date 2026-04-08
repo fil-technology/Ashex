@@ -460,6 +460,12 @@ public enum PromptBuilder {
         if let phase = memory.currentPhase {
             lines.append("Current phase: \(phase)")
         }
+        if !memory.explorationTargets.isEmpty {
+            lines.append("Exploration targets: \(memory.explorationTargets.joined(separator: ", "))")
+        }
+        if !memory.pendingExplorationTargets.isEmpty {
+            lines.append("Still worth inspecting: \(memory.pendingExplorationTargets.joined(separator: ", "))")
+        }
         if !memory.inspectedPaths.isEmpty {
             lines.append("Inspected paths: \(memory.inspectedPaths.joined(separator: ", "))")
         }

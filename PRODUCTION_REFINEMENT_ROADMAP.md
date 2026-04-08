@@ -1,0 +1,141 @@
+# Ashex Production Refinement Roadmap
+
+This roadmap starts after the completion of the foundation and production-shaping milestones in `IMPLEMENTATION_PHASES.md` and `PRODUCTION_MILESTONES.md`.
+
+The goal now is not to add another broad MVP checklist. The goal is to close the behavioral gap between Ashex's current harness architecture and the day-to-day reliability of stronger coding agents.
+
+## Current Position
+
+Ashex already has:
+
+- a reusable single-agent runtime
+- prompt building, context preparation, compaction, workspace snapshots, and working memory
+- phased execution with exploration, planning, mutation, and validation
+- inspect-before-mutate enforcement
+- filesystem, git, shell, and patch-style edit workflows
+- persistence, history, restart recovery, recent workspaces, and a TUI
+- guarded approvals and bounded delegated subtasks
+
+The remaining work is refinement work: making the agent choose the right files earlier, validate more intelligently, plan multi-file changes more deliberately, stay coherent over long sessions, and coordinate delegated work more effectively.
+
+## Current Refinement Status
+
+- Phase 1 has started:
+  - exploration targets are now persisted in working memory
+  - pending exploration targets are tracked as files and roots are inspected
+  - history and prompts now surface that exploration state
+- The remaining refinement work below is still active
+
+## Refinement Phase 1: Deeper Exploration And File Targeting
+
+Goal: make Ashex inspect the right parts of a codebase before mutating anything.
+
+Work:
+
+- strengthen task-type-aware repo preflight before mutation
+- improve file targeting with better use of `find_files`, `search_text`, `read_text_file`, and read-only git context
+- bias exploration toward likely entry points for bug fixes, features, refactors, docs tasks, and shell-heavy tasks
+- keep explored files, rejected paths, and likely next targets in working memory
+- make exploration more visible in the TUI than raw transcript lines alone
+
+Exit criteria:
+
+- larger coding tasks reliably inspect relevant files before edits
+- explored file sets are visible to the user
+- file targeting is more selective than broad repo scanning
+
+## Refinement Phase 2: Stronger Validation Execution
+
+Goal: make Ashex validate work more like a real coding assistant instead of mostly suggesting validation.
+
+Work:
+
+- choose validation actions by task type and observed mutations
+- prefer `git diff`, targeted reads, builds, tests, and shell-based verification where relevant
+- add explicit validation execution paths for code edits, docs changes, shell tasks, and git tasks
+- persist validation outcomes in working memory and final summaries
+- block weak "done" states when relevant validation was skipped or failed
+
+Exit criteria:
+
+- changed code is routinely followed by meaningful validation
+- validation results are persisted and summarized clearly
+- final answers reflect whether work is verified, partially verified, or unverified
+
+## Refinement Phase 3: Richer Multi-File Patch Planning
+
+Goal: make multi-file changes feel deliberate instead of like a series of isolated edits.
+
+Work:
+
+- add a pre-mutation patch plan for larger edits
+- group intended file changes into structured change sets
+- store per-file intent, expected effect, and status
+- improve diff summaries for multi-file work
+- surface pending versus completed file changes during the run
+
+Exit criteria:
+
+- larger tasks produce explicit multi-file plans before edits
+- users can see what files are expected to change and why
+- final summaries can explain multi-file edits coherently
+
+## Refinement Phase 4: Stronger Long-Session Behavior
+
+Goal: improve quality and stability across long-running or resumed sessions.
+
+Work:
+
+- improve compaction quality using validated outcomes, file summaries, and resolved steps
+- reduce repeated stale context and duplicate file-read history more aggressively
+- strengthen working memory with durable findings, unresolved issues, assumptions, and validation status
+- improve session resume so reopened runs preserve the distilled state that matters
+- show compacted and clipped history more transparently in the UI
+
+Exit criteria:
+
+- long sessions degrade more gracefully
+- resumed sessions retain important task state without replaying too much raw transcript
+- compacted history remains understandable and inspectable
+
+## Refinement Phase 5: Advanced Multi-Agent Orchestration
+
+Goal: move from bounded delegated subtasks toward a more capable but still controlled multi-agent model.
+
+Work:
+
+- strengthen delegated task scoping, ownership, and result integration
+- make subagent usage more task-aware instead of generic
+- allow safe parallel delegated exploration and validation where appropriate
+- preserve clear auditability of what each subagent did
+- keep approvals, persistence, and workspace safety consistent across delegated work
+
+Exit criteria:
+
+- subagents are useful for real coding subtasks without creating chaos
+- delegated work remains bounded, inspectable, and easy to merge back
+- multi-agent behavior improves throughput without weakening safety or clarity
+
+## Recommended Order
+
+1. Deeper exploration and file targeting
+2. Stronger validation execution
+3. Richer multi-file patch planning
+4. Stronger long-session behavior
+5. Advanced multi-agent orchestration
+
+## What "Closer To Codex-Class" Means
+
+Ashex should feel meaningfully closer to stronger coding agents when it can do the following consistently:
+
+- inspect the right files before editing
+- choose a sensible validation path after changes
+- plan and explain multi-file work clearly
+- stay coherent across longer sessions
+- delegate bounded subtasks without losing control of the overall task
+
+## Relationship To Existing Docs
+
+- `IMPLEMENTATION_PHASES.md` tracks the broader product and build history
+- `PRODUCTION_MILESTONES.md` tracks the completed production-foundation milestones
+- this file tracks the next refinement path from "production-shaped" toward a stronger day-to-day coding agent

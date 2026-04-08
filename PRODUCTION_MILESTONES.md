@@ -57,3 +57,17 @@ This file tracks the remaining work to move Ashex from a serious local MVP towar
 - [x] Keep delegated scope bounded by files, context, and task depth
 - [x] Preserve the existing persistence and approval model
 - [x] Verify with targeted runtime and unit tests
+
+## After These Milestones
+
+The production-foundation milestones above are complete.
+
+The next stage is refinement work:
+
+- deeper exploration and file targeting
+- stronger validation execution
+- richer multi-file patch planning
+- stronger long-session behavior
+- more advanced multi-agent orchestration
+
+See `PRODUCTION_REFINEMENT_ROADMAP.md` for the next-stage roadmap.

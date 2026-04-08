@@ -3,10 +3,14 @@ import Foundation
 public struct ExplorationPlan: Sendable, Equatable {
     public let summary: String
     public let recommendations: [String]
+    public let targetPaths: [String]
+    public let suggestedQueries: [String]
 
-    public init(summary: String, recommendations: [String]) {
+    public init(summary: String, recommendations: [String], targetPaths: [String] = [], suggestedQueries: [String] = []) {
         self.summary = summary
         self.recommendations = recommendations
+        self.targetPaths = targetPaths
+        self.suggestedQueries = suggestedQueries
     }
 
     public var formatted: String {
@@ -25,6 +29,13 @@ public enum ExplorationStrategy {
         let focusTerms = focus.signalTerms
         let focusText = focusTerms.isEmpty ? "the request and nearby implementation" : focusTerms.joined(separator: ", ")
         let rootText = searchRoots.joined(separator: ", ")
+        let targetPaths = prioritizedTargetPaths(
+            taskKind: taskKind,
+            focus: focus,
+            snapshot: workspaceSnapshot,
+            searchRoots: searchRoots
+        )
+        let suggestedQueries = prioritizedQueries(taskKind: taskKind, focus: focus, snapshot: workspaceSnapshot)
 
         let summary = switch taskKind {
         case .bugFix:
@@ -80,9 +91,16 @@ public enum ExplorationStrategy {
             recommendations.append("Check instruction files first if they are relevant: \(snapshot.instructionFiles.joined(separator: ", ")).")
         }
 
+        if !targetPaths.isEmpty {
+            recommendations.append("Prioritize these likely targets first: \(targetPaths.joined(separator: ", ")).")
+        }
+        if !suggestedQueries.isEmpty {
+            recommendations.append("Use these search queries early: \(suggestedQueries.joined(separator: ", ")).")
+        }
+
         var seen: Set<String> = []
         let deduped = recommendations.filter { seen.insert($0).inserted }
-        return ExplorationPlan(summary: summary, recommendations: deduped)
+        return ExplorationPlan(summary: summary, recommendations: deduped, targetPaths: targetPaths, suggestedQueries: suggestedQueries)
     }
 
     private static func preferredSearchRoots(for taskKind: TaskKind, snapshot: WorkspaceSnapshotRecord?) -> [String] {
@@ -108,6 +126,66 @@ public enum ExplorationStrategy {
             return roots
         }
     }
+
+    private static func prioritizedTargetPaths(
+        taskKind: TaskKind,
+        focus: PromptFocus,
+        snapshot: WorkspaceSnapshotRecord?,
+        searchRoots: [String]
+    ) -> [String] {
+        var targets: [String] = []
+
+        if let snapshot {
+            targets.append(contentsOf: snapshot.instructionFiles)
+        }
+        targets.append(contentsOf: focus.fileLikeTerms)
+
+        switch taskKind {
+        case .bugFix, .feature, .refactor, .analysis, .general:
+            targets.append(contentsOf: searchRoots)
+            if searchRoots.contains("Sources") { targets.append("Sources") }
+            if searchRoots.contains("Tests") { targets.append("Tests") }
+        case .docs:
+            targets.append(contentsOf: searchRoots)
+        case .git:
+            targets.append(contentsOf: [".git", "."])
+        case .shell:
+            targets.append(contentsOf: searchRoots)
+        }
+
+        var seen: Set<String> = []
+        return targets
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .filter { seen.insert($0.lowercased()).inserted }
+            .prefix(8)
+            .map { $0 }
+    }
+
+    private static func prioritizedQueries(
+        taskKind: TaskKind,
+        focus: PromptFocus,
+        snapshot: WorkspaceSnapshotRecord?
+    ) -> [String] {
+        var queries = focus.signalTerms
+        if let branch = snapshot?.gitBranch, taskKind == .git {
+            queries.append(branch)
+        }
+
+        if queries.isEmpty, let snapshot {
+            queries.append(contentsOf: snapshot.topLevelEntries.prefix(2).map {
+                $0.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            })
+        }
+
+        var seen: Set<String> = []
+        return queries
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { $0.count >= 2 }
+            .filter { seen.insert($0.lowercased()).inserted }
+            .prefix(6)
+            .map { $0 }
+    }
 }
 
 private struct PromptFocus {
@@ -125,7 +203,7 @@ private struct PromptFocus {
         return terms.filter { seen.insert($0.lowercased()).inserted }
     }
 
-    private var fileLikeTerms: [String] {
+    var fileLikeTerms: [String] {
         prompt.split(whereSeparator: \.isWhitespace)
             .map(String.init)
             .map { $0.trimmingCharacters(in: CharacterSet.punctuationCharacters) }

@@ -96,10 +96,18 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
             let userMessage = try persistence.appendMessage(threadID: thread.id, runID: run.id, role: .user, content: request.prompt, now: clock())
             try emitter.emit(.messageAppended(runID: run.id, messageID: userMessage.id, role: .user), runID: run.id)
             let taskKind = TaskPlanner.classify(prompt: request.prompt)
+            let initialWorkspaceSnapshotRecord = try persistence.fetchWorkspaceSnapshot(runID: run.id)
+            let initialExplorationPlan = ExplorationStrategy.recommend(
+                taskKind: taskKind,
+                prompt: request.prompt,
+                workspaceSnapshot: initialWorkspaceSnapshotRecord
+            )
             _ = try persistence.upsertWorkingMemory(
                 runID: run.id,
                 currentTask: request.prompt,
                 currentPhase: nil,
+                explorationTargets: initialExplorationPlan.targetPaths,
+                pendingExplorationTargets: initialExplorationPlan.targetPaths,
                 inspectedPaths: [],
                 changedPaths: [],
                 recentFindings: [],
@@ -129,6 +137,11 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
             for (index, step) in steps.enumerated() {
                 try await cancellation.checkCancellation()
                 let workspaceSnapshotRecord = try persistence.fetchWorkspaceSnapshot(runID: run.id)
+                let explorationPlan = ExplorationStrategy.recommend(
+                    taskKind: taskKind,
+                    prompt: request.prompt,
+                    workspaceSnapshot: workspaceSnapshotRecord
+                )
 
                 if let control = request.executionControl,
                    await control.consumeSkipCurrentStep() {
@@ -141,17 +154,13 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                 try persistence.transitionRunStep(stepID: stepRecords[index].id, to: .running, summary: nil, now: clock())
                 try emitter.emit(.workflowPhaseChanged(runID: run.id, phase: step.phase.rawValue, title: step.title), runID: run.id)
                 if step.phase == .exploration {
-                    let explorationPlan = ExplorationStrategy.recommend(
-                        taskKind: taskKind,
-                        prompt: request.prompt,
-                        workspaceSnapshot: workspaceSnapshotRecord
-                    )
                     try emitter.emit(.status(runID: run.id, message: "Exploration plan: \(explorationPlan.recommendations.first ?? explorationPlan.summary)"), runID: run.id)
                 }
                 try persistWorkingMemory(
                     runID: run.id,
                     currentTask: request.prompt,
                     currentPhase: step.phase,
+                    explorationPlan: explorationPlan,
                     workflowState: nil,
                     changedFiles: changedFiles,
                     summary: "Current step \(index + 1)/\(steps.count): \(step.title)",
@@ -195,6 +204,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                         stepTitle: step.title,
                         taskKind: taskKind,
                         stepPhase: step.phase,
+                        explorationPlan: explorationPlan,
                         existingChangedFiles: changedFiles,
                         maxIterations: min(max(request.maxIterations / 2, 2), 4),
                         cancellation: cancellation,
@@ -208,6 +218,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                         stepTitle: step.title,
                         taskKind: taskKind,
                         stepPhase: step.phase,
+                        explorationPlan: explorationPlan,
                         existingChangedFiles: changedFiles,
                         maxIterations: request.maxIterations,
                         cancellation: cancellation,
@@ -255,6 +266,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                 runID: run.id,
                 currentTask: request.prompt,
                 currentPhase: .validation,
+                explorationPlan: initialExplorationPlan,
                 workflowState: nil,
                 changedFiles: changedFiles,
                 summary: finalAnswerText,
@@ -299,6 +311,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         stepTitle: String,
         taskKind: TaskKind,
         stepPhase: PlannedStepPhase,
+        explorationPlan: ExplorationPlan,
         existingChangedFiles: [ChangedArtifact],
         maxIterations: Int,
         cancellation: CancellationToken,
@@ -312,6 +325,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
             stepTitle: stepTitle,
             taskKind: taskKind,
             stepPhase: stepPhase,
+            explorationPlan: explorationPlan,
             existingChangedFiles: existingChangedFiles,
             maxIterations: maxIterations,
             cancellation: cancellation,
@@ -328,6 +342,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         stepTitle: String,
         taskKind: TaskKind,
         stepPhase: PlannedStepPhase,
+        explorationPlan: ExplorationPlan,
         existingChangedFiles: [ChangedArtifact],
         maxIterations: Int,
         cancellation: CancellationToken,
@@ -339,7 +354,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         var lastSafeToolResult: String?
         var noProgressIterations = 0
         var validationBlocks = 0
-        var workflowState = StepWorkflowState()
+        var workflowState = StepWorkflowState(targetArtifacts: explorationPlan.targetPaths)
         var changedFiles: [ChangedArtifact] = existingChangedFiles
 
         for iteration in 0..<maxIterations {
@@ -493,6 +508,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                         runID: run.id,
                         currentTask: stepPrompt,
                         currentPhase: stepPhase,
+                        explorationPlan: explorationPlan,
                         workflowState: workflowState,
                         changedFiles: changedFiles,
                         summary: metadata.summary.isEmpty ? text : metadata.summary,
@@ -531,6 +547,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         stepTitle: String,
         taskKind: TaskKind,
         stepPhase: PlannedStepPhase,
+        explorationPlan: ExplorationPlan,
         existingChangedFiles: [ChangedArtifact],
         maxIterations: Int,
         cancellation: CancellationToken,
@@ -556,7 +573,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         var lastSafeToolResult: String?
         var noProgressIterations = 0
         var validationBlocks = 0
-        var workflowState = StepWorkflowState()
+        var workflowState = StepWorkflowState(targetArtifacts: explorationPlan.targetPaths)
         var changedFiles: [ChangedArtifact] = existingChangedFiles
 
         for iteration in 0..<maxIterations {
@@ -834,6 +851,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         runID: UUID,
         currentTask: String,
         currentPhase: PlannedStepPhase?,
+        explorationPlan: ExplorationPlan?,
         workflowState: StepWorkflowState?,
         changedFiles: [ChangedArtifact],
         summary: String,
@@ -841,6 +859,8 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         unresolvedItems: [String] = [],
         overrideSuggestions: [String]? = nil
     ) throws {
+        let explorationTargets = explorationPlan?.targetPaths ?? workflowState?.explorationTargets ?? []
+        let pendingExplorationTargets = workflowState?.pendingExplorationTargets ?? explorationTargets
         let inspectedPaths = workflowState.map { Array($0.inspectedArtifacts).sorted() } ?? []
         let changedPaths = Self.orderedUniqueChanges(from: changedFiles).map(\.path)
         let recentFindings = workflowState?.recentFindings ?? []
@@ -849,6 +869,8 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
             runID: runID,
             currentTask: currentTask,
             currentPhase: currentPhase?.rawValue,
+            explorationTargets: explorationTargets,
+            pendingExplorationTargets: pendingExplorationTargets,
             inspectedPaths: inspectedPaths,
             changedPaths: changedPaths,
             recentFindings: recentFindings,
@@ -996,12 +1018,34 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
 }
 
 private struct StepWorkflowState {
+    private let targetArtifacts: [String]
     private(set) var inspectedArtifacts: Set<String> = []
     private(set) var validationArtifacts: Set<String> = []
     private(set) var recentFindings: [String] = []
 
+    init(targetArtifacts: [String] = []) {
+        self.targetArtifacts = targetArtifacts
+    }
+
     var hasPriorInspection: Bool {
         !inspectedArtifacts.isEmpty
+    }
+
+    var explorationTargets: [String] {
+        targetArtifacts
+    }
+
+    var pendingExplorationTargets: [String] {
+        targetArtifacts.filter { target in
+            !inspectedArtifacts.contains { inspected in
+                let normalizedTarget = normalizePath(target)
+                let normalizedInspected = normalizePath(inspected)
+                guard !normalizedTarget.isEmpty, !normalizedInspected.isEmpty else { return false }
+                return normalizedInspected == normalizedTarget
+                    || normalizedInspected.hasPrefix(normalizedTarget + "/")
+                    || normalizedTarget.hasPrefix(normalizedInspected + "/")
+            }
+        }
     }
 
     func hasValidationEvidence(for changedPaths: [String]) -> Bool {

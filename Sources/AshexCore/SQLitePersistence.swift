@@ -84,6 +84,8 @@ public final class SQLitePersistenceStore: PersistenceStore, @unchecked Sendable
                 run_id TEXT NOT NULL UNIQUE,
                 current_task TEXT NOT NULL,
                 current_phase TEXT,
+                exploration_targets_json TEXT NOT NULL DEFAULT '[]',
+                pending_exploration_targets_json TEXT NOT NULL DEFAULT '[]',
                 inspected_paths_json TEXT NOT NULL,
                 changed_paths_json TEXT NOT NULL,
                 recent_findings_json TEXT NOT NULL DEFAULT '[]',
@@ -117,6 +119,8 @@ public final class SQLitePersistenceStore: PersistenceStore, @unchecked Sendable
                 PRIMARY KEY (namespace, key)
             );
             """)
+            try ensureColumnExists(table: "working_memory", column: "exploration_targets_json", definition: "TEXT NOT NULL DEFAULT '[]'")
+            try ensureColumnExists(table: "working_memory", column: "pending_exploration_targets_json", definition: "TEXT NOT NULL DEFAULT '[]'")
             try ensureColumnExists(table: "working_memory", column: "recent_findings_json", definition: "TEXT NOT NULL DEFAULT '[]'")
             try ensureColumnExists(table: "working_memory", column: "completed_steps_json", definition: "TEXT NOT NULL DEFAULT '[]'")
             try ensureColumnExists(table: "working_memory", column: "unresolved_items_json", definition: "TEXT NOT NULL DEFAULT '[]'")
@@ -307,6 +311,8 @@ public final class SQLitePersistenceStore: PersistenceStore, @unchecked Sendable
         runID: UUID,
         currentTask: String,
         currentPhase: String?,
+        explorationTargets: [String],
+        pendingExplorationTargets: [String],
         inspectedPaths: [String],
         changedPaths: [String],
         recentFindings: [String],
@@ -323,6 +329,8 @@ public final class SQLitePersistenceStore: PersistenceStore, @unchecked Sendable
                 runID: runID,
                 currentTask: currentTask,
                 currentPhase: currentPhase,
+                explorationTargets: explorationTargets,
+                pendingExplorationTargets: pendingExplorationTargets,
                 inspectedPaths: inspectedPaths,
                 changedPaths: changedPaths,
                 recentFindings: recentFindings,
@@ -335,14 +343,16 @@ public final class SQLitePersistenceStore: PersistenceStore, @unchecked Sendable
             try exec(
                 """
                 INSERT OR REPLACE INTO working_memory
-                (id, run_id, current_task, current_phase, inspected_paths_json, changed_paths_json, recent_findings_json, completed_steps_json, unresolved_items_json, validation_suggestions_json, summary, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, run_id, current_task, current_phase, exploration_targets_json, pending_exploration_targets_json, inspected_paths_json, changed_paths_json, recent_findings_json, completed_steps_json, unresolved_items_json, validation_suggestions_json, summary, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 bind: [
                     .text(record.id.uuidString),
                     .text(runID.uuidString),
                     .text(record.currentTask),
                     .text(record.currentPhase),
+                    .text(try encodeJSONString(record.explorationTargets)),
+                    .text(try encodeJSONString(record.pendingExplorationTargets)),
                     .text(try encodeJSONString(record.inspectedPaths)),
                     .text(try encodeJSONString(record.changedPaths)),
                     .text(try encodeJSONString(record.recentFindings)),
@@ -713,7 +723,7 @@ public final class SQLitePersistenceStore: PersistenceStore, @unchecked Sendable
 
     private func fetchWorkingMemoryLocked(runID: UUID) throws -> WorkingMemoryRecord? {
         let sql = """
-        SELECT id, current_task, current_phase, inspected_paths_json, changed_paths_json, recent_findings_json, completed_steps_json, unresolved_items_json, validation_suggestions_json, summary, updated_at
+        SELECT id, current_task, current_phase, exploration_targets_json, pending_exploration_targets_json, inspected_paths_json, changed_paths_json, recent_findings_json, completed_steps_json, unresolved_items_json, validation_suggestions_json, summary, updated_at
         FROM working_memory
         WHERE run_id = ?
         LIMIT 1
@@ -728,14 +738,16 @@ public final class SQLitePersistenceStore: PersistenceStore, @unchecked Sendable
             runID: runID,
             currentTask: columnText(statement, index: 1),
             currentPhase: columnNullableText(statement, index: 2),
-            inspectedPaths: try decodeStringArrayJSON(columnText(statement, index: 3)),
-            changedPaths: try decodeStringArrayJSON(columnText(statement, index: 4)),
-            recentFindings: try decodeStringArrayJSON(columnText(statement, index: 5)),
-            completedStepSummaries: try decodeStringArrayJSON(columnText(statement, index: 6)),
-            unresolvedItems: try decodeStringArrayJSON(columnText(statement, index: 7)),
-            validationSuggestions: try decodeStringArrayJSON(columnText(statement, index: 8)),
-            summary: columnText(statement, index: 9),
-            updatedAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 10))
+            explorationTargets: try decodeStringArrayJSON(columnText(statement, index: 3)),
+            pendingExplorationTargets: try decodeStringArrayJSON(columnText(statement, index: 4)),
+            inspectedPaths: try decodeStringArrayJSON(columnText(statement, index: 5)),
+            changedPaths: try decodeStringArrayJSON(columnText(statement, index: 6)),
+            recentFindings: try decodeStringArrayJSON(columnText(statement, index: 7)),
+            completedStepSummaries: try decodeStringArrayJSON(columnText(statement, index: 8)),
+            unresolvedItems: try decodeStringArrayJSON(columnText(statement, index: 9)),
+            validationSuggestions: try decodeStringArrayJSON(columnText(statement, index: 10)),
+            summary: columnText(statement, index: 11),
+            updatedAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 12))
         )
     }
 

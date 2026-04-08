@@ -327,3 +327,17 @@ Likely next highest-value step:
 After that:
 
 - SwiftUI integration when the terminal/runtime workflow is stable enough
+
+## Next-Stage Roadmap
+
+The phases above cover the foundation, MVP, harness, and production-shaping work.
+
+The next roadmap is refinement-oriented rather than foundation-oriented. It focuses on:
+
+- deeper exploration and file targeting
+- stronger validation execution
+- richer multi-file patch planning
+- stronger long-session behavior
+- more advanced multi-agent orchestration
+
+See `PRODUCTION_REFINEMENT_ROADMAP.md` for the current next-stage plan.
