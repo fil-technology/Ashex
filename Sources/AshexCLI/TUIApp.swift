@@ -114,6 +114,7 @@ final class TUIApp {
     private var sessionStorageRoot: URL
     private var sessionUserConfig: AshexUserConfig
     private var sessionUserConfigFile: URL
+    private var sessionGlobalUserConfigFile: URL?
     private var sessionProvider: String
     private var sessionModel: String
     private var providerStartupIssue: String?
@@ -129,6 +130,7 @@ final class TUIApp {
     private var terminalCancellation = CancellationToken()
     private var currentRunPhase: String?
     private var currentChangedFiles: [String] = []
+    private var sessionInspector: SessionInspector
 
     init(configuration: CLIConfiguration) throws {
         let approvalCoordinator = TUIApprovalCoordinator()
@@ -141,6 +143,7 @@ final class TUIApp {
         self.sessionStorageRoot = configuration.storageRoot
         self.sessionUserConfig = configuration.userConfig
         self.sessionUserConfigFile = configuration.userConfigFile
+        self.sessionGlobalUserConfigFile = configuration.globalUserConfigFile
         self.sessionProvider = configuration.provider
         self.sessionModel = configuration.model
         let approvalPolicy: any ApprovalPolicy = configuration.approvalMode == .guarded
@@ -170,6 +173,7 @@ final class TUIApp {
                 guardrailAssessment: nil
             )
         }
+        self.sessionInspector = SessionInspector(persistence: historyStore)
         approvalCoordinator.handler = { [weak self] request in
             guard let self else { return .deny("TUI is unavailable") }
             return await self.requestApproval(request)
@@ -862,17 +866,18 @@ final class TUIApp {
         }
 
         do {
-            let configFile = proposed.appendingPathComponent(UserConfigStore.fileName)
-            let config = try UserConfigStore.ensure(at: configFile)
+            let loadedConfig = try UserConfigStore.loadMerged(for: proposed)
             let storageRoot = proposed.appendingPathComponent(".ashex")
             let store = SQLitePersistenceStore(databaseURL: storageRoot.appendingPathComponent("ashex.sqlite"))
             try store.initialize()
 
             sessionWorkspaceRoot = proposed
             sessionStorageRoot = storageRoot
-            sessionUserConfig = config
-            sessionUserConfigFile = configFile
+            sessionUserConfig = loadedConfig.effectiveConfig
+            sessionUserConfigFile = loadedConfig.workspaceFileURL
+            sessionGlobalUserConfigFile = loadedConfig.globalFileURL
             historyStore = store
+            sessionInspector = SessionInspector(persistence: store)
             inputMode = .prompt
             workspacePathInput = ""
             focus = .transcript
@@ -1029,6 +1034,36 @@ final class TUIApp {
             showHistory = false
             focus = .transcript
             statusLine = "Workspace shown"
+            return true
+        case .showSandbox:
+            runTask?.cancel()
+            runExecutionControl = nil
+            stopWorkingIndicator()
+            let globalConfigLine = sessionGlobalUserConfigFile?.path ?? "<none>"
+            let rules = sessionUserConfig.shell.rules.isEmpty
+                ? "none"
+                : sessionUserConfig.shell.rules.map { "\($0.action.rawValue): \($0.prefix)" }.joined(separator: ", ")
+            runLines = [
+                "Prompt: /sandbox",
+                "",
+                "[local] Sandbox policy",
+                "Mode: \(sessionUserConfig.sandbox.mode.rawValue)",
+                "Protected paths: \(sessionUserConfig.sandbox.protectedPaths.isEmpty ? "none" : sessionUserConfig.sandbox.protectedPaths.joined(separator: ", "))",
+                "Unknown commands require approval: \(sessionUserConfig.shell.requireApprovalForUnknownCommands ? "yes" : "no")",
+                "Rule actions: \(rules)",
+                "Workspace config: \(sessionUserConfigFile.path)",
+                "Global config: \(globalConfigLine)",
+            ]
+            transcriptScrollOffset = 0
+            runFinished = true
+            runStartedAt = nil
+            promptText = ""
+            inputMode = .prompt
+            showSettings = false
+            showHelp = false
+            showHistory = false
+            focus = .transcript
+            statusLine = "Sandbox policy shown"
             return true
         case .openWorkspaces:
             runLines = [
@@ -1309,10 +1344,11 @@ final class TUIApp {
 
         let provider = "\(TerminalUIStyle.faint)provider\(TerminalUIStyle.reset) \(TerminalUIStyle.blue)\(sessionProvider)\(TerminalUIStyle.reset)"
         let model = "\(TerminalUIStyle.faint)model\(TerminalUIStyle.reset) \(TerminalUIStyle.ink)\(sessionModel)\(TerminalUIStyle.reset)"
+        let sandbox = "\(TerminalUIStyle.faint)sandbox\(TerminalUIStyle.reset) \(TerminalUIStyle.cyan)\(sessionUserConfig.sandbox.mode.rawValue)\(TerminalUIStyle.reset)"
         let usage = "\(TerminalUIStyle.faint)tok~\(TerminalUIStyle.reset) \(TerminalUIStyle.ink)\(formattedEstimatedTokens)\(TerminalUIStyle.reset)"
         let context = "\(TerminalUIStyle.faint)ctx~\(TerminalUIStyle.reset) \(TerminalUIStyle.ink)\(formattedContextUsage)\(TerminalUIStyle.reset)"
         let status = "\(statusColor)\(displayStatusLine)\(TerminalUIStyle.reset)"
-        let right = "\(provider)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(model)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(usage)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(context)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(status)"
+        let right = "\(provider)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(model)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(sandbox)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(usage)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(context)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(status)"
 
         let topLine = join(left: left, right: right, width: innerWidth)
         let workspace = "\(TerminalUIStyle.faint)workspace\(TerminalUIStyle.reset) \(TerminalUIStyle.truncateVisible(sessionWorkspaceRoot.path, limit: innerWidth))"
@@ -1483,6 +1519,7 @@ final class TUIApp {
             "\(TerminalUIStyle.blue)\(TerminalUIStyle.truncateVisible("Switch workspace live: /workspace /full/path/to/project", limit: width))\(TerminalUIStyle.reset)",
             "\(TerminalUIStyle.blue)\(TerminalUIStyle.truncateVisible("Aliases: :workspace /path, workspace /path, cd /path, /cd /path", limit: width))\(TerminalUIStyle.reset)",
             "\(TerminalUIStyle.blue)\(TerminalUIStyle.truncateVisible("Show current workspace: /pwd", limit: width))\(TerminalUIStyle.reset)",
+            "\(TerminalUIStyle.blue)\(TerminalUIStyle.truncateVisible("Show sandbox policy: /sandbox", limit: width))\(TerminalUIStyle.reset)",
             "\(TerminalUIStyle.blue)\(TerminalUIStyle.truncateVisible("Open recent workspaces: /workspaces", limit: width))\(TerminalUIStyle.reset)",
             "\(TerminalUIStyle.blue)\(TerminalUIStyle.truncateVisible("Open side terminal: press t or choose Terminal in the launcher", limit: width))\(TerminalUIStyle.reset)",
             "",
@@ -1516,6 +1553,12 @@ final class TUIApp {
             "\(TerminalUIStyle.slate)\(TerminalUIStyle.truncateVisible(sessionUserConfigFile.path, limit: width))\(TerminalUIStyle.reset)"
         ]
 
+        if let globalConfigFile = sessionGlobalUserConfigFile {
+            lines.append("\(TerminalUIStyle.slate)\(TerminalUIStyle.truncateVisible("Global config: " + globalConfigFile.path, limit: width))\(TerminalUIStyle.reset)")
+        } else {
+            lines.append("\(TerminalUIStyle.slate)Global config: none\(TerminalUIStyle.reset)")
+        }
+
         if shellPolicy.allowList.isEmpty {
             lines.append("\(TerminalUIStyle.slate)Allow list: empty (commands are allowed unless denied)\(TerminalUIStyle.reset)")
         } else {
@@ -1531,6 +1574,22 @@ final class TUIApp {
         lines.append(
             "\(TerminalUIStyle.slate)Unknown commands require approval: \(shellPolicy.requireApprovalForUnknownCommands ? "yes" : "no")\(TerminalUIStyle.reset)"
         )
+        lines.append(
+            "\(TerminalUIStyle.slate)Sandbox mode: \(sessionUserConfig.sandbox.mode.rawValue)\(TerminalUIStyle.reset)"
+        )
+
+        if sessionUserConfig.sandbox.protectedPaths.isEmpty {
+            lines.append("\(TerminalUIStyle.slate)Protected paths: none\(TerminalUIStyle.reset)")
+        } else {
+            lines.append("\(TerminalUIStyle.slate)\(TerminalUIStyle.truncateVisible("Protected paths: " + sessionUserConfig.sandbox.protectedPaths.joined(separator: ", "), limit: width))\(TerminalUIStyle.reset)")
+        }
+
+        if shellPolicy.rules.isEmpty {
+            lines.append("\(TerminalUIStyle.slate)Command rules: none\(TerminalUIStyle.reset)")
+        } else {
+            let renderedRules = shellPolicy.rules.map { "\($0.action.rawValue):\($0.prefix)" }.joined(separator: ", ")
+            lines.append("\(TerminalUIStyle.slate)\(TerminalUIStyle.truncateVisible("Command rules: " + renderedRules, limit: width))\(TerminalUIStyle.reset)")
+        }
 
         lines.append("")
         lines.append("\(TerminalUIStyle.faint)Ashex creates this config file on first run if it does not exist.\(TerminalUIStyle.reset)")
@@ -2745,11 +2804,15 @@ final class TUIApp {
         }
 
         do {
-            let events = try historyStore.fetchEvents(runID: runID)
-            let steps = try historyStore.fetchRunSteps(runID: runID)
-            let compactions = try historyStore.fetchContextCompactions(runID: runID)
-            let snapshot = try historyStore.fetchWorkspaceSnapshot(runID: runID)
-            let memory = try historyStore.fetchWorkingMemory(runID: runID)
+            guard let snapshotBundle = try sessionInspector.loadRunSnapshot(runID: runID, recentEventLimit: 8) else {
+                historyPreviewLines = ["[error] Run not found"]
+                return
+            }
+            let events = snapshotBundle.events
+            let steps = snapshotBundle.steps
+            let compactions = snapshotBundle.compactions
+            let snapshot = snapshotBundle.workspaceSnapshot
+            let memory = snapshotBundle.workingMemory
             var lines: [String] = []
             if let snapshot {
                 lines.append("[history] snapshot \(URL(fileURLWithPath: snapshot.workspaceRootPath).lastPathComponent)")
@@ -2788,11 +2851,16 @@ final class TUIApp {
         }
 
         do {
-            let events = try historyStore.fetchEvents(runID: runID)
-            let steps = try historyStore.fetchRunSteps(runID: runID)
-            let compactions = try historyStore.fetchContextCompactions(runID: runID)
-            let snapshot = try historyStore.fetchWorkspaceSnapshot(runID: runID)
-            let memory = try historyStore.fetchWorkingMemory(runID: runID)
+            guard let snapshotBundle = try sessionInspector.loadRunSnapshot(runID: runID) else {
+                statusLine = "Failed to load history"
+                runLines = ["[error] Run not found"]
+                return
+            }
+            let events = snapshotBundle.events
+            let steps = snapshotBundle.steps
+            let compactions = snapshotBundle.compactions
+            let snapshot = snapshotBundle.workspaceSnapshot
+            let memory = snapshotBundle.workingMemory
             runLines = ["History: thread \(thread.id.uuidString.prefix(8))", ""]
             if let snapshot {
                 runLines.append("Workspace snapshot:")
@@ -2892,10 +2960,11 @@ final class TUIApp {
         let modelAdapter = try configuration.makeModelAdapter(provider: provider, model: model)
         let persistence = SQLitePersistenceStore(databaseURL: sessionStorageRoot.appendingPathComponent("ashex.sqlite"))
         let shellPolicy = ShellCommandPolicy(config: sessionUserConfig.shell)
+        let workspaceGuard = WorkspaceGuard(rootURL: sessionWorkspaceRoot, sandbox: sessionUserConfig.sandbox)
         return try AgentRuntime(
             modelAdapter: modelAdapter,
             toolRegistry: ToolRegistry(tools: [
-                FileSystemTool(workspaceGuard: WorkspaceGuard(rootURL: sessionWorkspaceRoot)),
+                FileSystemTool(workspaceGuard: workspaceGuard),
                 GitTool(
                     executionRuntime: ProcessExecutionRuntime(),
                     workspaceURL: sessionWorkspaceRoot
@@ -2909,6 +2978,7 @@ final class TUIApp {
             persistence: persistence,
             approvalPolicy: approvalPolicy,
             shellCommandPolicy: shellPolicy,
+            sandboxPolicy: sessionUserConfig.sandbox,
             workspaceSnapshot: WorkspaceSnapshotBuilder.capture(workspaceRoot: sessionWorkspaceRoot)
         )
     }

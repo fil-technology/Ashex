@@ -111,9 +111,18 @@ Provider environment variables:
 
 Shell policy config in `ashex.config.json`:
 
+- `sandbox.mode`: `read_only`, `workspace_write`, or `danger_full_access`
+- `sandbox.protectedPaths`: workspace-relative paths that remain protected in `workspace_write` mode
 - `allowList`: explicit command prefixes that are allowed to run
 - `denyList`: explicit command prefixes that are blocked
+- `rules`: explicit per-prefix actions with `allow`, `prompt`, or `deny`
 - `requireApprovalForUnknownCommands`: when enabled, commands outside the configured allow list or outside the built-in recognized safe list require approval in guarded mode
+
+Config precedence:
+
+- project config: `WORKSPACE/ashex.config.json`
+- optional global config: `~/.config/ashex/ashex.config.json`
+- project config overrides global config key-by-key
 
 Provider secrets:
 
@@ -134,6 +143,8 @@ In guarded mode:
 - filesystem writes and mutating filesystem operations require approval
 - read-only filesystem operations continue without prompting
 - shell commands outside configured allow/safe rules can also be escalated into the same approval flow
+- read-only sandbox mode blocks filesystem mutations and mutating shell commands before approval logic even runs
+- workspace-write sandbox mode protects sensitive paths like `.git`, `.ashex`, `.codex`, and `ashex.config.json` by default
 
 TUI controls:
 
@@ -153,6 +164,7 @@ Live workspace commands in the running TUI:
 - `/workspace /full/path/to/project`: switch the current session to a different workspace
 - `/workspaces`: open the recent-workspaces picker
 - `/pwd`: show the current active workspace
+- `/sandbox`: show the current effective sandbox and command-policy state
 - supported aliases: `:workspace /path`, `workspace /path`, `cd /path`, `/cd /path`
 
 ## Runtime boundary
@@ -170,6 +182,7 @@ Ashex is now split a bit more like a real coding-agent harness instead of pushin
 - working memory now also keeps recent findings, completed step summaries, and unresolved items for better long-session continuity
 - working memory now also keeps exploration targets and still-pending exploration targets for better file targeting during larger coding tasks
 - `ToolExecutor` owns tool resolution, approval checks, execution, persistence, and streaming tool events
+- `SessionInspector` provides a cleaner durable run/session inspection boundary over persisted events, steps, compactions, workspace snapshots, and working memory
 - `AgentRuntime` coordinates run lifecycle, step execution, and durable run-step state while staying smaller than before
 
 The workflow layer is now more deliberate than a generic loop:
@@ -195,6 +208,7 @@ Current runtime capabilities also include:
 - stalled-step recovery when the model keeps retrying without useful progress
 - bounded delegated subtasks for selected non-mutation phases, with a smaller iteration budget and visible subagent events
 - final summaries that can include changed files, why they changed, and what remains
+- explicit sandbox-policy and approval-policy separation so execution constraints can evolve without rewriting the loop
 
 The first compaction strategy is intentionally simple but real:
 
@@ -210,6 +224,7 @@ This keeps the current single-agent runtime small while creating clean seams for
 - prompt caching
 - richer task/session state
 - delegated subagents later on top of the same harness
+- more decoupled session / harness / tool-execution evolution as the runtime grows
 
 ## Current model behavior
 

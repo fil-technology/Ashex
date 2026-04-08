@@ -292,6 +292,9 @@ Already implemented in the repo:
 - Guarded approvals and shell policy config
 - Provider secrets moved to Keychain with legacy SQLite credential migration
 - Shell command policy can escalate unknown commands into guarded approval flow
+- Explicit workspace sandbox modes with protected-path enforcement
+- Rule-based shell command policy with allow / prompt / deny behavior
+- Global plus project-local policy loading with project precedence
 - Task planning and phase-aware execution
 - Inspect-before-mutate enforcement
 - Working memory and workspace snapshot persistence
@@ -323,6 +326,7 @@ Likely next highest-value step:
   - even stronger longer-session memory quality and thread continuation behavior
   - stronger multi-agent orchestration beyond the current bounded delegation layer
   - deeper safety/sandbox hardening
+  - continued session / harness / tool-execution decoupling as the runtime grows
 
 After that:
 

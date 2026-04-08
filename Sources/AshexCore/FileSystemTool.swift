@@ -31,7 +31,7 @@ public struct FileSystemTool: Tool {
             let path = try requiredString("path", in: arguments)
             let content = try requiredString("content", in: arguments)
             let createDirectories = arguments["create_directories"] == .bool(true)
-            let url = try workspaceGuard.resolve(path: path)
+            let url = try workspaceGuard.resolveForMutation(path: path)
             do {
                 let previousContent = try? String(contentsOf: url, encoding: .utf8)
                 if createDirectories {
@@ -56,7 +56,7 @@ public struct FileSystemTool: Tool {
             let oldText = try requiredString("old_text", in: arguments)
             let newText = arguments["new_text"]?.stringValue ?? ""
             let replaceAll = arguments["replace_all"] == .bool(true)
-            let url = try workspaceGuard.resolve(path: path)
+            let url = try workspaceGuard.resolveForMutation(path: path)
             do {
                 let original = try String(contentsOf: url, encoding: .utf8)
                 let updated: String
@@ -93,7 +93,7 @@ public struct FileSystemTool: Tool {
         case "apply_patch":
             let path = try requiredString("path", in: arguments)
             let edits = try requiredPatchEdits(in: arguments)
-            let url = try workspaceGuard.resolve(path: path)
+            let url = try workspaceGuard.resolveForMutation(path: path)
             do {
                 let original = try String(contentsOf: url, encoding: .utf8)
                 var updated = original
@@ -169,7 +169,7 @@ public struct FileSystemTool: Tool {
 
         case "create_directory":
             let path = try requiredString("path", in: arguments)
-            let url = try workspaceGuard.resolve(path: path)
+            let url = try workspaceGuard.resolveForMutation(path: path)
             do {
                 try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
                 return .text("Created directory \(path)")
@@ -179,7 +179,7 @@ public struct FileSystemTool: Tool {
 
         case "delete_path":
             let path = try requiredString("path", in: arguments)
-            let url = try workspaceGuard.resolve(path: path)
+            let url = try workspaceGuard.resolveForMutation(path: path)
             do {
                 try FileManager.default.removeItem(at: url)
                 return .structured(.object([
@@ -194,8 +194,8 @@ public struct FileSystemTool: Tool {
         case "move_path":
             let sourcePath = try requiredString("source_path", in: arguments)
             let destinationPath = try requiredString("destination_path", in: arguments)
-            let sourceURL = try workspaceGuard.resolve(path: sourcePath)
-            let destinationURL = try workspaceGuard.resolve(path: destinationPath)
+            let sourceURL = try workspaceGuard.resolveForMutation(path: sourcePath)
+            let destinationURL = try workspaceGuard.resolveForMutation(path: destinationPath)
             do {
                 try FileManager.default.createDirectory(at: destinationURL.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try FileManager.default.moveItem(at: sourceURL, to: destinationURL)
@@ -213,7 +213,7 @@ public struct FileSystemTool: Tool {
             let sourcePath = try requiredString("source_path", in: arguments)
             let destinationPath = try requiredString("destination_path", in: arguments)
             let sourceURL = try workspaceGuard.resolve(path: sourcePath)
-            let destinationURL = try workspaceGuard.resolve(path: destinationPath)
+            let destinationURL = try workspaceGuard.resolveForMutation(path: destinationPath)
             do {
                 try FileManager.default.createDirectory(at: destinationURL.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try FileManager.default.copyItem(at: sourceURL, to: destinationURL)

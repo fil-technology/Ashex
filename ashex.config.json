@@ -1,4 +1,13 @@
 {
+  "sandbox" : {
+    "mode" : "workspace_write",
+    "protectedPaths" : [
+      ".git",
+      ".ashex",
+      ".codex",
+      "ashex.config.json"
+    ]
+  },
   "shell" : {
     "allowList" : [
 
@@ -13,7 +22,10 @@
       "chown ",
       "launchctl bootout"
     ],
-    "requireApprovalForUnknownCommands" : false
+    "requireApprovalForUnknownCommands" : false,
+    "rules" : [
+
+    ]
   },
   "version" : 1
 }

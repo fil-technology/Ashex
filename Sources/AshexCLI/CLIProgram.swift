@@ -122,6 +122,7 @@ struct CLIConfiguration {
     let approvalMode: ApprovalMode
     let userConfig: AshexUserConfig
     let userConfigFile: URL
+    let globalUserConfigFile: URL?
     let shouldPersistSessionDefaults: Bool
 
     init(arguments: [String]) throws {
@@ -174,8 +175,10 @@ struct CLIConfiguration {
         self.workspaceRoot = workspaceRoot.standardizedFileURL
         self.storageRoot = storageRoot?.standardizedFileURL ?? workspaceRoot.appendingPathComponent(".ashex")
         self.maxIterations = maxIterations
-        self.userConfigFile = self.workspaceRoot.appendingPathComponent(UserConfigStore.fileName)
-        self.userConfig = try UserConfigStore.ensure(at: self.userConfigFile)
+        let loadedConfig = try UserConfigStore.loadMerged(for: self.workspaceRoot)
+        self.userConfigFile = loadedConfig.workspaceFileURL
+        self.globalUserConfigFile = loadedConfig.globalFileURL
+        self.userConfig = loadedConfig.effectiveConfig
         let settingsStore = try Self.makeSettingsStore(storageRoot: self.storageRoot)
         let persistedProvider = try settingsStore.fetchSetting(namespace: SessionSetting.namespace, key: SessionSetting.provider)?.value.stringValue
         let persistedModel = try settingsStore.fetchSetting(namespace: SessionSetting.namespace, key: SessionSetting.model)?.value.stringValue
@@ -247,10 +250,11 @@ struct CLIConfiguration {
         let persistence = SQLitePersistenceStore(databaseURL: storageRoot.appendingPathComponent("ashex.sqlite"))
         let workspaceSnapshot = WorkspaceSnapshotBuilder.capture(workspaceRoot: workspaceURL)
         let shellPolicy = ShellCommandPolicy(config: userConfig.shell)
+        let workspaceGuard = WorkspaceGuard(rootURL: workspaceURL, sandbox: userConfig.sandbox)
         return try AgentRuntime(
             modelAdapter: makeModelAdapter(provider: provider, model: model),
             toolRegistry: ToolRegistry(tools: [
-                FileSystemTool(workspaceGuard: WorkspaceGuard(rootURL: workspaceURL)),
+                FileSystemTool(workspaceGuard: workspaceGuard),
                 GitTool(
                     executionRuntime: ProcessExecutionRuntime(),
                     workspaceURL: workspaceURL
@@ -264,6 +268,7 @@ struct CLIConfiguration {
             persistence: persistence,
             approvalPolicy: approvalPolicy,
             shellCommandPolicy: shellPolicy,
+            sandboxPolicy: userConfig.sandbox,
             workspaceSnapshot: workspaceSnapshot
         )
     }

@@ -23,6 +23,7 @@ struct ToolExecutor: Sendable {
     let persistence: PersistenceStore
     let approvalPolicy: any ApprovalPolicy
     let shellCommandPolicy: ShellCommandPolicy?
+    let sandboxPolicy: SandboxPolicyConfig?
     let clock: @Sendable () -> Date
 
     func execute(
@@ -149,10 +150,15 @@ struct ToolExecutor: Sendable {
 
     private func shellPolicyViolation(for call: ToolCallRequest) -> String? {
         guard call.toolName == "shell",
-              let command = call.arguments["command"]?.stringValue,
-              let shellCommandPolicy else {
+              let command = call.arguments["command"]?.stringValue else {
             return nil
         }
+
+        if let sandboxPolicy, sandboxPolicy.mode == .readOnly, isMutatingShellCommand(command) {
+            return "Tool error: workspace sandbox is read-only, so mutating shell commands are blocked. Switch sandbox mode in ashex.config.json if you want to allow workspace writes."
+        }
+
+        guard let shellCommandPolicy else { return nil }
 
         switch shellCommandPolicy.assess(command: command) {
         case .allow:
@@ -169,6 +175,10 @@ struct ToolExecutor: Sendable {
         guard call.toolName == "shell",
               let command = call.arguments["command"]?.stringValue,
               let shellCommandPolicy else {
+            return nil
+        }
+
+        if let sandboxPolicy, sandboxPolicy.mode == .readOnly, isMutatingShellCommand(command) {
             return nil
         }
 

@@ -18,6 +18,12 @@ Ashex already has:
 
 The remaining work is refinement work: making the agent choose the right files earlier, validate more intelligently, plan multi-file changes more deliberately, stay coherent over long sessions, and coordinate delegated work more effectively.
 
+Recent architecture learnings we are now folding in:
+
+- keep sandbox policy separate from approval policy
+- keep the runtime structured so session, harness, and execution "hands" can evolve independently
+- prefer rule-based execution policy over ad-hoc command checks
+
 ## Current Refinement Status
 
 - Phase 1 has started:
@@ -27,6 +33,12 @@ The remaining work is refinement work: making the agent choose the right files e
 - Phase 2 has started:
   - validation can now proactively execute checks instead of only gating completion
   - validation plans can include git diff/status, read-back checks, and Swift package build/test checks
+- Safety hardening has started:
+  - workspace sandbox modes now distinguish read-only, workspace-write, and danger-full-access semantics inside Ashex
+  - protected workspace paths are now enforced separately from approval prompts
+  - shell command policy now supports explicit allow / prompt / deny rules
+  - config policy can now be layered from a global config and a project-local config with project precedence
+  - history loading now uses a session inspection boundary instead of reaching into persistence call-by-call from the TUI
 - The remaining refinement work below is still active
 
 ## Refinement Phase 1: Deeper Exploration And File Targeting
