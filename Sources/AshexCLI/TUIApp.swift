@@ -119,6 +119,8 @@ final class TUIApp {
     private var terminalLines: [String] = ["No terminal commands yet. Open the pane and run one from the input bar."]
     private var terminalTask: Task<Void, Never>?
     private var terminalCancellation = CancellationToken()
+    private var currentRunPhase: String?
+    private var currentChangedFiles: [String] = []
 
     init(configuration: CLIConfiguration) throws {
         let approvalCoordinator = TUIApprovalCoordinator()
@@ -1007,6 +1009,8 @@ final class TUIApp {
         runFinished = false
         runStartedAt = Date()
         workingFrameIndex = 0
+        currentRunPhase = nil
+        currentChangedFiles = []
         promptText = ""
         inputMode = .prompt
         showSettings = false
@@ -1054,6 +1058,7 @@ final class TUIApp {
 
     private func append(event: RuntimeEvent) {
         let shouldFollowTail = isTranscriptNearBottom()
+        updateLiveRunState(from: event.payload)
         runLines.append(contentsOf: renderLines(for: event.payload))
         if shouldFollowTail {
             transcriptScrollOffset = 0
@@ -1073,6 +1078,22 @@ final class TUIApp {
         render()
     }
 
+    private func updateLiveRunState(from payload: RuntimeEventPayload) {
+        switch payload {
+        case .workflowPhaseChanged(_, let phase, _):
+            currentRunPhase = phase
+        case .changedFilesTracked(_, let paths):
+            for path in paths where !currentChangedFiles.contains(path) {
+                currentChangedFiles.append(path)
+            }
+        case .runStarted:
+            currentRunPhase = nil
+            currentChangedFiles = []
+        default:
+            break
+        }
+    }
+
     private func requestSkipCurrentStep() {
         guard let runExecutionControl else { return }
         Task {
@@ -1088,6 +1109,16 @@ final class TUIApp {
             return ["[run] started \(runID.uuidString)"]
         case .runStateChanged(_, let state, let reason):
             return ["[state] \(state.rawValue)\(reason.map { " - \($0)" } ?? "")"]
+        case .workflowPhaseChanged(_, let phase, let title):
+            return ["[phase] \(phase) - \(title)"]
+        case .contextPrepared(_, let retainedMessages, let droppedMessages, let estimatedTokens, let estimatedContextWindow):
+            return ["[context] retained \(retainedMessages), dropped \(droppedMessages), tok~ \(estimatedTokens), ctx~ \(estimatedTokens)/\(estimatedContextWindow)"]
+        case .contextCompacted(_, let droppedMessages, let summary):
+            var lines = ["[context] compacted \(droppedMessages) earlier messages"]
+            if showToolDetails {
+                lines.append(contentsOf: summary.split(separator: "\n", omittingEmptySubsequences: false).map(String.init))
+            }
+            return lines
         case .taskPlanCreated(_, let steps):
             var lines = ["[plan] created \(steps.count) steps"]
             lines.append(contentsOf: steps.enumerated().map { "[plan] \($0.offset + 1). \($0.element)" })
@@ -1096,6 +1127,8 @@ final class TUIApp {
             return ["[plan] step \(index)/\(total) started - \(title)"]
         case .taskStepFinished(_, let index, let total, let title, let outcome):
             return ["[plan] step \(index)/\(total) \(outcome) - \(title)"]
+        case .changedFilesTracked(_, let paths):
+            return ["[change] " + paths.joined(separator: ", ")]
         case .status(_, let message):
             return ["[status] \(message)"]
         case .messageAppended(_, _, let role):
@@ -1207,18 +1240,34 @@ final class TUIApp {
 
         let topLine = join(left: left, right: right, width: innerWidth)
         let workspace = "\(TerminalUIStyle.faint)workspace\(TerminalUIStyle.reset) \(TerminalUIStyle.truncateVisible(sessionWorkspaceRoot.path, limit: innerWidth))"
+        let workflow = workflowStrip(width: innerWidth)
 
         return [
             TerminalUIStyle.border + "╭" + String(repeating: "─", count: innerWidth + 2) + "╮" + TerminalUIStyle.reset,
             "\(TerminalUIStyle.border)│ \(TerminalUIStyle.reset)\(TerminalUIStyle.padVisible(topLine, to: innerWidth))\(TerminalUIStyle.border) │\(TerminalUIStyle.reset)",
             "\(TerminalUIStyle.border)│ \(TerminalUIStyle.reset)\(TerminalUIStyle.padVisible(TerminalUIStyle.truncateVisible(purpose, limit: innerWidth), to: innerWidth))\(TerminalUIStyle.border) │\(TerminalUIStyle.reset)",
             "\(TerminalUIStyle.border)│ \(TerminalUIStyle.reset)\(TerminalUIStyle.padVisible(workspace, to: innerWidth))\(TerminalUIStyle.border) │\(TerminalUIStyle.reset)",
+            "\(TerminalUIStyle.border)│ \(TerminalUIStyle.reset)\(TerminalUIStyle.padVisible(workflow, to: innerWidth))\(TerminalUIStyle.border) │\(TerminalUIStyle.reset)",
             TerminalUIStyle.border + "╰" + String(repeating: "─", count: innerWidth + 2) + "╯" + TerminalUIStyle.reset
         ]
     }
 
+    private func workflowStrip(width: Int) -> String {
+        let phaseLabel = currentRunPhase.map { "\($0)" } ?? (runFinished ? "idle" : "starting")
+        let phase = "\(TerminalUIStyle.faint)phase\(TerminalUIStyle.reset) \(TerminalUIStyle.cyan)\(phaseLabel)\(TerminalUIStyle.reset)"
+        let changedSummary: String
+        if currentChangedFiles.isEmpty {
+            changedSummary = "\(TerminalUIStyle.faint)changed\(TerminalUIStyle.reset) \(TerminalUIStyle.slate)none\(TerminalUIStyle.reset)"
+        } else {
+            let preview = currentChangedFiles.prefix(3).joined(separator: ", ")
+            let suffix = currentChangedFiles.count > 3 ? " +\(currentChangedFiles.count - 3)" : ""
+            changedSummary = "\(TerminalUIStyle.faint)changed\(TerminalUIStyle.reset) \(TerminalUIStyle.green)\(preview)\(suffix)\(TerminalUIStyle.reset)"
+        }
+        return join(left: phase, right: TerminalUIStyle.truncateVisible(changedSummary, limit: max(width / 2, 20)), width: width)
+    }
+
     private func renderBody(width: Int, height: Int) -> [String] {
-        let chromeHeight = 11
+        let chromeHeight = 12
         let bodyHeight = max(height - chromeHeight, 10)
         let gap = 1
         let leftWidth = max(min(width / 3, 40), 30)
@@ -1557,7 +1606,9 @@ final class TUIApp {
                 lines.append("\(TerminalUIStyle.slate)No runs stored for this thread.\(TerminalUIStyle.reset)")
             } else {
                 for run in runs.prefix(3) {
-                    let line = "\(run.id.uuidString.prefix(8)) • \(run.state.rawValue) • \(Self.timeString(run.updatedAt))"
+                    let stepCount = (try? historyStore.fetchRunSteps(runID: run.id).count) ?? 0
+                    let compactionCount = (try? historyStore.fetchContextCompactions(runID: run.id).count) ?? 0
+                    let line = "\(run.id.uuidString.prefix(8)) • \(run.state.rawValue) • \(Self.timeString(run.updatedAt)) • \(stepCount) steps • \(compactionCount) compact"
                     lines.append("\(TerminalUIStyle.slate)\(TerminalUIStyle.truncateVisible(line, limit: width))\(TerminalUIStyle.reset)")
                 }
             }
@@ -2388,7 +2439,7 @@ final class TUIApp {
 
     private func transcriptMetrics() -> (bodyLimit: Int, totalLines: Int) {
         let size = terminal.terminalSize()
-        let chromeHeight = 10
+        let chromeHeight = 11
         let bodyHeight = max(size.rows - chromeHeight, 10)
         let leftWidth = max(min(size.columns / 3, 40), 30)
         let rightWidth = max(size.columns - leftWidth - 1, 38)
@@ -2399,7 +2450,7 @@ final class TUIApp {
 
     private func terminalMetrics() -> (bodyLimit: Int, totalLines: Int) {
         let size = terminal.terminalSize()
-        let chromeHeight = 10
+        let chromeHeight = 11
         let bodyHeight = max(size.rows - chromeHeight, 10)
         let availableRightWidth = max(size.columns - max(min(size.columns / 3, 40), 30) - 1, 38)
         let terminalWidth = max(min(availableRightWidth / 3, 48), 32)
@@ -2498,7 +2549,28 @@ final class TUIApp {
 
         do {
             let events = try historyStore.fetchEvents(runID: runID)
-            let lines = events.flatMap { renderLines(for: $0.payload) }
+            let steps = try historyStore.fetchRunSteps(runID: runID)
+            let compactions = try historyStore.fetchContextCompactions(runID: runID)
+            let snapshot = try historyStore.fetchWorkspaceSnapshot(runID: runID)
+            let memory = try historyStore.fetchWorkingMemory(runID: runID)
+            var lines: [String] = []
+            if let snapshot {
+                lines.append("[history] snapshot \(URL(fileURLWithPath: snapshot.workspaceRootPath).lastPathComponent)")
+            }
+            if let memory, let phase = memory.currentPhase {
+                lines.append("[history] memory phase \(phase) • \(memory.changedPaths.count) changed")
+            }
+            if !steps.isEmpty {
+                lines.append("[history] \(steps.count) persisted steps")
+                lines.append(contentsOf: steps.suffix(2).map { "[history] step \($0.index) \($0.state.rawValue) - \($0.title)" })
+            }
+            if !compactions.isEmpty {
+                lines.append("[history] \(compactions.count) compaction record(s)")
+                if let latest = compactions.last {
+                    lines.append("[history] latest compaction dropped \(latest.droppedMessageCount) messages")
+                }
+            }
+            lines.append(contentsOf: events.flatMap { renderLines(for: $0.payload) })
             historyPreviewLines = Array(lines.suffix(8))
         } catch {
             historyPreviewLines = ["[error] \(error.localizedDescription)"]
@@ -2514,8 +2586,59 @@ final class TUIApp {
 
         do {
             let events = try historyStore.fetchEvents(runID: runID)
+            let steps = try historyStore.fetchRunSteps(runID: runID)
+            let compactions = try historyStore.fetchContextCompactions(runID: runID)
+            let snapshot = try historyStore.fetchWorkspaceSnapshot(runID: runID)
+            let memory = try historyStore.fetchWorkingMemory(runID: runID)
             runLines = ["History: thread \(thread.id.uuidString.prefix(8))", ""]
+            if let snapshot {
+                runLines.append("Workspace snapshot:")
+                runLines.append("  root \(snapshot.workspaceRootPath)")
+                if !snapshot.topLevelEntries.isEmpty {
+                    runLines.append("  top level \(snapshot.topLevelEntries.joined(separator: ", "))")
+                }
+                if !snapshot.instructionFiles.isEmpty {
+                    runLines.append("  instructions \(snapshot.instructionFiles.joined(separator: ", "))")
+                }
+                if let branch = snapshot.gitBranch {
+                    runLines.append("  branch \(branch)")
+                }
+                runLines.append("")
+            }
+            if let memory {
+                runLines.append("Working memory:")
+                runLines.append("  task \(memory.currentTask)")
+                if let phase = memory.currentPhase {
+                    runLines.append("  phase \(phase)")
+                }
+                if !memory.inspectedPaths.isEmpty {
+                    runLines.append("  inspected \(memory.inspectedPaths.joined(separator: ", "))")
+                }
+                if !memory.changedPaths.isEmpty {
+                    runLines.append("  changed \(memory.changedPaths.joined(separator: ", "))")
+                }
+                if !memory.validationSuggestions.isEmpty {
+                    runLines.append("  validate \(memory.validationSuggestions.joined(separator: ", "))")
+                }
+                runLines.append("  summary \(normalizeStoredTranscriptText(memory.summary))")
+                runLines.append("")
+            }
+            if !steps.isEmpty {
+                runLines.append("Persisted steps:")
+                runLines.append(contentsOf: steps.map { "  \($0.index). [\($0.state.rawValue)] \($0.title)\($0.summary.map { " — " + normalizeStoredTranscriptText($0) } ?? "")" })
+                runLines.append("")
+            }
+            if !compactions.isEmpty {
+                runLines.append("Context compactions:")
+                for compaction in compactions {
+                    runLines.append("  - dropped \(compaction.droppedMessageCount), retained \(compaction.retainedMessageCount), tok~ \(compaction.estimatedTokenCount)/\(compaction.estimatedContextWindow)")
+                    runLines.append(contentsOf: compaction.summary.split(separator: "\n", omittingEmptySubsequences: false).map { "    " + String($0) })
+                }
+                runLines.append("")
+            }
             runLines.append(contentsOf: events.flatMap { renderLines(for: $0.payload) })
+            currentRunPhase = memory?.currentPhase
+            currentChangedFiles = memory?.changedPaths ?? []
             transcriptScrollOffset = 0
             runFinished = true
             showHistory = false
@@ -2553,7 +2676,8 @@ final class TUIApp {
                 ),
             ]),
             persistence: persistence,
-            approvalPolicy: approvalPolicy
+            approvalPolicy: approvalPolicy,
+            workspaceSnapshot: WorkspaceSnapshotBuilder.capture(workspaceRoot: sessionWorkspaceRoot)
         )
     }
 

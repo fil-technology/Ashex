@@ -53,6 +53,13 @@ struct AshexCLI {
             print("[run] started \(runID.uuidString)")
         case .runStateChanged(_, let state, let reason):
             print("[state] \(state.rawValue)\(reason.map { " - \($0)" } ?? "")")
+        case .workflowPhaseChanged(_, let phase, let title):
+            print("[phase] \(phase) - \(title)")
+        case .contextPrepared(_, let retainedMessages, let droppedMessages, let estimatedTokens, let estimatedContextWindow):
+            print("[context] retained \(retainedMessages), dropped \(droppedMessages), tok~ \(estimatedTokens), ctx~ \(estimatedTokens)/\(estimatedContextWindow)")
+        case .contextCompacted(_, let droppedMessages, let summary):
+            print("[context] compacted \(droppedMessages) earlier messages")
+            print(summary)
         case .taskPlanCreated(_, let steps):
             print("[plan] created \(steps.count) steps")
             for (index, step) in steps.enumerated() {
@@ -62,6 +69,8 @@ struct AshexCLI {
             print("[plan] step \(index)/\(total) started - \(title)")
         case .taskStepFinished(_, let index, let total, let title, let outcome):
             print("[plan] step \(index)/\(total) \(outcome) - \(title)")
+        case .changedFilesTracked(_, let paths):
+            print("[change] \(paths.joined(separator: ", "))")
         case .status(_, let message):
             print("[status] \(message)")
         case .messageAppended(_, _, let role):
@@ -231,6 +240,7 @@ struct CLIConfiguration {
     func makeRuntime(provider: String, model: String, approvalPolicy: any ApprovalPolicy) throws -> AgentRuntime {
         let workspaceURL = workspaceRoot.standardizedFileURL
         let persistence = SQLitePersistenceStore(databaseURL: storageRoot.appendingPathComponent("ashex.sqlite"))
+        let workspaceSnapshot = WorkspaceSnapshotBuilder.capture(workspaceRoot: workspaceURL)
         return try AgentRuntime(
             modelAdapter: makeModelAdapter(provider: provider, model: model),
             toolRegistry: ToolRegistry(tools: [
@@ -246,7 +256,8 @@ struct CLIConfiguration {
                 ),
             ]),
             persistence: persistence,
-            approvalPolicy: approvalPolicy
+            approvalPolicy: approvalPolicy,
+            workspaceSnapshot: workspaceSnapshot
         )
     }
 

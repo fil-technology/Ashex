@@ -6,6 +6,15 @@ public protocol PersistenceStore: Sendable {
     func createThread(now: Date) throws -> ThreadRecord
     func createRun(threadID: UUID, state: RunState, now: Date) throws -> RunRecord
     func transitionRun(runID: UUID, to state: RunState, reason: String?, now: Date) throws
+    func createRunSteps(runID: UUID, steps: [String], now: Date) throws -> [RunStepRecord]
+    func transitionRunStep(stepID: UUID, to state: RunStepState, summary: String?, now: Date) throws
+    func fetchRunSteps(runID: UUID) throws -> [RunStepRecord]
+    func recordWorkspaceSnapshot(runID: UUID, workspaceRootPath: String, topLevelEntries: [String], instructionFiles: [String], gitBranch: String?, gitStatusSummary: String?, now: Date) throws -> WorkspaceSnapshotRecord
+    func fetchWorkspaceSnapshot(runID: UUID) throws -> WorkspaceSnapshotRecord?
+    func upsertWorkingMemory(runID: UUID, currentTask: String, currentPhase: String?, inspectedPaths: [String], changedPaths: [String], validationSuggestions: [String], summary: String, now: Date) throws -> WorkingMemoryRecord
+    func fetchWorkingMemory(runID: UUID) throws -> WorkingMemoryRecord?
+    func recordContextCompaction(runID: UUID, droppedMessageCount: Int, retainedMessageCount: Int, estimatedTokenCount: Int, estimatedContextWindow: Int, summary: String, now: Date) throws -> ContextCompactionRecord
+    func fetchContextCompactions(runID: UUID) throws -> [ContextCompactionRecord]
     func appendMessage(threadID: UUID, runID: UUID?, role: MessageRole, content: String, now: Date) throws -> MessageRecord
     func fetchMessages(threadID: UUID) throws -> [MessageRecord]
     func recordToolCall(runID: UUID, toolName: String, arguments: JSONObject, now: Date) throws -> ToolCallRecord

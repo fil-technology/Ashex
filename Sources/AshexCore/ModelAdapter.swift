@@ -15,12 +15,23 @@ public struct ModelContext: Sendable {
     public let run: RunRecord
     public let messages: [MessageRecord]
     public let availableTools: [ToolSchema]
+    public let workspaceSnapshot: WorkspaceSnapshotRecord?
+    public let workingMemory: WorkingMemoryRecord?
 
-    public init(thread: ThreadRecord, run: RunRecord, messages: [MessageRecord], availableTools: [ToolSchema]) {
+    public init(
+        thread: ThreadRecord,
+        run: RunRecord,
+        messages: [MessageRecord],
+        availableTools: [ToolSchema],
+        workspaceSnapshot: WorkspaceSnapshotRecord? = nil,
+        workingMemory: WorkingMemoryRecord? = nil
+    ) {
         self.thread = thread
         self.run = run
         self.messages = messages
         self.availableTools = availableTools
+        self.workspaceSnapshot = workspaceSnapshot
+        self.workingMemory = workingMemory
     }
 }
 
@@ -41,59 +52,12 @@ public enum ModelAction: Codable, Sendable, Equatable {
 
 public protocol ModelAdapter: Sendable {
     var name: String { get }
+    var providerID: String { get }
+    var modelID: String { get }
     func nextAction(for context: ModelContext) async throws -> ModelAction
 }
 
 private enum ModelPromptRenderer {
-    static func renderPrompt(for context: ModelContext) -> String {
-        let toolBlock = context.availableTools
-            .map { "- \($0.name): \($0.description)" }
-            .joined(separator: "\n")
-
-        let transcript = context.messages.map { message in
-            let role = message.role.rawValue.uppercased()
-            return "[\(role)]\n\(message.content)"
-        }.joined(separator: "\n\n")
-
-        return """
-        You are Ashex, a local single-agent runtime.
-
-        Decide the next action for the current loop iteration.
-
-        You must return exactly one JSON object matching the provided schema:
-        - If the task is complete, return `type = "final_answer"` and fill `final_answer`.
-        - If a tool is needed, return `type = "tool_call"` and fill `tool_name` and `arguments`.
-
-        Rules:
-        - Use only the tools listed below.
-        - Never invent tools.
-        - Do not call tools for greetings, casual chat, or questions that can be answered without workspace state.
-        - Only call filesystem, git, or shell when the user is asking about files, wants you to inspect project state, or explicitly asks you to run something.
-        - If a tool result already contains the needed information, prefer answering directly.
-        - Keep final answers concise and useful.
-        - Tool arguments must be valid JSON objects.
-        - When returning a tool_call, include every argument key from the schema and use null for unused keys.
-        - For filesystem tool calls, always use the `operation` field with one of:
-          `read_text_file`, `write_text_file`, `replace_in_file`, `list_directory`, `create_directory`, `delete_path`, `move_path`, `copy_path`, `file_info`, `find_files`, `search_text`.
-        - For git tool calls, always use the `operation` field with one of:
-          `status`, `current_branch`, `diff_unstaged`, `diff_staged`, `log`, `show_commit`.
-        - For shell tool calls, always send `command` and optional `timeout_seconds`.
-
-        Canonical tool-call examples:
-        {"type":"tool_call","final_answer":null,"tool_name":"filesystem","arguments":{"operation":"list_directory","path":"."}}
-        {"type":"tool_call","final_answer":null,"tool_name":"filesystem","arguments":{"operation":"read_text_file","path":"README.md"}}
-        {"type":"tool_call","final_answer":null,"tool_name":"filesystem","arguments":{"operation":"search_text","path":"Sources","query":"ApprovalPolicy","max_results":20}}
-        {"type":"tool_call","final_answer":null,"tool_name":"git","arguments":{"operation":"status","limit":null,"commit":null}}
-        {"type":"tool_call","final_answer":null,"tool_name":"shell","arguments":{"command":"ls -la","timeout_seconds":30}}
-
-        Available tools:
-        \(toolBlock)
-
-        Conversation transcript:
-        \(transcript)
-        """
-    }
-
     static let responseSchema: JSONObject = [
         "type": .string("object"),
         "properties": .object([
@@ -204,6 +168,8 @@ public struct OpenAIModelConfiguration: Sendable {
 
 public struct OpenAIResponsesModelAdapter: ModelAdapter {
     public let name: String
+    public let providerID = "openai"
+    public var modelID: String { configuration.model }
 
     private let configuration: OpenAIModelConfiguration
     private let session: URLSession
@@ -222,9 +188,10 @@ public struct OpenAIResponsesModelAdapter: ModelAdapter {
     }
 
     public func nextAction(for context: ModelContext) async throws -> ModelAction {
+        let assembly = PromptBuilder.build(for: context, provider: "openai", model: configuration.model)
         let requestBody = OpenAIResponsesRequest(
             model: configuration.model,
-            input: ModelPromptRenderer.renderPrompt(for: context),
+            input: assembly.combinedPrompt,
             store: false,
             text: .init(format: .init(
                 type: "json_schema",
@@ -291,6 +258,8 @@ public struct AnthropicModelConfiguration: Sendable {
 
 public struct OllamaChatModelAdapter: ModelAdapter {
     public let name: String
+    public let providerID = "ollama"
+    public var modelID: String { configuration.model }
 
     private let configuration: OllamaModelConfiguration
     private let session: URLSession
@@ -309,10 +278,12 @@ public struct OllamaChatModelAdapter: ModelAdapter {
     }
 
     public func nextAction(for context: ModelContext) async throws -> ModelAction {
+        let assembly = PromptBuilder.build(for: context, provider: "ollama", model: configuration.model)
         let requestBody = OllamaChatRequest(
             model: configuration.model,
             messages: [
-                .init(role: "user", content: ModelPromptRenderer.renderPrompt(for: context)),
+                .init(role: "system", content: assembly.systemPrompt),
+                .init(role: "user", content: assembly.userPrompt),
             ],
             format: ModelPromptRenderer.responseSchema,
             options: [
@@ -349,6 +320,8 @@ public struct OllamaChatModelAdapter: ModelAdapter {
 
 public struct AnthropicMessagesModelAdapter: ModelAdapter {
     public let name: String
+    public let providerID = "anthropic"
+    public var modelID: String { configuration.model }
 
     private let configuration: AnthropicModelConfiguration
     private let session: URLSession
@@ -367,12 +340,13 @@ public struct AnthropicMessagesModelAdapter: ModelAdapter {
     }
 
     public func nextAction(for context: ModelContext) async throws -> ModelAction {
+        let assembly = PromptBuilder.build(for: context, provider: "anthropic", model: configuration.model)
         let requestBody = AnthropicMessagesRequest(
             model: configuration.model,
             maxTokens: 1200,
-            system: "You are Ashex, a local single-agent runtime. Reply with exactly one JSON object matching the requested schema and nothing else.",
+            system: assembly.systemPrompt + "\n\nReply with exactly one JSON object matching the requested schema and nothing else.",
             messages: [
-                .init(role: "user", content: ModelPromptRenderer.renderPrompt(for: context))
+                .init(role: "user", content: assembly.userPrompt)
             ]
         )
 
@@ -410,6 +384,8 @@ public struct AnthropicMessagesModelAdapter: ModelAdapter {
 
 public struct MockModelAdapter: ModelAdapter {
     public let name = "mock-rule-based"
+    public let providerID = "mock"
+    public let modelID = "mock-rule-based"
 
     public init() {}
 

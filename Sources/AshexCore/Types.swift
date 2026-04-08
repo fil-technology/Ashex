@@ -155,6 +155,132 @@ public struct RunRecord: Codable, Sendable {
     }
 }
 
+public enum RunStepState: String, Codable, Sendable {
+    case pending
+    case running
+    case completed
+    case skipped
+    case failed
+}
+
+public struct RunStepRecord: Codable, Sendable {
+    public let id: UUID
+    public let runID: UUID
+    public let index: Int
+    public let title: String
+    public let state: RunStepState
+    public let summary: String?
+    public let createdAt: Date
+    public let updatedAt: Date
+
+    public init(id: UUID, runID: UUID, index: Int, title: String, state: RunStepState, summary: String?, createdAt: Date, updatedAt: Date) {
+        self.id = id
+        self.runID = runID
+        self.index = index
+        self.title = title
+        self.state = state
+        self.summary = summary
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+}
+
+public struct ContextCompactionRecord: Codable, Sendable {
+    public let id: UUID
+    public let runID: UUID
+    public let droppedMessageCount: Int
+    public let retainedMessageCount: Int
+    public let estimatedTokenCount: Int
+    public let estimatedContextWindow: Int
+    public let summary: String
+    public let createdAt: Date
+
+    public init(
+        id: UUID,
+        runID: UUID,
+        droppedMessageCount: Int,
+        retainedMessageCount: Int,
+        estimatedTokenCount: Int,
+        estimatedContextWindow: Int,
+        summary: String,
+        createdAt: Date
+    ) {
+        self.id = id
+        self.runID = runID
+        self.droppedMessageCount = droppedMessageCount
+        self.retainedMessageCount = retainedMessageCount
+        self.estimatedTokenCount = estimatedTokenCount
+        self.estimatedContextWindow = estimatedContextWindow
+        self.summary = summary
+        self.createdAt = createdAt
+    }
+}
+
+public struct WorkspaceSnapshotRecord: Codable, Sendable, Equatable {
+    public let id: UUID
+    public let runID: UUID
+    public let workspaceRootPath: String
+    public let topLevelEntries: [String]
+    public let instructionFiles: [String]
+    public let gitBranch: String?
+    public let gitStatusSummary: String?
+    public let createdAt: Date
+
+    public init(
+        id: UUID,
+        runID: UUID,
+        workspaceRootPath: String,
+        topLevelEntries: [String],
+        instructionFiles: [String],
+        gitBranch: String?,
+        gitStatusSummary: String?,
+        createdAt: Date
+    ) {
+        self.id = id
+        self.runID = runID
+        self.workspaceRootPath = workspaceRootPath
+        self.topLevelEntries = topLevelEntries
+        self.instructionFiles = instructionFiles
+        self.gitBranch = gitBranch
+        self.gitStatusSummary = gitStatusSummary
+        self.createdAt = createdAt
+    }
+}
+
+public struct WorkingMemoryRecord: Codable, Sendable, Equatable {
+    public let id: UUID
+    public let runID: UUID
+    public let currentTask: String
+    public let currentPhase: String?
+    public let inspectedPaths: [String]
+    public let changedPaths: [String]
+    public let validationSuggestions: [String]
+    public let summary: String
+    public let updatedAt: Date
+
+    public init(
+        id: UUID,
+        runID: UUID,
+        currentTask: String,
+        currentPhase: String?,
+        inspectedPaths: [String],
+        changedPaths: [String],
+        validationSuggestions: [String],
+        summary: String,
+        updatedAt: Date
+    ) {
+        self.id = id
+        self.runID = runID
+        self.currentTask = currentTask
+        self.currentPhase = currentPhase
+        self.inspectedPaths = inspectedPaths
+        self.changedPaths = changedPaths
+        self.validationSuggestions = validationSuggestions
+        self.summary = summary
+        self.updatedAt = updatedAt
+    }
+}
+
 public struct ToolCallRecord: Codable, Sendable {
     public let id: UUID
     public let runID: UUID
