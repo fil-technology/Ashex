@@ -162,6 +162,7 @@ Current runtime capabilities also include:
   - validation
 - inspect-before-mutate enforcement for coding and edit tasks
 - changed-file tracking during the run
+- validation gating that asks the model for concrete verification before concluding an edited run
 - final summaries that can include changed files, why they changed, and what remains
 
 The first compaction strategy is intentionally simple but real:
@@ -187,7 +188,7 @@ This keeps the current single-agent runtime small while creating clean seams for
 Ashex is now a serious local coding-agent foundation, but it is still not at Codex/Claude Code production maturity yet. The biggest remaining gaps are:
 
 - deeper automatic exploration and file targeting for large coding tasks
-- stronger validation execution and check selection
+- stronger validation execution and check selection beyond the current gating and suggestion layer
 - first-class patch/edit workflows
 - longer-session memory quality and resume behavior
 - more reliable large-task execution

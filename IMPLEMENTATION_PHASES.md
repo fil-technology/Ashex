@@ -295,11 +295,12 @@ Already implemented in the repo:
 - Context compaction with clipping and dedup of repeated old tool reads
 - Task-type-aware exploration and validation guidance
 - Workspace-aware exploration strategy with concrete inspect/search/read recommendations
+- Validation gating that requires concrete verification before concluding edited runs
 
 Most important remaining work:
 
 - deeper automatic exploration and file targeting for bigger coding tasks
-- stronger validation execution and check selection
+- stronger validation execution and check selection beyond the current gating layer
 - first-class patch/edit workflow
 - longer-session memory quality and resume behavior
 - bounded subagents later

@@ -179,13 +179,14 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                     stepTitle: step.title,
                     taskKind: taskKind,
                     stepPhase: step.phase,
+                    existingChangedFiles: changedFiles,
                     maxIterations: request.maxIterations,
                     cancellation: cancellation,
                     executionControl: request.executionControl,
                     emitter: emitter
                 )
                 stepSummaries.append(outcome.summary)
-                changedFiles.append(contentsOf: outcome.changedFiles)
+                changedFiles = Self.mergeChangedArtifacts(changedFiles, outcome.changedFiles)
                 try persistence.transitionRunStep(stepID: stepRecords[index].id, to: .completed, summary: outcome.summary, now: clock())
                 if steps.count > 1 {
                     let stepSummaryMessage = try persistence.appendMessage(
@@ -245,6 +246,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         stepTitle: String,
         taskKind: TaskKind,
         stepPhase: PlannedStepPhase,
+        existingChangedFiles: [ChangedArtifact],
         maxIterations: Int,
         cancellation: CancellationToken,
         executionControl: ExecutionControl?,
@@ -254,7 +256,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         var repeatedToolCallCount = 0
         var lastSafeToolResult: String?
         var workflowState = StepWorkflowState()
-        var changedFiles: [ChangedArtifact] = []
+        var changedFiles: [ChangedArtifact] = existingChangedFiles
 
         for iteration in 0..<maxIterations {
             try await cancellation.checkCancellation()
@@ -330,6 +332,15 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
 
             switch action {
             case .finalAnswer(let answer):
+                if stepPhase == .validation,
+                   !changedFiles.isEmpty,
+                   !workflowState.hasValidationEvidence(for: changedFiles.map(\.path)) {
+                    let validationReminder = "Validation is incomplete: inspect changed files, git diffs, or run a relevant check before concluding."
+                    let toolMessage = try persistence.appendMessage(threadID: thread.id, runID: run.id, role: .tool, content: validationReminder, now: clock())
+                    try emitter.emit(.messageAppended(runID: run.id, messageID: toolMessage.id, role: .tool), runID: run.id)
+                    try emitter.emit(.status(runID: run.id, message: "Validation gate blocked completion. Asking the model to produce concrete verification first."), runID: run.id)
+                    continue
+                }
                 return .init(summary: answer, changedFiles: changedFiles)
 
             case .toolCall(let call):
@@ -639,17 +650,39 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
             return "confirm changed files match intent before concluding"
         }
     }
+
+    private static func mergeChangedArtifacts(_ lhs: [ChangedArtifact], _ rhs: [ChangedArtifact]) -> [ChangedArtifact] {
+        var seen: Set<String> = []
+        return (lhs + rhs).filter { seen.insert($0.path + "|" + $0.reason).inserted }
+    }
 }
 
 private struct StepWorkflowState {
     private(set) var inspectedArtifacts: Set<String> = []
+    private(set) var validationArtifacts: Set<String> = []
 
     var hasPriorInspection: Bool {
         !inspectedArtifacts.isEmpty
     }
 
+    func hasValidationEvidence(for changedPaths: [String]) -> Bool {
+        guard !validationArtifacts.isEmpty else { return false }
+        if validationArtifacts.contains("<git>") || validationArtifacts.contains("<check>") {
+            return true
+        }
+
+        let normalizedChangedPaths = Set(changedPaths.map(normalizePath))
+        let normalizedValidatedPaths = Set(validationArtifacts.map(normalizePath))
+        return !normalizedChangedPaths.isDisjoint(with: normalizedValidatedPaths)
+    }
+
     mutating func record(metadata: ToolExecutionMetadata) {
         inspectedArtifacts.formUnion(metadata.inspectedPaths)
+        validationArtifacts.formUnion(metadata.validationArtifacts)
+    }
+
+    private func normalizePath(_ path: String) -> String {
+        path.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 

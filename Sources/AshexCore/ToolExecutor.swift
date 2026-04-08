@@ -13,6 +13,7 @@ struct ToolExecutionPreconditions: Sendable {
 struct ToolExecutionMetadata: Sendable {
     let inspectedPaths: [String]
     let changedPaths: [String]
+    let validationArtifacts: [String]
     let summary: String
 }
 
@@ -170,15 +171,15 @@ struct ToolExecutor: Sendable {
             return filesystemMetadata(call: call, result: result)
         case "git":
             let operation = call.arguments["operation"]?.stringValue ?? "git"
-            return .init(inspectedPaths: [".git"], changedPaths: [], summary: "inspected git \(operation)")
+            return .init(inspectedPaths: [".git"], changedPaths: [], validationArtifacts: gitValidationArtifacts(operation: operation), summary: "inspected git \(operation)")
         case "shell":
             let command = call.arguments["command"]?.stringValue ?? "shell"
             if isMutatingShellCommand(command) {
-                return .init(inspectedPaths: [], changedPaths: ["<shell>"], summary: "executed mutating shell command")
+                return .init(inspectedPaths: [], changedPaths: ["<shell>"], validationArtifacts: [], summary: "executed mutating shell command")
             }
-            return .init(inspectedPaths: ["<shell>"], changedPaths: [], summary: "inspected via shell")
+            return .init(inspectedPaths: ["<shell>"], changedPaths: [], validationArtifacts: shellValidationArtifacts(command: command), summary: "inspected via shell")
         default:
-            return .init(inspectedPaths: [], changedPaths: [], summary: result.displayText)
+            return .init(inspectedPaths: [], changedPaths: [], validationArtifacts: [], summary: result.displayText)
         }
     }
 
@@ -191,15 +192,34 @@ struct ToolExecutor: Sendable {
         switch operation {
         case "read_text_file", "list_directory", "find_files", "search_text", "file_info":
             let inspected = [path].compactMap { $0 }
-            return .init(inspectedPaths: inspected, changedPaths: [], summary: "inspected \(inspected.joined(separator: ", "))")
+            let validationArtifacts = operation == "read_text_file" || operation == "file_info" ? inspected : []
+            return .init(inspectedPaths: inspected, changedPaths: [], validationArtifacts: validationArtifacts, summary: "inspected \(inspected.joined(separator: ", "))")
         case "write_text_file", "replace_in_file", "create_directory", "delete_path":
             let changed = [path].compactMap { $0 }
-            return .init(inspectedPaths: [], changedPaths: changed, summary: "changed \(changed.joined(separator: ", "))")
+            return .init(inspectedPaths: [], changedPaths: changed, validationArtifacts: [], summary: "changed \(changed.joined(separator: ", "))")
         case "move_path", "copy_path":
             let changed = [sourcePath, destinationPath].compactMap { $0 }
-            return .init(inspectedPaths: [], changedPaths: changed, summary: "changed \(changed.joined(separator: ", "))")
+            return .init(inspectedPaths: [], changedPaths: changed, validationArtifacts: [], summary: "changed \(changed.joined(separator: ", "))")
         default:
-            return .init(inspectedPaths: [], changedPaths: [], summary: result.displayText)
+            return .init(inspectedPaths: [], changedPaths: [], validationArtifacts: [], summary: result.displayText)
         }
+    }
+
+    private func gitValidationArtifacts(operation: String) -> [String] {
+        switch operation {
+        case "status", "diff_unstaged", "diff_staged", "show_commit":
+            return ["<git>"]
+        default:
+            return []
+        }
+    }
+
+    private func shellValidationArtifacts(command: String) -> [String] {
+        let lowered = command.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        let validationPrefixes = [
+            "swift test", "swift build", "xcodebuild", "pytest", "npm test", "pnpm test",
+            "yarn test", "cargo test", "go test", "bundle exec rspec", "gradle test", "make test"
+        ]
+        return validationPrefixes.contains(where: lowered.hasPrefix) ? ["<check>"] : []
     }
 }

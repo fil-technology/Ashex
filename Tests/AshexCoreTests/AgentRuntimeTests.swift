@@ -221,6 +221,64 @@ private let testShellPolicy = ShellCommandPolicy(config: .default)
     #expect(sawExplorationPlan)
 }
 
+@Test func runtimeRequiresConcreteValidationAfterChanges() async throws {
+    let fileManager = FileManager.default
+    let root = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let dbURL = root.appendingPathComponent(".ashex/test.sqlite")
+    try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+    try "hello".write(to: root.appendingPathComponent("note.txt"), atomically: true, encoding: .utf8)
+
+    let runtime = try AgentRuntime(
+        modelAdapter: SequencedModelAdapter(actions: [
+            .toolCall(.init(toolName: "filesystem", arguments: [
+                "operation": .string("read_text_file"),
+                "path": .string("note.txt"),
+            ])),
+            .finalAnswer("Explored the current file."),
+            .finalAnswer("Plan the minimal update."),
+            .toolCall(.init(toolName: "filesystem", arguments: [
+                "operation": .string("read_text_file"),
+                "path": .string("note.txt"),
+            ])),
+            .toolCall(.init(toolName: "filesystem", arguments: [
+                "operation": .string("write_text_file"),
+                "path": .string("note.txt"),
+                "content": .string("updated"),
+            ])),
+            .finalAnswer("Applied the change."),
+            .finalAnswer("Looks done."),
+            .toolCall(.init(toolName: "filesystem", arguments: [
+                "operation": .string("read_text_file"),
+                "path": .string("note.txt"),
+            ])),
+            .finalAnswer("Validated the file contents after the edit."),
+        ]),
+        toolRegistry: ToolRegistry(tools: [
+            FileSystemTool(workspaceGuard: WorkspaceGuard(rootURL: root)),
+            ShellTool(executionRuntime: ProcessExecutionRuntime(), workspaceURL: root, commandPolicy: testShellPolicy),
+        ]),
+        persistence: SQLitePersistenceStore(databaseURL: dbURL)
+    )
+
+    var sawValidationGate = false
+    var finalAnswer = ""
+    for await event in runtime.run(RunRequest(prompt: "implement a new feature in note.txt with validation and a final summary")) {
+        switch event.payload {
+        case .status(_, let message):
+            if message.contains("Validation gate blocked completion") {
+                sawValidationGate = true
+            }
+        case .finalAnswer(_, _, let text):
+            finalAnswer = text
+        default:
+            break
+        }
+    }
+
+    #expect(sawValidationGate)
+    #expect(finalAnswer.contains("Validated the file contents"))
+}
+
 @Test func sqlitePersistenceRoundTripsGenericSettings() throws {
     let fileManager = FileManager.default
     let root = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)

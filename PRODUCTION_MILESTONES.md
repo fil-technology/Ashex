@@ -11,10 +11,10 @@ This file tracks the remaining work to move Ashex from a serious local MVP towar
 
 ## Milestone 2: Stronger Validation
 
-- [ ] Add task-type-aware validation policies after edits
-- [ ] Prefer `git diff`, focused reads, tests, and builds where relevant
-- [ ] Prevent weak completion when validation is missing for mutation-heavy tasks
-- [ ] Verify with targeted runtime and unit tests
+- [x] Add task-type-aware validation policies after edits
+- [x] Prefer `git diff`, focused reads, tests, and builds where relevant
+- [x] Prevent weak completion when validation is missing for mutation-heavy tasks
+- [x] Verify with targeted runtime and unit tests
 
 ## Milestone 3: First-Class Patch/Edit Workflow
 
