@@ -22,6 +22,7 @@ final class TUIApp {
         case compose
         case commands
         case terminal
+        case workspaces
         case history
         case settings
         case help
@@ -30,6 +31,7 @@ final class TUIApp {
 
     private enum FocusArea {
         case launcher
+        case workspaces
         case history
         case settings
         case transcript
@@ -72,6 +74,7 @@ final class TUIApp {
         .init(title: "New Prompt", subtitle: "Write your own instruction", action: .compose),
         .init(title: "Commands", subtitle: "See available tools, operations, and config policy", action: .commands),
         .init(title: "Terminal", subtitle: "Toggle the side shell pane for quick workspace commands", action: .terminal),
+        .init(title: "Workspaces", subtitle: "Switch between recent project roots and inspect their latest history", action: .workspaces),
         .init(title: "History", subtitle: "Browse persisted threads and run transcripts", action: .history),
         .init(title: "Provider Settings", subtitle: "Switch backend and edit the active model", action: .settings),
         .init(title: "Help", subtitle: "Show keyboard shortcuts and behavior", action: .help),
@@ -89,6 +92,7 @@ final class TUIApp {
     private var inputMode: InputMode = .prompt
     private var showHelp = false
     private var showCommands = false
+    private var showWorkspaces = false
     private var showHistory = false
     private var showSettings = false
     private var showTerminalPane = false
@@ -117,6 +121,9 @@ final class TUIApp {
     private var historyRuns: [UUID: [RunRecord]] = [:]
     private var historySelection = 0
     private var historyPreviewLines: [String] = []
+    private var recentWorkspaces: [RecentWorkspaceRecord] = []
+    private var workspaceSelection = 0
+    private var workspacePreviewLines: [String] = []
     private var terminalLines: [String] = ["No terminal commands yet. Open the pane and run one from the input bar."]
     private var terminalTask: Task<Void, Never>?
     private var terminalCancellation = CancellationToken()
@@ -168,6 +175,8 @@ final class TUIApp {
             return await self.requestApproval(request)
         }
         try historyStore.initialize()
+        try? RecentWorkspaceStore.record(workspaceURL: configuration.workspaceRoot)
+        loadRecentWorkspaces()
         Task { [weak self] in
             await self?.refreshProviderStatus()
         }
@@ -284,6 +293,8 @@ final class TUIApp {
             switch focus {
             case .launcher:
                 focus = .settings
+            case .workspaces:
+                focus = .settings
             case .history:
                 focus = .settings
             case .settings:
@@ -305,6 +316,8 @@ final class TUIApp {
             switch focus {
             case .launcher:
                 focus = .history
+            case .workspaces:
+                focus = .history
             case .history:
                 focus = .transcript
             case .transcript:
@@ -322,12 +335,37 @@ final class TUIApp {
             return
         }
 
+        if showWorkspaces {
+            switch focus {
+            case .launcher:
+                focus = .workspaces
+            case .workspaces:
+                focus = .transcript
+            case .history:
+                focus = .transcript
+            case .settings:
+                focus = .transcript
+            case .transcript:
+                focus = showTerminalPane ? .terminal : .input
+            case .terminal:
+                focus = .input
+            case .input:
+                focus = .launcher
+            case .approval:
+                break
+            }
+            statusLine = "Focus: \(focusLabel)"
+            return
+        }
+
         switch focus {
         case .launcher:
             focus = .transcript
         case .transcript:
             focus = showTerminalPane ? .terminal : .input
         case .terminal:
+            focus = .input
+        case .workspaces:
             focus = .input
         case .history:
             focus = .input
@@ -345,6 +383,9 @@ final class TUIApp {
         switch focus {
         case .launcher:
             moveSelection(-1)
+        case .workspaces:
+            workspaceSelection = max(workspaceSelection - 1, 0)
+            refreshWorkspacePreview()
         case .history:
             historySelection = max(historySelection - 1, 0)
             refreshHistoryPreview()
@@ -363,6 +404,9 @@ final class TUIApp {
         switch focus {
         case .launcher:
             moveSelection(1)
+        case .workspaces:
+            workspaceSelection = min(workspaceSelection + 1, max(recentWorkspaces.count - 1, 0))
+            refreshWorkspacePreview()
         case .history:
             historySelection = min(historySelection + 1, max(historyThreads.count - 1, 0))
             refreshHistoryPreview()
@@ -453,6 +497,8 @@ final class TUIApp {
 
         if focus == .launcher {
             activate(menuItems[selectedIndex].action)
+        } else if focus == .workspaces {
+            openSelectedWorkspace()
         } else if focus == .history {
             openSelectedHistoryRun()
         } else if focus == .settings {
@@ -576,6 +622,13 @@ final class TUIApp {
             return
         }
 
+        if showWorkspaces {
+            showWorkspaces = false
+            focus = .launcher
+            statusLine = "Back to launcher"
+            return
+        }
+
         if showHelp {
             showHelp = false
             focus = .launcher
@@ -650,6 +703,7 @@ final class TUIApp {
         case .compose:
             inputMode = .prompt
             showHistory = false
+            showWorkspaces = false
             showSettings = false
             showCommands = false
             focus = .input
@@ -658,14 +712,25 @@ final class TUIApp {
         case .commands:
             showCommands = true
             showHistory = false
+            showWorkspaces = false
             showSettings = false
             showHelp = false
             focus = .launcher
             statusLine = "Commands"
         case .terminal:
             toggleTerminalPane()
+        case .workspaces:
+            showWorkspaces = true
+            showHistory = false
+            showSettings = false
+            showCommands = false
+            showHelp = false
+            loadRecentWorkspaces()
+            focus = .workspaces
+            statusLine = recentWorkspaces.isEmpty ? "No recent workspaces yet" : "Workspaces"
         case .history:
             showHistory = true
+            showWorkspaces = false
             showSettings = false
             showCommands = false
             showHelp = false
@@ -675,6 +740,7 @@ final class TUIApp {
         case .settings:
             showSettings = true
             showHistory = false
+            showWorkspaces = false
             showCommands = false
             showHelp = false
             focus = .settings
@@ -682,6 +748,7 @@ final class TUIApp {
         case .help:
             showHelp = true
             showHistory = false
+            showWorkspaces = false
             showSettings = false
             showCommands = false
             focus = .launcher
@@ -812,6 +879,8 @@ final class TUIApp {
             runLines = ["[local] Switched workspace to \(proposed.path)"]
             runFinished = true
             transcriptScrollOffset = 0
+            try? RecentWorkspaceStore.record(workspaceURL: proposed)
+            loadRecentWorkspaces()
             refreshSessionRuntime()
             loadHistory()
             statusLine = "Workspace updated"
@@ -1284,6 +1353,9 @@ final class TUIApp {
         if let pendingApproval {
             rightTitle = "Approval Required"
             rightLines = renderApprovalLines(request: pendingApproval.request, width: rightWidth - 4)
+        } else if showWorkspaces {
+            rightTitle = "Workspaces"
+            rightLines = renderWorkspaceLines(width: rightWidth - 4)
         } else if showHistory {
             rightTitle = "History"
             rightLines = renderHistoryLines(width: rightWidth - 4)
@@ -1373,6 +1445,10 @@ final class TUIApp {
             "\(TerminalUIStyle.ink)Provider Controls\(TerminalUIStyle.reset)",
             "\(TerminalUIStyle.slate)Provider Settings\(TerminalUIStyle.reset) Switch backend and model without restarting",
             "\(TerminalUIStyle.slate)Refresh Status\(TerminalUIStyle.reset) Re-check environment and local models",
+            "",
+            "\(TerminalUIStyle.ink)Workspace Controls\(TerminalUIStyle.reset)",
+            "\(TerminalUIStyle.slate)Workspaces\(TerminalUIStyle.reset) Open recent project roots and switch sessions quickly",
+            "\(TerminalUIStyle.slate):workspace /path\(TerminalUIStyle.reset) Switch the current session to a new project root",
             "",
             "\(TerminalUIStyle.ink)Commands Screen\(TerminalUIStyle.reset)",
             "\(TerminalUIStyle.slate)Open Commands to see the currently available tools, operations, and config policy file.\(TerminalUIStyle.reset)",
@@ -1627,6 +1703,43 @@ final class TUIApp {
         return lines
     }
 
+    private func renderWorkspaceLines(width: Int) -> [String] {
+        var lines: [String] = [
+            "\(TerminalUIStyle.faint)\(focus == .workspaces ? "Workspaces focused" : "Press Tab to focus workspaces")\(TerminalUIStyle.reset)",
+            ""
+        ]
+
+        if recentWorkspaces.isEmpty {
+            lines.append("\(TerminalUIStyle.slate)No recent workspaces yet. Switch to another project to populate this list.\(TerminalUIStyle.reset)")
+            return lines
+        }
+
+        lines.append("\(TerminalUIStyle.ink)Recent Workspaces\(TerminalUIStyle.reset)")
+        for (index, workspace) in recentWorkspaces.enumerated().prefix(8) {
+            let selected = focus == .workspaces && index == workspaceSelection
+            let marker = selected ? "\(TerminalUIStyle.selection) \(TerminalUIStyle.reset)" : " "
+            let color = selected ? TerminalUIStyle.cyan : TerminalUIStyle.ink
+            let pathURL = URL(fileURLWithPath: workspace.path)
+            let title = pathURL.lastPathComponent + (workspace.path == sessionWorkspaceRoot.path ? " • current" : "")
+            let subtitle = "\(workspace.path) • \(Self.timeString(workspace.lastUsedAt))"
+            lines.append("\(marker) \(TerminalUIStyle.bold)\(color)\(TerminalUIStyle.truncateVisible(title, limit: width - 2))\(TerminalUIStyle.reset)")
+            lines.append("   \(TerminalUIStyle.slate)\(TerminalUIStyle.truncateVisible(subtitle, limit: max(width - 3, 10)))\(TerminalUIStyle.reset)")
+            if index != min(recentWorkspaces.count, 8) - 1 {
+                lines.append("")
+            }
+        }
+
+        if !workspacePreviewLines.isEmpty {
+            lines.append("")
+            lines.append("\(TerminalUIStyle.ink)Latest Session Preview\(TerminalUIStyle.reset)")
+            lines.append(contentsOf: workspacePreviewLines.map {
+                "\(TerminalUIStyle.slate)\(TerminalUIStyle.truncateVisible($0, limit: width))\(TerminalUIStyle.reset)"
+            })
+        }
+
+        return lines
+    }
+
     private func renderApprovalLines(request: ApprovalRequest, width: Int) -> [String] {
         var lines: [String] = [
             "\(TerminalUIStyle.amber)Guarded mode requires approval before this tool can run.\(TerminalUIStyle.reset)",
@@ -1852,6 +1965,7 @@ final class TUIApp {
 
     private var screenLabel: String {
         if pendingApproval != nil { return "approval" }
+        if showWorkspaces { return "workspaces" }
         if showHistory { return "history" }
         if showSettings { return "settings" }
         if showCommands { return "commands" }
@@ -1862,6 +1976,7 @@ final class TUIApp {
     private var focusLabel: String {
         switch focus {
         case .launcher: return "launcher"
+        case .workspaces: return "workspaces"
         case .history: return "history"
         case .settings: return "settings"
         case .transcript: return "transcript"
@@ -2534,6 +2649,56 @@ final class TUIApp {
         return historyThreads[historySelection]
     }
 
+    private var selectedWorkspace: RecentWorkspaceRecord? {
+        guard recentWorkspaces.indices.contains(workspaceSelection) else { return nil }
+        return recentWorkspaces[workspaceSelection]
+    }
+
+    private func loadRecentWorkspaces() {
+        do {
+            recentWorkspaces = try RecentWorkspaceStore.load()
+            workspaceSelection = min(workspaceSelection, max(recentWorkspaces.count - 1, 0))
+            refreshWorkspacePreview()
+        } catch {
+            recentWorkspaces = []
+            workspacePreviewLines = ["[error] \(error.localizedDescription)"]
+        }
+    }
+
+    private func refreshWorkspacePreview() {
+        guard let workspace = selectedWorkspace else {
+            workspacePreviewLines = []
+            return
+        }
+
+        let rootURL = URL(fileURLWithPath: workspace.path)
+        let databaseURL = rootURL.appendingPathComponent(".ashex/ashex.sqlite")
+        guard FileManager.default.fileExists(atPath: databaseURL.path) else {
+            workspacePreviewLines = ["No persisted Ashex history yet for this workspace."]
+            return
+        }
+
+        do {
+            let store = SQLitePersistenceStore(databaseURL: databaseURL)
+            try store.initialize()
+            let threads = try store.listThreads(limit: 1)
+            guard let thread = threads.first else {
+                workspacePreviewLines = ["No persisted threads yet for this workspace."]
+                return
+            }
+            let runs = try store.fetchRuns(threadID: thread.id)
+            let latestRun = runs.first
+            workspacePreviewLines = [
+                "path \(workspace.path)",
+                "last used \(Self.timeString(workspace.lastUsedAt))",
+                "latest run \(latestRun?.state.rawValue ?? "none")",
+                "messages \(thread.messageCount)"
+            ]
+        } catch {
+            workspacePreviewLines = ["[error] \(error.localizedDescription)"]
+        }
+    }
+
     private func loadHistory() {
         do {
             historyThreads = try historyStore.listThreads(limit: 20)
@@ -2679,6 +2844,18 @@ final class TUIApp {
             statusLine = "Failed to load history"
             runLines = ["[error] \(error.localizedDescription)"]
         }
+    }
+
+    private func openSelectedWorkspace() {
+        guard let workspace = selectedWorkspace else {
+            statusLine = "No workspace selected"
+            return
+        }
+
+        workspacePathInput = workspace.path
+        commitWorkspacePathInput()
+        showWorkspaces = false
+        focus = .launcher
     }
 
     private func makeSessionRuntime() throws -> AgentRuntime {

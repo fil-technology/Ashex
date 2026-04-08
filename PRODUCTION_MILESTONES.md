@@ -46,10 +46,10 @@ This file tracks the remaining work to move Ashex from a serious local MVP towar
 
 ## Milestone 7: Multi-Workspace and Session UX
 
-- [ ] Add recent workspaces and clearer project/session switching
-- [ ] Improve per-workspace chat discovery and recovery
-- [ ] Make multi-project usage feel first-class without weakening workspace isolation
-- [ ] Verify with targeted runtime and UI tests
+- [x] Add recent workspaces and clearer project/session switching
+- [x] Improve per-workspace chat discovery and recovery
+- [x] Make multi-project usage feel first-class without weakening workspace isolation
+- [x] Verify with targeted runtime and UI tests
 
 ## Milestone 8: Bounded Subagents
 

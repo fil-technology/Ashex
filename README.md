@@ -69,6 +69,7 @@ TUI highlights:
 - Store provider API keys in macOS Keychain instead of SQLite settings
 - Persist provider/model defaults across launches
 - Switch the active workspace live from the TUI or with `:workspace /path`
+- Browse and switch recent workspaces from a dedicated Workspaces screen
 - Browse persisted thread/run history and load prior transcripts back into the viewer
 - Open a side terminal pane for quick workspace commands
 - Review guarded approval requests with shell/file previews before allowing execution
@@ -136,6 +137,7 @@ In guarded mode:
 TUI controls:
 
 - `Tab`: cycle focus between launcher, settings/history panels, and input
+- `Workspaces`: inspect recent project roots, latest run state, and switch sessions without typing paths
 - `Up/Down` or `j/k`: move through launcher or panel selections
 - `Page Up` / `Page Down`: scroll transcripts or terminal output faster
 - `Home` / `End` or `g` / `G`: jump to the oldest output or back to the live tail

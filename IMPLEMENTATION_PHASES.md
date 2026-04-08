@@ -280,6 +280,7 @@ Already implemented in the repo:
   - provider/model switching
   - API key entry
   - workspace switching
+  - recent workspace switching
   - history browsing
   - side terminal pane
   - approvals
@@ -309,6 +310,7 @@ Most important remaining work:
 - richer patch planning and multi-file edit workflows
 - even stronger longer-session memory quality and thread continuation behavior
 - deeper secrets, safety, and sandboxing hardening beyond the current Keychain storage and shell-policy enforcement
+- richer multi-workspace/session UX beyond the new recent-workspace picker and previews
 - bounded subagents later
 
 Likely next highest-value step:

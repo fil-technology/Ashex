@@ -45,3 +45,30 @@ import Testing
         Issue.record("Expected command outside allow list to require approval")
     }
 }
+
+@Test func recentWorkspaceStoreRecordsMostRecentWorkspaceFirst() throws {
+    let fileURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString)
+        .appendingPathComponent("recent-workspaces.json")
+
+    try RecentWorkspaceStore.record(
+        workspaceURL: URL(fileURLWithPath: "/tmp/project-a"),
+        now: Date(timeIntervalSince1970: 10),
+        at: fileURL
+    )
+    try RecentWorkspaceStore.record(
+        workspaceURL: URL(fileURLWithPath: "/tmp/project-b"),
+        now: Date(timeIntervalSince1970: 20),
+        at: fileURL
+    )
+    try RecentWorkspaceStore.record(
+        workspaceURL: URL(fileURLWithPath: "/tmp/project-a"),
+        now: Date(timeIntervalSince1970: 30),
+        at: fileURL
+    )
+
+    let records = try RecentWorkspaceStore.load(from: fileURL)
+    #expect(records.count == 2)
+    #expect(records.first?.path == "/tmp/project-a")
+    #expect(records.last?.path == "/tmp/project-b")
+}
