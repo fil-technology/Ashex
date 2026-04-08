@@ -348,13 +348,13 @@ private let testShellPolicy = ShellCommandPolicy(config: .default)
         persistence: SQLitePersistenceStore(databaseURL: dbURL)
     )
 
-    var sawValidationGate = false
+    var sawValidationGateOrAutoValidation = false
     var finalAnswer = ""
     for await event in runtime.run(RunRequest(prompt: "implement a new feature in note.txt with validation and a final summary")) {
         switch event.payload {
         case .status(_, let message):
-            if message.contains("Validation gate blocked completion") {
-                sawValidationGate = true
+            if message.contains("Validation gate blocked completion") || message.contains("Automatic validation:") {
+                sawValidationGateOrAutoValidation = true
             }
         case .finalAnswer(_, _, let text):
             finalAnswer = text
@@ -363,7 +363,7 @@ private let testShellPolicy = ShellCommandPolicy(config: .default)
         }
     }
 
-    #expect(sawValidationGate)
+    #expect(sawValidationGateOrAutoValidation)
     #expect(finalAnswer.contains("Validated the file contents"))
 }
 
@@ -453,8 +453,60 @@ private let testShellPolicy = ShellCommandPolicy(config: .default)
     }
 
     #expect(finalAnswer.contains("Validation:"))
-    #expect(finalAnswer.contains("Validation completed with concrete verification"))
+    #expect(finalAnswer.contains("Validation completed with concrete verification") || finalAnswer.contains("inspected note.txt"))
     #expect(finalAnswer.contains("Changed files:"))
+}
+
+@Test func runtimeCanAutoExecuteValidationChecksBeforeAcceptingCompletion() async throws {
+    let fileManager = FileManager.default
+    let root = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let dbURL = root.appendingPathComponent(".ashex/test.sqlite")
+    try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+    try "hello".write(to: root.appendingPathComponent("note.txt"), atomically: true, encoding: .utf8)
+
+    let runtime = try AgentRuntime(
+        modelAdapter: SequencedModelAdapter(actions: [
+            .toolCall(.init(toolName: "filesystem", arguments: [
+                "operation": .string("read_text_file"),
+                "path": .string("note.txt"),
+            ])),
+            .finalAnswer("Explored note.txt."),
+            .finalAnswer("Planned the smallest change."),
+            .toolCall(.init(toolName: "filesystem", arguments: [
+                "operation": .string("read_text_file"),
+                "path": .string("note.txt"),
+            ])),
+            .toolCall(.init(toolName: "filesystem", arguments: [
+                "operation": .string("apply_patch"),
+                "path": .string("note.txt"),
+                "edits": .array([
+                    .object([
+                        "old_text": .string("hello"),
+                        "new_text": .string("updated"),
+                        "replace_all": .bool(false),
+                    ])
+                ]),
+            ])),
+            .finalAnswer("Applied the patch."),
+            .finalAnswer("Too early to finish."),
+            .finalAnswer("Accepted after automatic validation."),
+        ]),
+        toolRegistry: ToolRegistry(tools: [
+            FileSystemTool(workspaceGuard: WorkspaceGuard(rootURL: root)),
+            ShellTool(executionRuntime: ProcessExecutionRuntime(), workspaceURL: root, commandPolicy: testShellPolicy),
+        ]),
+        persistence: SQLitePersistenceStore(databaseURL: dbURL)
+    )
+
+    var finalAnswer = ""
+    for await event in runtime.run(RunRequest(prompt: "implement a feature in note.txt and validate it carefully before summarizing")) {
+        if case .finalAnswer(_, _, let text) = event.payload {
+            finalAnswer = text
+        }
+    }
+
+    #expect(finalAnswer.contains("Accepted after automatic validation."))
+    #expect(finalAnswer.contains("Validation:"))
 }
 
 @Test func sqlitePersistenceRoundTripsGenericSettings() throws {

@@ -190,6 +190,7 @@ Current runtime capabilities also include:
 - inspect-before-mutate enforcement for coding and edit tasks
 - changed-file tracking during the run
 - validation gating that asks the model for concrete verification before concluding an edited run
+- validation execution can now proactively run checks like `git diff`, read-back verification, and Swift package build/test commands when the model tries to conclude too early
 - a structured `apply_patch` file-edit path for multi-edit diff-native mutations
 - stalled-step recovery when the model keeps retrying without useful progress
 - bounded delegated subtasks for selected non-mutation phases, with a smaller iteration budget and visible subagent events

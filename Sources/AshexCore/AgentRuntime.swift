@@ -354,6 +354,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         var lastSafeToolResult: String?
         var noProgressIterations = 0
         var validationBlocks = 0
+        var automaticValidationAttempted = false
         var workflowState = StepWorkflowState(targetArtifacts: explorationPlan.targetPaths)
         var changedFiles: [ChangedArtifact] = existingChangedFiles
 
@@ -434,6 +435,32 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                 if stepPhase == .validation,
                    !changedFiles.isEmpty,
                    !workflowState.hasValidationEvidence(for: changedFiles.map(\.path)) {
+                    if !automaticValidationAttempted {
+                        automaticValidationAttempted = true
+                        let automaticNotes = try await executeAutomaticValidation(
+                            thread: thread,
+                            run: run,
+                            request: stepPrompt,
+                            taskKind: taskKind,
+                            changedFiles: changedFiles.map(\.path),
+                            workflowState: &workflowState,
+                            emitter: emitter,
+                            cancellation: cancellation
+                        )
+                        try persistWorkingMemory(
+                            runID: run.id,
+                            currentTask: stepPrompt,
+                            currentPhase: stepPhase,
+                            explorationPlan: explorationPlan,
+                            workflowState: workflowState,
+                            changedFiles: changedFiles,
+                            summary: automaticNotes.last ?? "Ran automatic validation checks.",
+                            completedStepSummaries: [],
+                            unresolvedItems: [],
+                            overrideSuggestions: Self.validationSuggestions(for: stepPrompt, taskKind: taskKind, phase: stepPhase, changedFiles: changedFiles.map(\.path))
+                        )
+                        continue
+                    }
                     validationBlocks += 1
                     let validationReminder = "Validation is incomplete: inspect changed files, git diffs, or run a relevant check before concluding."
                     let toolMessage = try persistence.appendMessage(threadID: thread.id, runID: run.id, role: .tool, content: validationReminder, now: clock())
@@ -451,7 +478,9 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                     continue
                 }
                 let finalValidationNotes = stepPhase == .validation && !changedFiles.isEmpty
-                    ? ["Validation completed with concrete verification for the changed files."]
+                    ? (workflowState.validationNotes.isEmpty
+                        ? ["Validation completed with concrete verification for the changed files."]
+                        : workflowState.validationNotes)
                     : []
                 return .init(summary: answer, changedFiles: changedFiles, validationNotes: finalValidationNotes, remainingItems: [])
 
@@ -573,6 +602,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         var lastSafeToolResult: String?
         var noProgressIterations = 0
         var validationBlocks = 0
+        var automaticValidationAttempted = false
         var workflowState = StepWorkflowState(targetArtifacts: explorationPlan.targetPaths)
         var changedFiles: [ChangedArtifact] = existingChangedFiles
 
@@ -621,6 +651,20 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                 if stepPhase == .validation,
                    !changedFiles.isEmpty,
                    !workflowState.hasValidationEvidence(for: changedFiles.map(\.path)) {
+                    if !automaticValidationAttempted {
+                        automaticValidationAttempted = true
+                        _ = try await executeAutomaticValidation(
+                            thread: thread,
+                            run: run,
+                            request: stepPrompt,
+                            taskKind: taskKind,
+                            changedFiles: changedFiles.map(\.path),
+                            workflowState: &workflowState,
+                            emitter: emitter,
+                            cancellation: cancellation
+                        )
+                        continue
+                    }
                     validationBlocks += 1
                     let validationReminder = "Validation is incomplete: inspect changed files, git diffs, or run a relevant check before concluding."
                     localMessages.append(MessageRecord(
@@ -643,7 +687,9 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                     continue
                 }
                 let finalValidationNotes = stepPhase == .validation && !changedFiles.isEmpty
-                    ? ["Validation completed with concrete verification for the changed files."]
+                    ? (workflowState.validationNotes.isEmpty
+                        ? ["Validation completed with concrete verification for the changed files."]
+                        : workflowState.validationNotes)
                     : []
                 return .init(summary: answer, changedFiles: changedFiles, validationNotes: finalValidationNotes, remainingItems: [])
 
@@ -847,6 +893,63 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         return values.filter { seen.insert($0).inserted }
     }
 
+    private func executeAutomaticValidation(
+        thread: ThreadRecord,
+        run: RunRecord,
+        request: String,
+        taskKind: TaskKind,
+        changedFiles: [String],
+        workflowState: inout StepWorkflowState,
+        emitter: EventEmitter,
+        cancellation: CancellationToken
+    ) async throws -> [String] {
+        let workspaceSnapshotRecord = try persistence.fetchWorkspaceSnapshot(runID: run.id)
+        let availableToolNames = Set(toolRegistry.schema().map(\.name))
+        let actions = ValidationStrategy.plan(
+            request: request,
+            taskKind: taskKind,
+            changedFiles: changedFiles,
+            workspaceSnapshot: workspaceSnapshotRecord,
+            availableToolNames: availableToolNames
+        )
+
+        guard !actions.isEmpty else {
+            return []
+        }
+
+        var notes: [String] = []
+        for action in actions {
+            try await cancellation.checkCancellation()
+            try emitter.emit(.status(runID: run.id, message: "Automatic validation: \(action.summary)"), runID: run.id)
+            do {
+                let result = try await toolExecutor.execute(
+                    call: action.call,
+                    threadID: thread.id,
+                    runID: run.id,
+                    preconditions: .init(hasPriorInspection: true, phase: .validation),
+                    cancellation: cancellation,
+                    emitter: emitter
+                )
+
+                switch result {
+                case .retryableFailure:
+                    notes.append("Automatic validation requested a retry for \(action.call.toolName).")
+                case .completed(let output, _, let metadata):
+                    workflowState.record(metadata: metadata)
+                    let note = metadata.summary.isEmpty ? "Validated with \(action.call.toolName)." : metadata.summary
+                    notes.append(note)
+                    if metadata.validationArtifacts.isEmpty, !output.isEmpty {
+                        notes.append("Captured validation output from \(action.call.toolName).")
+                    }
+                }
+            } catch {
+                notes.append("Validation check failed: \(action.summary)")
+            }
+        }
+
+        return Self.orderedUniqueStrings(from: notes)
+    }
+
     private func persistWorkingMemory(
         runID: UUID,
         currentTask: String,
@@ -1022,6 +1125,7 @@ private struct StepWorkflowState {
     private(set) var inspectedArtifacts: Set<String> = []
     private(set) var validationArtifacts: Set<String> = []
     private(set) var recentFindings: [String] = []
+    private(set) var validationNotes: [String] = []
 
     init(targetArtifacts: [String] = []) {
         self.targetArtifacts = targetArtifacts
@@ -1066,6 +1170,12 @@ private struct StepWorkflowState {
             recentFindings.append(metadata.summary)
             if recentFindings.count > 6 {
                 recentFindings.removeFirst(recentFindings.count - 6)
+            }
+        }
+        if !metadata.validationArtifacts.isEmpty {
+            validationNotes.append(metadata.summary.isEmpty ? "Validation evidence recorded." : metadata.summary)
+            if validationNotes.count > 6 {
+                validationNotes.removeFirst(validationNotes.count - 6)
             }
         }
     }

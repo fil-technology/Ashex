@@ -24,6 +24,9 @@ The remaining work is refinement work: making the agent choose the right files e
   - exploration targets are now persisted in working memory
   - pending exploration targets are tracked as files and roots are inspected
   - history and prompts now surface that exploration state
+- Phase 2 has started:
+  - validation can now proactively execute checks instead of only gating completion
+  - validation plans can include git diff/status, read-back checks, and Swift package build/test checks
 - The remaining refinement work below is still active
 
 ## Refinement Phase 1: Deeper Exploration And File Targeting
