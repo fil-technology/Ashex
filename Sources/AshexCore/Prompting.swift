@@ -21,16 +21,19 @@ public struct PreparedModelContext: Sendable {
     public struct Compaction: Sendable {
         public let droppedMessages: [MessageRecord]
         public let summary: String
+        public let deduplicatedToolSummaries: Int
 
-        public init(droppedMessages: [MessageRecord], summary: String) {
+        public init(droppedMessages: [MessageRecord], summary: String, deduplicatedToolSummaries: Int) {
             self.droppedMessages = droppedMessages
             self.summary = summary
+            self.deduplicatedToolSummaries = deduplicatedToolSummaries
         }
     }
 
     public let base: ModelContext
     public let retainedMessages: [MessageRecord]
     public let droppedMessageCount: Int
+    public let clippedMessageCount: Int
     public let estimatedTokenCount: Int
     public let estimatedContextWindow: Int
     public let compaction: Compaction?
@@ -39,6 +42,7 @@ public struct PreparedModelContext: Sendable {
         base: ModelContext,
         retainedMessages: [MessageRecord],
         droppedMessageCount: Int,
+        clippedMessageCount: Int,
         estimatedTokenCount: Int,
         estimatedContextWindow: Int,
         compaction: Compaction?
@@ -46,6 +50,7 @@ public struct PreparedModelContext: Sendable {
         self.base = base
         self.retainedMessages = retainedMessages
         self.droppedMessageCount = droppedMessageCount
+        self.clippedMessageCount = clippedMessageCount
         self.estimatedTokenCount = estimatedTokenCount
         self.estimatedContextWindow = estimatedContextWindow
         self.compaction = compaction
@@ -105,16 +110,25 @@ public enum ContextManager {
         retained.reverse()
         dropped.reverse()
         let droppedCount = dropped.count
-        let compaction = dropped.isEmpty ? nil : PreparedModelContext.Compaction(
-            droppedMessages: dropped,
-            summary: buildCompactionSummary(from: dropped)
-        )
+        let clippedRetained = clipOversizedToolMessages(in: retained)
+        let clippedCount = zip(retained, clippedRetained).reduce(0) { partial, pair in
+            partial + (pair.0.content == pair.1.content ? 0 : 1)
+        }
+        let compactionSummary = dropped.isEmpty ? nil : buildCompactionSummary(from: dropped)
+        let compaction = compactionSummary.map {
+            PreparedModelContext.Compaction(
+                droppedMessages: dropped,
+                summary: $0.summary,
+                deduplicatedToolSummaries: $0.deduplicatedToolSummaries
+            )
+        }
         let compactionCost = compaction.map { estimateTokens(in: $0.summary) + 24 } ?? 0
 
         return PreparedModelContext(
             base: context,
-            retainedMessages: retained.isEmpty ? context.messages.suffix(1) : retained,
+            retainedMessages: clippedRetained.isEmpty ? context.messages.suffix(1) : clippedRetained,
             droppedMessageCount: droppedCount,
+            clippedMessageCount: clippedCount,
             estimatedTokenCount: runningEstimate + compactionCost,
             estimatedContextWindow: contextWindow,
             compaction: compaction
@@ -146,14 +160,18 @@ public enum ContextManager {
         }
     }
 
-    private static func buildCompactionSummary(from messages: [MessageRecord]) -> String {
+    private static func buildCompactionSummary(from messages: [MessageRecord]) -> (summary: String, deduplicatedToolSummaries: Int) {
         let userPoints = extractPoints(from: messages, role: .user, limit: 3)
         let stepPoints = extractStepResultPoints(from: messages, limit: 4)
-        let toolPoints = extractToolOutcomePoints(from: messages, limit: 4)
+        let toolSummary = extractToolOutcomePoints(from: messages, limit: 4)
+        let toolPoints = toolSummary.points
         let assistantPoints = extractGeneralAssistantPoints(from: messages, excluding: Set(stepPoints), limit: 2)
 
         var lines = ["Compacted earlier conversation summary:"]
         lines.append("- Omitted \(messages.count) earlier messages from the active turn context.")
+        if toolSummary.deduplicatedCount > 0 {
+            lines.append("- Deduplicated \(toolSummary.deduplicatedCount) repeated tool-read summaries while compacting older history.")
+        }
 
         if !userPoints.isEmpty {
             lines.append("- Earlier user requests:")
@@ -172,7 +190,7 @@ public enum ContextManager {
             lines.append(contentsOf: assistantPoints.map { "  - \($0)" })
         }
 
-        return lines.joined(separator: "\n")
+        return (lines.joined(separator: "\n"), toolSummary.deduplicatedCount)
     }
 
     private static func extractPoints(from messages: [MessageRecord], role: MessageRole, limit: Int) -> [String] {
@@ -197,12 +215,24 @@ public enum ContextManager {
             .filter { !$0.isEmpty }
     }
 
-    private static func extractToolOutcomePoints(from messages: [MessageRecord], limit: Int) -> [String] {
-        messages
+    private static func extractToolOutcomePoints(from messages: [MessageRecord], limit: Int) -> (points: [String], deduplicatedCount: Int) {
+        let normalized = messages
             .filter { $0.role == .tool }
             .suffix(limit)
             .map { normalizeToolSnippet($0.content) }
             .filter { !$0.isEmpty }
+
+        var seen: Set<String> = []
+        var unique: [String] = []
+        var deduplicatedCount = 0
+        for point in normalized {
+            if seen.insert(point).inserted {
+                unique.append(point)
+            } else {
+                deduplicatedCount += 1
+            }
+        }
+        return (unique, deduplicatedCount)
     }
 
     private static func extractGeneralAssistantPoints(from messages: [MessageRecord], excluding excluded: Set<String>, limit: Int) -> [String] {
@@ -247,6 +277,40 @@ public enum ContextManager {
         }
 
         return normalizeSummarySnippet(trimmed)
+    }
+
+    private static func clipOversizedToolMessages(in messages: [MessageRecord]) -> [MessageRecord] {
+        messages.map { message in
+            guard message.role == .tool else { return message }
+            let clipped = clipToolContent(message.content)
+            guard clipped != message.content else { return message }
+            return MessageRecord(
+                id: message.id,
+                threadID: message.threadID,
+                runID: message.runID,
+                role: message.role,
+                content: clipped,
+                createdAt: message.createdAt
+            )
+        }
+    }
+
+    private static func clipToolContent(_ content: String) -> String {
+        let maxCharacters = 4_000
+        let maxLines = 80
+        let lines = content.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        guard content.count > maxCharacters || lines.count > maxLines else {
+            return content
+        }
+
+        let keptLines = Array(lines.prefix(maxLines))
+        let clippedBody = keptLines.joined(separator: "\n")
+        let clippedCharacters = max(content.count - clippedBody.count, 0)
+        return """
+        [tool-output clipped for prompt context]
+        kept \(keptLines.count) of \(lines.count) lines and approximately \(clippedCharacters) trailing characters.
+        \(clippedBody)
+        """
     }
 }
 

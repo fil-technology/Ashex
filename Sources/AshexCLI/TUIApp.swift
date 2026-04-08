@@ -1111,8 +1111,8 @@ final class TUIApp {
             return ["[state] \(state.rawValue)\(reason.map { " - \($0)" } ?? "")"]
         case .workflowPhaseChanged(_, let phase, let title):
             return ["[phase] \(phase) - \(title)"]
-        case .contextPrepared(_, let retainedMessages, let droppedMessages, let estimatedTokens, let estimatedContextWindow):
-            return ["[context] retained \(retainedMessages), dropped \(droppedMessages), tok~ \(estimatedTokens), ctx~ \(estimatedTokens)/\(estimatedContextWindow)"]
+        case .contextPrepared(_, let retainedMessages, let droppedMessages, let clippedMessages, let estimatedTokens, let estimatedContextWindow):
+            return ["[context] retained \(retainedMessages), dropped \(droppedMessages), clipped \(clippedMessages), tok~ \(estimatedTokens), ctx~ \(estimatedTokens)/\(estimatedContextWindow)"]
         case .contextCompacted(_, let droppedMessages, let summary):
             var lines = ["[context] compacted \(droppedMessages) earlier messages"]
             if showToolDetails {

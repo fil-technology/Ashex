@@ -10,7 +10,7 @@ public enum RuntimeEventPayload: Codable, Sendable {
     case runStarted(threadID: UUID, runID: UUID)
     case runStateChanged(runID: UUID, state: RunState, reason: String?)
     case workflowPhaseChanged(runID: UUID, phase: String, title: String)
-    case contextPrepared(runID: UUID, retainedMessages: Int, droppedMessages: Int, estimatedTokens: Int, estimatedContextWindow: Int)
+    case contextPrepared(runID: UUID, retainedMessages: Int, droppedMessages: Int, clippedMessages: Int, estimatedTokens: Int, estimatedContextWindow: Int)
     case contextCompacted(runID: UUID, droppedMessages: Int, summary: String)
     case taskPlanCreated(runID: UUID, steps: [String])
     case taskStepStarted(runID: UUID, index: Int, total: Int, title: String)

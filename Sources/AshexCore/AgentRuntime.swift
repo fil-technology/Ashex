@@ -265,6 +265,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                     runID: run.id,
                     retainedMessages: preparedContext.retainedMessages.count,
                     droppedMessages: preparedContext.droppedMessageCount,
+                    clippedMessages: preparedContext.clippedMessageCount,
                     estimatedTokens: preparedContext.estimatedTokenCount,
                     estimatedContextWindow: preparedContext.estimatedContextWindow
                 ),
