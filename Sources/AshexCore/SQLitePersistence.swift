@@ -49,6 +49,47 @@ public final class SQLitePersistenceStore: PersistenceStore, @unchecked Sendable
                 reason TEXT,
                 created_at REAL NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS run_steps (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                step_index INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                state TEXT NOT NULL,
+                summary TEXT,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS context_compactions (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                dropped_message_count INTEGER NOT NULL,
+                retained_message_count INTEGER NOT NULL,
+                estimated_token_count INTEGER NOT NULL,
+                estimated_context_window INTEGER NOT NULL,
+                summary TEXT NOT NULL,
+                created_at REAL NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS workspace_snapshots (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL UNIQUE,
+                workspace_root_path TEXT NOT NULL,
+                top_level_entries_json TEXT NOT NULL,
+                instruction_files_json TEXT NOT NULL,
+                git_branch TEXT,
+                git_status_summary TEXT,
+                created_at REAL NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS working_memory (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL UNIQUE,
+                current_task TEXT NOT NULL,
+                current_phase TEXT,
+                inspected_paths_json TEXT NOT NULL,
+                changed_paths_json TEXT NOT NULL,
+                validation_suggestions_json TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                updated_at REAL NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS tool_calls (
                 id TEXT PRIMARY KEY,
                 run_id TEXT NOT NULL,
@@ -121,6 +162,260 @@ public final class SQLitePersistenceStore: PersistenceStore, @unchecked Sendable
                 "INSERT INTO run_state_transitions (id, run_id, state, reason, created_at) VALUES (?, ?, ?, ?, ?)",
                 bind: [.text(UUID().uuidString), .text(runID.uuidString), .text(state.rawValue), .text(reason), .double(now.timeIntervalSince1970)]
             )
+        }
+    }
+
+    public func createRunSteps(runID: UUID, steps: [String], now: Date) throws -> [RunStepRecord] {
+        try queue.sync {
+            var records: [RunStepRecord] = []
+            for (index, title) in steps.enumerated() {
+                let record = RunStepRecord(
+                    id: UUID(),
+                    runID: runID,
+                    index: index + 1,
+                    title: title,
+                    state: .pending,
+                    summary: nil,
+                    createdAt: now,
+                    updatedAt: now
+                )
+                try exec(
+                    "INSERT INTO run_steps (id, run_id, step_index, title, state, summary, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    bind: [
+                        .text(record.id.uuidString),
+                        .text(runID.uuidString),
+                        .int(Int64(record.index)),
+                        .text(record.title),
+                        .text(record.state.rawValue),
+                        .null,
+                        .double(now.timeIntervalSince1970),
+                        .double(now.timeIntervalSince1970),
+                    ]
+                )
+                records.append(record)
+            }
+            return records
+        }
+    }
+
+    public func transitionRunStep(stepID: UUID, to state: RunStepState, summary: String?, now: Date) throws {
+        try queue.sync {
+            try exec(
+                "UPDATE run_steps SET state = ?, summary = ?, updated_at = ? WHERE id = ?",
+                bind: [.text(state.rawValue), .text(summary), .double(now.timeIntervalSince1970), .text(stepID.uuidString)]
+            )
+        }
+    }
+
+    public func fetchRunSteps(runID: UUID) throws -> [RunStepRecord] {
+        try queue.sync {
+            let sql = "SELECT id, step_index, title, state, summary, created_at, updated_at FROM run_steps WHERE run_id = ? ORDER BY step_index ASC"
+            var statement: OpaquePointer?
+            defer { sqlite3_finalize(statement) }
+            try prepare(sql, statement: &statement)
+            bindText(runID.uuidString, to: statement, index: 1)
+
+            var steps: [RunStepRecord] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                let id = UUID(uuidString: columnText(statement, index: 0)) ?? UUID()
+                let index = Int(sqlite3_column_int(statement, 1))
+                let title = columnText(statement, index: 2)
+                let state = RunStepState(rawValue: columnText(statement, index: 3)) ?? .failed
+                let summary = columnNullableText(statement, index: 4)
+                let createdAt = Date(timeIntervalSince1970: sqlite3_column_double(statement, 5))
+                let updatedAt = Date(timeIntervalSince1970: sqlite3_column_double(statement, 6))
+                steps.append(.init(id: id, runID: runID, index: index, title: title, state: state, summary: summary, createdAt: createdAt, updatedAt: updatedAt))
+            }
+            return steps
+        }
+    }
+
+    public func recordWorkspaceSnapshot(
+        runID: UUID,
+        workspaceRootPath: String,
+        topLevelEntries: [String],
+        instructionFiles: [String],
+        gitBranch: String?,
+        gitStatusSummary: String?,
+        now: Date
+    ) throws -> WorkspaceSnapshotRecord {
+        try queue.sync {
+            let record = WorkspaceSnapshotRecord(
+                id: UUID(),
+                runID: runID,
+                workspaceRootPath: workspaceRootPath,
+                topLevelEntries: topLevelEntries,
+                instructionFiles: instructionFiles,
+                gitBranch: gitBranch,
+                gitStatusSummary: gitStatusSummary,
+                createdAt: now
+            )
+            try exec(
+                """
+                INSERT OR REPLACE INTO workspace_snapshots
+                (id, run_id, workspace_root_path, top_level_entries_json, instruction_files_json, git_branch, git_status_summary, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                bind: [
+                    .text(record.id.uuidString),
+                    .text(runID.uuidString),
+                    .text(record.workspaceRootPath),
+                    .text(try encodeJSONString(record.topLevelEntries)),
+                    .text(try encodeJSONString(record.instructionFiles)),
+                    .text(record.gitBranch),
+                    .text(record.gitStatusSummary),
+                    .double(now.timeIntervalSince1970),
+                ]
+            )
+            return record
+        }
+    }
+
+    public func fetchWorkspaceSnapshot(runID: UUID) throws -> WorkspaceSnapshotRecord? {
+        try queue.sync {
+            let sql = """
+            SELECT id, workspace_root_path, top_level_entries_json, instruction_files_json, git_branch, git_status_summary, created_at
+            FROM workspace_snapshots
+            WHERE run_id = ?
+            LIMIT 1
+            """
+            var statement: OpaquePointer?
+            defer { sqlite3_finalize(statement) }
+            try prepare(sql, statement: &statement)
+            bindText(runID.uuidString, to: statement, index: 1)
+            guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+            return WorkspaceSnapshotRecord(
+                id: UUID(uuidString: columnText(statement, index: 0)) ?? UUID(),
+                runID: runID,
+                workspaceRootPath: columnText(statement, index: 1),
+                topLevelEntries: try decodeStringArrayJSON(columnText(statement, index: 2)),
+                instructionFiles: try decodeStringArrayJSON(columnText(statement, index: 3)),
+                gitBranch: columnNullableText(statement, index: 4),
+                gitStatusSummary: columnNullableText(statement, index: 5),
+                createdAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 6))
+            )
+        }
+    }
+
+    public func upsertWorkingMemory(
+        runID: UUID,
+        currentTask: String,
+        currentPhase: String?,
+        inspectedPaths: [String],
+        changedPaths: [String],
+        validationSuggestions: [String],
+        summary: String,
+        now: Date
+    ) throws -> WorkingMemoryRecord {
+        try queue.sync {
+            let existing = try fetchWorkingMemoryLocked(runID: runID)
+            let record = WorkingMemoryRecord(
+                id: existing?.id ?? UUID(),
+                runID: runID,
+                currentTask: currentTask,
+                currentPhase: currentPhase,
+                inspectedPaths: inspectedPaths,
+                changedPaths: changedPaths,
+                validationSuggestions: validationSuggestions,
+                summary: summary,
+                updatedAt: now
+            )
+            try exec(
+                """
+                INSERT OR REPLACE INTO working_memory
+                (id, run_id, current_task, current_phase, inspected_paths_json, changed_paths_json, validation_suggestions_json, summary, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                bind: [
+                    .text(record.id.uuidString),
+                    .text(runID.uuidString),
+                    .text(record.currentTask),
+                    .text(record.currentPhase),
+                    .text(try encodeJSONString(record.inspectedPaths)),
+                    .text(try encodeJSONString(record.changedPaths)),
+                    .text(try encodeJSONString(record.validationSuggestions)),
+                    .text(record.summary),
+                    .double(now.timeIntervalSince1970),
+                ]
+            )
+            return record
+        }
+    }
+
+    public func fetchWorkingMemory(runID: UUID) throws -> WorkingMemoryRecord? {
+        try queue.sync {
+            try fetchWorkingMemoryLocked(runID: runID)
+        }
+    }
+
+    public func recordContextCompaction(
+        runID: UUID,
+        droppedMessageCount: Int,
+        retainedMessageCount: Int,
+        estimatedTokenCount: Int,
+        estimatedContextWindow: Int,
+        summary: String,
+        now: Date
+    ) throws -> ContextCompactionRecord {
+        try queue.sync {
+            let record = ContextCompactionRecord(
+                id: UUID(),
+                runID: runID,
+                droppedMessageCount: droppedMessageCount,
+                retainedMessageCount: retainedMessageCount,
+                estimatedTokenCount: estimatedTokenCount,
+                estimatedContextWindow: estimatedContextWindow,
+                summary: summary,
+                createdAt: now
+            )
+            try exec(
+                """
+                INSERT INTO context_compactions
+                (id, run_id, dropped_message_count, retained_message_count, estimated_token_count, estimated_context_window, summary, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                bind: [
+                    .text(record.id.uuidString),
+                    .text(runID.uuidString),
+                    .int(Int64(record.droppedMessageCount)),
+                    .int(Int64(record.retainedMessageCount)),
+                    .int(Int64(record.estimatedTokenCount)),
+                    .int(Int64(record.estimatedContextWindow)),
+                    .text(record.summary),
+                    .double(now.timeIntervalSince1970),
+                ]
+            )
+            return record
+        }
+    }
+
+    public func fetchContextCompactions(runID: UUID) throws -> [ContextCompactionRecord] {
+        try queue.sync {
+            let sql = """
+            SELECT id, dropped_message_count, retained_message_count, estimated_token_count, estimated_context_window, summary, created_at
+            FROM context_compactions
+            WHERE run_id = ?
+            ORDER BY created_at ASC
+            """
+            var statement: OpaquePointer?
+            defer { sqlite3_finalize(statement) }
+            try prepare(sql, statement: &statement)
+            bindText(runID.uuidString, to: statement, index: 1)
+
+            var records: [ContextCompactionRecord] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                records.append(.init(
+                    id: UUID(uuidString: columnText(statement, index: 0)) ?? UUID(),
+                    runID: runID,
+                    droppedMessageCount: Int(sqlite3_column_int(statement, 1)),
+                    retainedMessageCount: Int(sqlite3_column_int(statement, 2)),
+                    estimatedTokenCount: Int(sqlite3_column_int(statement, 3)),
+                    estimatedContextWindow: Int(sqlite3_column_int(statement, 4)),
+                    summary: columnText(statement, index: 5),
+                    createdAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 6))
+                ))
+            }
+            return records
         }
     }
 
@@ -401,6 +696,31 @@ public final class SQLitePersistenceStore: PersistenceStore, @unchecked Sendable
         return values
     }
 
+    private func fetchWorkingMemoryLocked(runID: UUID) throws -> WorkingMemoryRecord? {
+        let sql = """
+        SELECT id, current_task, current_phase, inspected_paths_json, changed_paths_json, validation_suggestions_json, summary, updated_at
+        FROM working_memory
+        WHERE run_id = ?
+        LIMIT 1
+        """
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+        try prepare(sql, statement: &statement)
+        bindText(runID.uuidString, to: statement, index: 1)
+        guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+        return WorkingMemoryRecord(
+            id: UUID(uuidString: columnText(statement, index: 0)) ?? UUID(),
+            runID: runID,
+            currentTask: columnText(statement, index: 1),
+            currentPhase: columnNullableText(statement, index: 2),
+            inspectedPaths: try decodeStringArrayJSON(columnText(statement, index: 3)),
+            changedPaths: try decodeStringArrayJSON(columnText(statement, index: 4)),
+            validationSuggestions: try decodeStringArrayJSON(columnText(statement, index: 5)),
+            summary: columnText(statement, index: 6),
+            updatedAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 7))
+        )
+    }
+
     private func prepare(_ sql: String, statement: inout OpaquePointer?) throws {
         if sqlite3_prepare_v2(db, sql, -1, &statement, nil) != SQLITE_OK {
             throw AshexError.persistence(String(cString: sqlite3_errmsg(db)))
@@ -423,6 +743,8 @@ public final class SQLitePersistenceStore: PersistenceStore, @unchecked Sendable
                 } else {
                     sqlite3_bind_null(statement, index)
                 }
+            case .int(let number):
+                sqlite3_bind_int64(statement, index, number)
             case .double(let number):
                 sqlite3_bind_double(statement, index, number)
             case .null:
@@ -450,10 +772,15 @@ public final class SQLitePersistenceStore: PersistenceStore, @unchecked Sendable
         }
         return string
     }
+
+    private func decodeStringArrayJSON(_ string: String) throws -> [String] {
+        try JSONDecoder().decode([String].self, from: Data(string.utf8))
+    }
 }
 
 private enum SQLiteBindValue {
     case text(String?)
+    case int(Int64)
     case double(Double)
     case null
 }

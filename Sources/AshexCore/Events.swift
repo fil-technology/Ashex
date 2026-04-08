@@ -9,9 +9,13 @@ public enum OutputStreamKind: String, Codable, Sendable {
 public enum RuntimeEventPayload: Codable, Sendable {
     case runStarted(threadID: UUID, runID: UUID)
     case runStateChanged(runID: UUID, state: RunState, reason: String?)
+    case workflowPhaseChanged(runID: UUID, phase: String, title: String)
+    case contextPrepared(runID: UUID, retainedMessages: Int, droppedMessages: Int, clippedMessages: Int, estimatedTokens: Int, estimatedContextWindow: Int)
+    case contextCompacted(runID: UUID, droppedMessages: Int, summary: String)
     case taskPlanCreated(runID: UUID, steps: [String])
     case taskStepStarted(runID: UUID, index: Int, total: Int, title: String)
     case taskStepFinished(runID: UUID, index: Int, total: Int, title: String, outcome: String)
+    case changedFilesTracked(runID: UUID, paths: [String])
     case status(runID: UUID, message: String)
     case messageAppended(runID: UUID, messageID: UUID, role: MessageRole)
     case approvalRequested(runID: UUID, toolName: String, summary: String, reason: String, risk: ApprovalRisk)
