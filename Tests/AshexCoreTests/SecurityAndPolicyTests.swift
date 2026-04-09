@@ -72,6 +72,36 @@ import Testing
     }
 }
 
+@Test func shellExecutionPolicyCanRequireApprovalForNetworkCommands() {
+    let policy = ShellExecutionPolicy(
+        sandbox: .default,
+        network: .init(mode: .prompt),
+        shell: ShellCommandPolicy(config: .default)
+    )
+
+    switch policy.assess(command: "curl https://example.com") {
+    case .requireApproval(let message):
+        #expect(message.contains("network access"))
+    default:
+        Issue.record("Expected network command to require approval")
+    }
+}
+
+@Test func shellExecutionPolicyCanDenyNetworkCommands() {
+    let policy = ShellExecutionPolicy(
+        sandbox: .default,
+        network: .init(mode: .deny),
+        shell: ShellCommandPolicy(config: .default)
+    )
+
+    switch policy.assess(command: "git fetch origin") {
+    case .deny(let message):
+        #expect(message.contains("network access"))
+    default:
+        Issue.record("Expected network command to be denied")
+    }
+}
+
 @Test func workspaceGuardBlocksMutationsInReadOnlyMode() throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -109,6 +139,7 @@ import Testing
         .init(
             version: 1,
             sandbox: .init(mode: .readOnly, protectedPaths: [".git"]),
+            network: .init(mode: .deny),
             shell: .init(
                 allowList: ["git status"],
                 denyList: ["rm "],
@@ -123,6 +154,7 @@ import Testing
         .init(
             version: 1,
             sandbox: .init(mode: .workspaceWrite, protectedPaths: [".git", ".ashex"]),
+            network: .init(mode: .prompt),
             shell: .init(
                 allowList: [],
                 denyList: ["sudo "],
@@ -135,6 +167,7 @@ import Testing
 
     let loaded = try UserConfigStore.loadMerged(for: root, globalFileURL: globalConfigURL)
     #expect(loaded.effectiveConfig.sandbox.mode == .workspaceWrite)
+    #expect(loaded.effectiveConfig.network.mode == .prompt)
     #expect(loaded.effectiveConfig.sandbox.protectedPaths == [".git", ".ashex"])
     #expect(loaded.effectiveConfig.shell.requireApprovalForUnknownCommands)
     #expect(loaded.effectiveConfig.shell.rules.map(\.prefix) == ["swift test"])

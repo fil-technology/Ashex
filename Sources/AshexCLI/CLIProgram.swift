@@ -69,8 +69,17 @@ struct AshexCLI {
             print("[plan] step \(index)/\(total) started - \(title)")
         case .taskStepFinished(_, let index, let total, let title, let outcome):
             print("[plan] step \(index)/\(total) \(outcome) - \(title)")
+        case .subagentAssigned(_, let title, let role, let goal):
+            print("[subagent] assigned \(role) - \(title)")
+            print(goal)
         case .subagentStarted(_, let title, let maxIterations):
             print("[subagent] started - \(title) (max \(maxIterations) iterations)")
+        case .subagentHandoff(_, let title, let role, let summary, let remainingItems):
+            print("[subagent] handoff \(role) - \(title)")
+            print(summary)
+            if !remainingItems.isEmpty {
+                print("[subagent] remaining: \(remainingItems.joined(separator: ", "))")
+            }
         case .subagentFinished(_, let title, let summary):
             print("[subagent] finished - \(title)")
             print(summary)
@@ -250,6 +259,11 @@ struct CLIConfiguration {
         let persistence = SQLitePersistenceStore(databaseURL: storageRoot.appendingPathComponent("ashex.sqlite"))
         let workspaceSnapshot = WorkspaceSnapshotBuilder.capture(workspaceRoot: workspaceURL)
         let shellPolicy = ShellCommandPolicy(config: userConfig.shell)
+        let shellExecutionPolicy = ShellExecutionPolicy(
+            sandbox: userConfig.sandbox,
+            network: userConfig.network,
+            shell: shellPolicy
+        )
         let workspaceGuard = WorkspaceGuard(rootURL: workspaceURL, sandbox: userConfig.sandbox)
         return try AgentRuntime(
             modelAdapter: makeModelAdapter(provider: provider, model: model),
@@ -262,13 +276,12 @@ struct CLIConfiguration {
                 ShellTool(
                     executionRuntime: ProcessExecutionRuntime(),
                     workspaceURL: workspaceURL,
-                    commandPolicy: shellPolicy
+                    executionPolicy: shellExecutionPolicy
                 ),
             ]),
             persistence: persistence,
             approvalPolicy: approvalPolicy,
-            shellCommandPolicy: shellPolicy,
-            sandboxPolicy: userConfig.sandbox,
+            shellExecutionPolicy: shellExecutionPolicy,
             workspaceSnapshot: workspaceSnapshot
         )
     }

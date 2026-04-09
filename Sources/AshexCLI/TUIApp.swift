@@ -915,10 +915,68 @@ final class TUIApp {
         terminalLines.append("[command] \(command)")
 
         let runtime = ProcessExecutionRuntime()
+        let shellPolicy = ShellCommandPolicy(config: sessionUserConfig.shell)
+        let executionPolicy = ShellExecutionPolicy(
+            sandbox: sessionUserConfig.sandbox,
+            network: sessionUserConfig.network,
+            shell: shellPolicy
+        )
+        switch executionPolicy.assess(command: command) {
+        case .allow:
+            break
+        case .deny(let message):
+            terminalLines.append("[error] \(message)")
+            statusLine = "Terminal command blocked"
+            render()
+            return
+        case .requireApproval(let message):
+            guard configuration.approvalMode == .guarded else {
+                terminalLines.append("[error] \(message)")
+                statusLine = "Terminal command requires guarded approval mode"
+                render()
+                return
+            }
+
+            Task { [weak self] in
+                guard let self else { return }
+                let decision = await self.requestApproval(
+                    ApprovalRequest(
+                        runID: UUID(),
+                        toolName: "shell",
+                        arguments: ["command": .string(command)],
+                        summary: "Terminal command requires approval",
+                        reason: "\(command)\n\(message)",
+                        risk: ShellExecutionPolicy.isNetworkCommand(command.lowercased()) ? .high : .medium
+                    )
+                )
+
+                await MainActor.run {
+                    guard decision.allowed else {
+                        self.terminalLines.append("[approval] denied - \(decision.reason)")
+                        self.statusLine = "Terminal command denied"
+                        self.render()
+                        return
+                    }
+                    self.runApprovedTerminalCommand(command: command, runtime: runtime, executionPolicy: executionPolicy, cancellation: cancellation)
+                }
+            }
+            return
+        }
+
+        runApprovedTerminalCommand(command: command, runtime: runtime, executionPolicy: executionPolicy, cancellation: cancellation)
+    }
+
+    private func runApprovedTerminalCommand(
+        command: String,
+        runtime: ProcessExecutionRuntime,
+        executionPolicy: ShellExecutionPolicy,
+        cancellation: CancellationToken
+    ) {
         let request = ShellExecutionRequest(
             command: command,
             workspaceURL: sessionWorkspaceRoot,
-            timeout: 30
+            timeout: 30,
+            executionPolicy: executionPolicy
         )
 
         terminalTask = Task { [weak self] in
@@ -1048,9 +1106,11 @@ final class TUIApp {
                 "",
                 "[local] Sandbox policy",
                 "Mode: \(sessionUserConfig.sandbox.mode.rawValue)",
+                "Network mode: \(sessionUserConfig.network.mode.rawValue)",
                 "Protected paths: \(sessionUserConfig.sandbox.protectedPaths.isEmpty ? "none" : sessionUserConfig.sandbox.protectedPaths.joined(separator: ", "))",
                 "Unknown commands require approval: \(sessionUserConfig.shell.requireApprovalForUnknownCommands ? "yes" : "no")",
                 "Rule actions: \(rules)",
+                "Network rules: \(sessionUserConfig.network.rules.isEmpty ? "none" : sessionUserConfig.network.rules.map { "\($0.action.rawValue): \($0.prefix)" }.joined(separator: ", "))",
                 "Workspace config: \(sessionUserConfigFile.path)",
                 "Global config: \(globalConfigLine)",
             ]
@@ -1234,8 +1294,16 @@ final class TUIApp {
             return ["[plan] step \(index)/\(total) started - \(title)"]
         case .taskStepFinished(_, let index, let total, let title, let outcome):
             return ["[plan] step \(index)/\(total) \(outcome) - \(title)"]
+        case .subagentAssigned(_, let title, let role, let goal):
+            return ["[subagent] assigned \(role) - \(title)"] + goal.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         case .subagentStarted(_, let title, let maxIterations):
             return ["[subagent] started - \(title) (max \(maxIterations) iterations)"]
+        case .subagentHandoff(_, let title, let role, let summary, let remainingItems):
+            var lines = ["[subagent] handoff \(role) - \(title)"] + summary.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+            if !remainingItems.isEmpty {
+                lines.append("[subagent] remaining \(remainingItems.joined(separator: ", "))")
+            }
+            return lines
         case .subagentFinished(_, let title, let summary):
             return ["[subagent] finished - \(title)"] + summary.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         case .changedFilesTracked(_, let paths):
@@ -1589,6 +1657,15 @@ final class TUIApp {
         } else {
             let renderedRules = shellPolicy.rules.map { "\($0.action.rawValue):\($0.prefix)" }.joined(separator: ", ")
             lines.append("\(TerminalUIStyle.slate)\(TerminalUIStyle.truncateVisible("Command rules: " + renderedRules, limit: width))\(TerminalUIStyle.reset)")
+        }
+        lines.append(
+            "\(TerminalUIStyle.slate)Network mode: \(sessionUserConfig.network.mode.rawValue)\(TerminalUIStyle.reset)"
+        )
+        if sessionUserConfig.network.rules.isEmpty {
+            lines.append("\(TerminalUIStyle.slate)Network rules: none\(TerminalUIStyle.reset)")
+        } else {
+            let renderedNetworkRules = sessionUserConfig.network.rules.map { "\($0.action.rawValue):\($0.prefix)" }.joined(separator: ", ")
+            lines.append("\(TerminalUIStyle.slate)\(TerminalUIStyle.truncateVisible("Network rules: " + renderedNetworkRules, limit: width))\(TerminalUIStyle.reset)")
         }
 
         lines.append("")
@@ -2960,6 +3037,11 @@ final class TUIApp {
         let modelAdapter = try configuration.makeModelAdapter(provider: provider, model: model)
         let persistence = SQLitePersistenceStore(databaseURL: sessionStorageRoot.appendingPathComponent("ashex.sqlite"))
         let shellPolicy = ShellCommandPolicy(config: sessionUserConfig.shell)
+        let shellExecutionPolicy = ShellExecutionPolicy(
+            sandbox: sessionUserConfig.sandbox,
+            network: sessionUserConfig.network,
+            shell: shellPolicy
+        )
         let workspaceGuard = WorkspaceGuard(rootURL: sessionWorkspaceRoot, sandbox: sessionUserConfig.sandbox)
         return try AgentRuntime(
             modelAdapter: modelAdapter,
@@ -2972,13 +3054,12 @@ final class TUIApp {
                 ShellTool(
                     executionRuntime: ProcessExecutionRuntime(),
                     workspaceURL: sessionWorkspaceRoot,
-                    commandPolicy: shellPolicy
+                    executionPolicy: shellExecutionPolicy
                 ),
             ]),
             persistence: persistence,
             approvalPolicy: approvalPolicy,
-            shellCommandPolicy: shellPolicy,
-            sandboxPolicy: sessionUserConfig.sandbox,
+            shellExecutionPolicy: shellExecutionPolicy,
             workspaceSnapshot: WorkspaceSnapshotBuilder.capture(workspaceRoot: sessionWorkspaceRoot)
         )
     }

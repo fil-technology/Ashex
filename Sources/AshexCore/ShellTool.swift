@@ -6,12 +6,12 @@ public struct ShellTool: Tool {
 
     private let executionRuntime: any ExecutionRuntime
     private let workspaceURL: URL
-    private let commandPolicy: ShellCommandPolicy
+    private let executionPolicy: ShellExecutionPolicy
 
-    public init(executionRuntime: any ExecutionRuntime, workspaceURL: URL, commandPolicy: ShellCommandPolicy) {
+    public init(executionRuntime: any ExecutionRuntime, workspaceURL: URL, executionPolicy: ShellExecutionPolicy) {
         self.executionRuntime = executionRuntime
         self.workspaceURL = workspaceURL
-        self.commandPolicy = commandPolicy
+        self.executionPolicy = executionPolicy
     }
 
     public func execute(arguments: JSONObject, context: ToolContext) async throws -> ToolContent {
@@ -19,11 +19,11 @@ public struct ShellTool: Tool {
             throw AshexError.invalidToolArguments("shell.command must be a non-empty string")
         }
 
-        try commandPolicy.validate(command: command)
+        try executionPolicy.validate(command: command)
 
         let timeoutSeconds = TimeInterval(arguments["timeout_seconds"]?.intValue ?? 30)
         let result = try await executionRuntime.execute(
-            .init(command: command, workspaceURL: workspaceURL, timeout: timeoutSeconds),
+            .init(command: command, workspaceURL: workspaceURL, timeout: timeoutSeconds, executionPolicy: executionPolicy),
             cancellationToken: context.cancellation,
             onStdout: { chunk in
                 context.emit(RuntimeEvent(payload: .toolOutput(

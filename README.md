@@ -113,6 +113,8 @@ Shell policy config in `ashex.config.json`:
 
 - `sandbox.mode`: `read_only`, `workspace_write`, or `danger_full_access`
 - `sandbox.protectedPaths`: workspace-relative paths that remain protected in `workspace_write` mode
+- `network.mode`: `allow`, `prompt`, or `deny` for network-affecting shell commands
+- `network.rules`: explicit network command prefix actions with `allow`, `prompt`, or `deny`
 - `allowList`: explicit command prefixes that are allowed to run
 - `denyList`: explicit command prefixes that are blocked
 - `rules`: explicit per-prefix actions with `allow`, `prompt`, or `deny`
@@ -145,6 +147,7 @@ In guarded mode:
 - shell commands outside configured allow/safe rules can also be escalated into the same approval flow
 - read-only sandbox mode blocks filesystem mutations and mutating shell commands before approval logic even runs
 - workspace-write sandbox mode protects sensitive paths like `.git`, `.ashex`, `.codex`, and `ashex.config.json` by default
+- network policy is enforced as a first-class rule for shell execution, including the side terminal pane
 
 TUI controls:
 
@@ -207,6 +210,7 @@ Current runtime capabilities also include:
 - a structured `apply_patch` file-edit path for multi-edit diff-native mutations
 - stalled-step recovery when the model keeps retrying without useful progress
 - bounded delegated subtasks for selected non-mutation phases, with a smaller iteration budget and visible subagent events
+- delegated subtasks now use an explicit assignment and handoff model with role, goal, and remaining-item reporting
 - final summaries that can include changed files, why they changed, and what remains
 - explicit sandbox-policy and approval-policy separation so execution constraints can evolve without rewriting the loop
 

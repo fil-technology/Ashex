@@ -30,8 +30,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         toolRegistry: ToolRegistry,
         persistence: PersistenceStore,
         approvalPolicy: any ApprovalPolicy = TrustedApprovalPolicy(),
-        shellCommandPolicy: ShellCommandPolicy? = nil,
-        sandboxPolicy: SandboxPolicyConfig? = nil,
+        shellExecutionPolicy: ShellExecutionPolicy? = nil,
         workspaceSnapshot: WorkspaceSnapshot? = nil,
         clock: @escaping @Sendable () -> Date = Date.init
     ) throws {
@@ -45,8 +44,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
             toolRegistry: toolRegistry,
             persistence: persistence,
             approvalPolicy: approvalPolicy,
-            shellCommandPolicy: shellCommandPolicy,
-            sandboxPolicy: sandboxPolicy,
+            shellExecutionPolicy: shellExecutionPolicy,
             clock: clock
         )
         try persistence.initialize()
@@ -296,13 +294,13 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         maxIterations: Int
     ) -> Bool {
         guard totalSteps >= 4, maxIterations >= 4 else { return false }
-        guard phase == .exploration || phase == .planning else { return false }
+        guard phase == .exploration || phase == .planning || phase == .validation else { return false }
 
         switch taskKind {
         case .bugFix, .feature, .refactor, .analysis, .general:
             return true
         case .docs, .git, .shell:
-            return phase == .exploration
+            return phase == .exploration || phase == .validation
         }
     }
 
@@ -319,12 +317,20 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         cancellation: CancellationToken,
         emitter: EventEmitter
     ) async throws -> StepExecutionOutcome {
+        let brief = DelegationStrategy.brief(
+            phase: stepPhase,
+            taskKind: taskKind,
+            stepTitle: stepTitle,
+            explorationPlan: explorationPlan
+        )
+        try emitter.emit(.subagentAssigned(runID: run.id, title: stepTitle, role: brief.role, goal: brief.goal), runID: run.id)
         try emitter.emit(.subagentStarted(runID: run.id, title: stepTitle, maxIterations: maxIterations), runID: run.id)
         let outcome = try await executeSubagentLoop(
             thread: thread,
             run: run,
             stepPrompt: stepPrompt,
             stepTitle: stepTitle,
+            delegationBrief: brief,
             taskKind: taskKind,
             stepPhase: stepPhase,
             explorationPlan: explorationPlan,
@@ -332,6 +338,16 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
             maxIterations: maxIterations,
             cancellation: cancellation,
             emitter: emitter
+        )
+        try emitter.emit(
+            .subagentHandoff(
+                runID: run.id,
+                title: stepTitle,
+                role: brief.role,
+                summary: outcome.summary,
+                remainingItems: outcome.remainingItems
+            ),
+            runID: run.id
         )
         try emitter.emit(.subagentFinished(runID: run.id, title: stepTitle, summary: outcome.summary), runID: run.id)
         return outcome
@@ -576,6 +592,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         run: RunRecord,
         stepPrompt: String,
         stepTitle: String,
+        delegationBrief: DelegationBrief,
         taskKind: TaskKind,
         stepPhase: PlannedStepPhase,
         explorationPlan: ExplorationPlan,
@@ -594,7 +611,15 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                 Delegated subtask:
                 \(stepPrompt)
 
-                You are a bounded subagent. Stay within this step only, do not expand scope, and finish with a concise summary.
+                Delegation role: \(delegationBrief.role)
+                Goal: \(delegationBrief.goal)
+                Deliverables:
+                \(delegationBrief.deliverables.map { "- \($0)" }.joined(separator: "\n"))
+
+                You are a bounded subagent. Stay within this step only, do not expand scope, and finish with a concise handoff using:
+                SUMMARY:
+                FINDINGS:
+                REMAINING:
                 """,
                 createdAt: clock()
             )

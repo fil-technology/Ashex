@@ -295,6 +295,7 @@ Already implemented in the repo:
 - Explicit workspace sandbox modes with protected-path enforcement
 - Rule-based shell command policy with allow / prompt / deny behavior
 - Global plus project-local policy loading with project precedence
+- First-class network policy for shell execution
 - Task planning and phase-aware execution
 - Inspect-before-mutate enforcement
 - Working memory and workspace snapshot persistence
@@ -324,8 +325,9 @@ Likely next highest-value step:
   - stronger validation execution and check selection
   - richer patch planning and multi-file edit workflows
   - even stronger longer-session memory quality and thread continuation behavior
-  - stronger multi-agent orchestration beyond the current bounded delegation layer
-  - deeper safety/sandbox hardening
+- stronger multi-agent orchestration beyond the current bounded delegation layer
+- deeper safety/sandbox hardening
+- more managed subagent assignment / handoff coordination
   - continued session / harness / tool-execution decoupling as the runtime grows
 
 After that:

@@ -22,8 +22,7 @@ struct ToolExecutor: Sendable {
     let toolRegistry: ToolRegistry
     let persistence: PersistenceStore
     let approvalPolicy: any ApprovalPolicy
-    let shellCommandPolicy: ShellCommandPolicy?
-    let sandboxPolicy: SandboxPolicyConfig?
+    let shellExecutionPolicy: ShellExecutionPolicy?
     let clock: @Sendable () -> Date
 
     func execute(
@@ -154,13 +153,9 @@ struct ToolExecutor: Sendable {
             return nil
         }
 
-        if let sandboxPolicy, sandboxPolicy.mode == .readOnly, isMutatingShellCommand(command) {
-            return "Tool error: workspace sandbox is read-only, so mutating shell commands are blocked. Switch sandbox mode in ashex.config.json if you want to allow workspace writes."
-        }
+        guard let shellExecutionPolicy else { return nil }
 
-        guard let shellCommandPolicy else { return nil }
-
-        switch shellCommandPolicy.assess(command: command) {
+        switch shellExecutionPolicy.assess(command: command) {
         case .allow:
             return nil
         case .requireApproval(let message):
@@ -174,15 +169,11 @@ struct ToolExecutor: Sendable {
     private func shellApprovalRequest(for call: ToolCallRequest, runID: UUID) -> ApprovalRequest? {
         guard call.toolName == "shell",
               let command = call.arguments["command"]?.stringValue,
-              let shellCommandPolicy else {
+              let shellExecutionPolicy else {
             return nil
         }
 
-        if let sandboxPolicy, sandboxPolicy.mode == .readOnly, isMutatingShellCommand(command) {
-            return nil
-        }
-
-        guard case .requireApproval(let message) = shellCommandPolicy.assess(command: command) else {
+        guard case .requireApproval(let message) = shellExecutionPolicy.assess(command: command) else {
             return nil
         }
 
@@ -211,19 +202,10 @@ struct ToolExecutor: Sendable {
             return ["write_text_file", "replace_in_file", "apply_patch", "create_directory", "delete_path", "move_path", "copy_path"].contains(operation)
         case "shell":
             let command = call.arguments["command"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            return isMutatingShellCommand(command)
+            return ShellExecutionPolicy.isMutatingShellCommand(command)
         default:
             return false
         }
-    }
-
-    private func isMutatingShellCommand(_ command: String) -> Bool {
-        let lowered = command.lowercased()
-        let prefixes = ["rm ", "mv ", "cp ", "mkdir ", "touch ", "sed -i", "perl -pi", "python ", "python3 ", "node ", "tee ", "echo "]
-        if prefixes.contains(where: { lowered.hasPrefix($0) }) {
-            return true
-        }
-        return lowered.contains(" > ") || lowered.contains(">>")
     }
 
     private func metadata(for call: ToolCallRequest, result: ToolContent) -> ToolExecutionMetadata {
@@ -235,7 +217,7 @@ struct ToolExecutor: Sendable {
             return .init(inspectedPaths: [".git"], changedPaths: [], validationArtifacts: gitValidationArtifacts(operation: operation), summary: "inspected git \(operation)", representsProgress: true)
         case "shell":
             let command = call.arguments["command"]?.stringValue ?? "shell"
-            if isMutatingShellCommand(command) {
+            if ShellExecutionPolicy.isMutatingShellCommand(command) {
                 return .init(inspectedPaths: [], changedPaths: ["<shell>"], validationArtifacts: [], summary: "executed mutating shell command", representsProgress: true)
             }
             return .init(inspectedPaths: ["<shell>"], changedPaths: [], validationArtifacts: shellValidationArtifacts(command: command), summary: "inspected via shell", representsProgress: true)

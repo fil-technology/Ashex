@@ -4,11 +4,13 @@ public struct ShellExecutionRequest: Sendable {
     public let command: String
     public let workspaceURL: URL
     public let timeout: TimeInterval
+    public let executionPolicy: ShellExecutionPolicy?
 
-    public init(command: String, workspaceURL: URL, timeout: TimeInterval) {
+    public init(command: String, workspaceURL: URL, timeout: TimeInterval, executionPolicy: ShellExecutionPolicy? = nil) {
         self.command = command
         self.workspaceURL = workspaceURL
         self.timeout = timeout
+        self.executionPolicy = executionPolicy
     }
 }
 
@@ -38,6 +40,7 @@ public final class ProcessExecutionRuntime: ExecutionRuntime {
         onStderr: @escaping @Sendable (String) -> Void
     ) async throws -> ShellExecutionResult {
         try await cancellationToken.checkCancellation()
+        try request.executionPolicy?.validate(command: request.command)
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")

@@ -3,15 +3,18 @@ import Foundation
 public struct AshexUserConfig: Codable, Sendable {
     public var version: Int
     public var sandbox: SandboxPolicyConfig
+    public var network: NetworkPolicyConfig
     public var shell: ShellCommandPolicyConfig
 
     public init(
         version: Int = 1,
         sandbox: SandboxPolicyConfig = .default,
+        network: NetworkPolicyConfig = .default,
         shell: ShellCommandPolicyConfig = .default
     ) {
         self.version = version
         self.sandbox = sandbox
+        self.network = network
         self.shell = shell
     }
 
@@ -20,6 +23,7 @@ public struct AshexUserConfig: Codable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case version
         case sandbox
+        case network
         case shell
     }
 
@@ -27,6 +31,7 @@ public struct AshexUserConfig: Codable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         version = try container.decodeIfPresent(Int.self, forKey: .version) ?? 1
         sandbox = try container.decodeIfPresent(SandboxPolicyConfig.self, forKey: .sandbox) ?? .default
+        network = try container.decodeIfPresent(NetworkPolicyConfig.self, forKey: .network) ?? .default
         shell = try container.decodeIfPresent(ShellCommandPolicyConfig.self, forKey: .shell) ?? .default
     }
 }
@@ -68,6 +73,50 @@ public struct SandboxPolicyConfig: Codable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         mode = try container.decodeIfPresent(WorkspaceSandboxMode.self, forKey: .mode) ?? .workspaceWrite
         protectedPaths = try container.decodeIfPresent([String].self, forKey: .protectedPaths) ?? Self.default.protectedPaths
+    }
+}
+
+public enum NetworkAccessMode: String, Codable, Sendable, CaseIterable {
+    case allow
+    case prompt
+    case deny
+}
+
+public struct NetworkCommandRuleConfig: Codable, Sendable {
+    public var prefix: String
+    public var action: ShellCommandRuleAction
+    public var reason: String?
+
+    public init(prefix: String, action: ShellCommandRuleAction, reason: String? = nil) {
+        self.prefix = prefix
+        self.action = action
+        self.reason = reason
+    }
+}
+
+public struct NetworkPolicyConfig: Codable, Sendable {
+    public var mode: NetworkAccessMode
+    public var rules: [NetworkCommandRuleConfig]
+
+    public init(mode: NetworkAccessMode, rules: [NetworkCommandRuleConfig] = []) {
+        self.mode = mode
+        self.rules = rules
+    }
+
+    public static let `default` = NetworkPolicyConfig(
+        mode: .allow,
+        rules: []
+    )
+
+    private enum CodingKeys: String, CodingKey {
+        case mode
+        case rules
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        mode = try container.decodeIfPresent(NetworkAccessMode.self, forKey: .mode) ?? .allow
+        rules = try container.decodeIfPresent([NetworkCommandRuleConfig].self, forKey: .rules) ?? []
     }
 }
 

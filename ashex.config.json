@@ -8,6 +8,12 @@
       "ashex.config.json"
     ]
   },
+  "network" : {
+    "mode" : "allow",
+    "rules" : [
+
+    ]
+  },
   "shell" : {
     "allowList" : [
 

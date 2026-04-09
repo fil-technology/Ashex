@@ -2,7 +2,11 @@ import AshexCore
 import Foundation
 import Testing
 
-private let testShellPolicy = ShellCommandPolicy(config: .default)
+private let testShellExecutionPolicy = ShellExecutionPolicy(
+    sandbox: .default,
+    network: .default,
+    shell: ShellCommandPolicy(config: .default)
+)
 
 @Test func workspaceGuardRejectsTraversal() throws {
     let root = URL(fileURLWithPath: "/tmp/ashex-tests/root")
@@ -69,7 +73,7 @@ private let testShellPolicy = ShellCommandPolicy(config: .default)
         modelAdapter: MockModelAdapter(),
         toolRegistry: ToolRegistry(tools: [
             FileSystemTool(workspaceGuard: WorkspaceGuard(rootURL: root)),
-            ShellTool(executionRuntime: ProcessExecutionRuntime(), workspaceURL: root, commandPolicy: testShellPolicy),
+            ShellTool(executionRuntime: ProcessExecutionRuntime(), workspaceURL: root, executionPolicy: testShellExecutionPolicy),
         ]),
         persistence: SQLitePersistenceStore(databaseURL: dbURL)
     )
@@ -143,7 +147,7 @@ private let testShellPolicy = ShellCommandPolicy(config: .default)
         ]),
         toolRegistry: ToolRegistry(tools: [
             FileSystemTool(workspaceGuard: WorkspaceGuard(rootURL: root)),
-            ShellTool(executionRuntime: ProcessExecutionRuntime(), workspaceURL: root, commandPolicy: testShellPolicy),
+            ShellTool(executionRuntime: ProcessExecutionRuntime(), workspaceURL: root, executionPolicy: testShellExecutionPolicy),
         ]),
         persistence: SQLitePersistenceStore(databaseURL: dbURL)
     )
@@ -172,7 +176,7 @@ private let testShellPolicy = ShellCommandPolicy(config: .default)
         ]),
         toolRegistry: ToolRegistry(tools: [
             FileSystemTool(workspaceGuard: WorkspaceGuard(rootURL: root)),
-            ShellTool(executionRuntime: ProcessExecutionRuntime(), workspaceURL: root, commandPolicy: testShellPolicy),
+            ShellTool(executionRuntime: ProcessExecutionRuntime(), workspaceURL: root, executionPolicy: testShellExecutionPolicy),
         ]),
         persistence: SQLitePersistenceStore(databaseURL: dbURL)
     )
@@ -214,7 +218,7 @@ private let testShellPolicy = ShellCommandPolicy(config: .default)
         ]),
         toolRegistry: ToolRegistry(tools: [
             FileSystemTool(workspaceGuard: WorkspaceGuard(rootURL: root)),
-            ShellTool(executionRuntime: ProcessExecutionRuntime(), workspaceURL: root, commandPolicy: testShellPolicy),
+            ShellTool(executionRuntime: ProcessExecutionRuntime(), workspaceURL: root, executionPolicy: testShellExecutionPolicy),
         ]),
         persistence: SQLitePersistenceStore(databaseURL: dbURL)
     )
@@ -251,7 +255,7 @@ private let testShellPolicy = ShellCommandPolicy(config: .default)
         modelAdapter: SequencedModelAdapter(actions: [.finalAnswer("done"), .finalAnswer("done"), .finalAnswer("done"), .finalAnswer("done")]),
         toolRegistry: ToolRegistry(tools: [
             FileSystemTool(workspaceGuard: WorkspaceGuard(rootURL: root)),
-            ShellTool(executionRuntime: ProcessExecutionRuntime(), workspaceURL: root, commandPolicy: testShellPolicy),
+            ShellTool(executionRuntime: ProcessExecutionRuntime(), workspaceURL: root, executionPolicy: testShellExecutionPolicy),
         ]),
         persistence: SQLitePersistenceStore(databaseURL: dbURL),
         workspaceSnapshot: snapshot
@@ -282,7 +286,7 @@ private let testShellPolicy = ShellCommandPolicy(config: .default)
         ]),
         toolRegistry: ToolRegistry(tools: [
             FileSystemTool(workspaceGuard: WorkspaceGuard(rootURL: root)),
-            ShellTool(executionRuntime: ProcessExecutionRuntime(), workspaceURL: root, commandPolicy: testShellPolicy),
+            ShellTool(executionRuntime: ProcessExecutionRuntime(), workspaceURL: root, executionPolicy: testShellExecutionPolicy),
         ]),
         persistence: SQLitePersistenceStore(databaseURL: dbURL),
         workspaceSnapshot: WorkspaceSnapshot(
@@ -294,18 +298,28 @@ private let testShellPolicy = ShellCommandPolicy(config: .default)
         )
     )
 
+    var sawSubagentAssignment = false
     var sawSubagentStart = false
+    var sawSubagentHandoff = false
     var sawSubagentFinish = false
     for await event in runtime.run(RunRequest(prompt: "implement a new feature in the runtime, validate it carefully, and summarize what remains")) {
+        if case .subagentAssigned = event.payload {
+            sawSubagentAssignment = true
+        }
         if case .subagentStarted = event.payload {
             sawSubagentStart = true
+        }
+        if case .subagentHandoff = event.payload {
+            sawSubagentHandoff = true
         }
         if case .subagentFinished = event.payload {
             sawSubagentFinish = true
         }
     }
 
+    #expect(sawSubagentAssignment)
     #expect(sawSubagentStart)
+    #expect(sawSubagentHandoff)
     #expect(sawSubagentFinish)
 }
 
@@ -343,7 +357,7 @@ private let testShellPolicy = ShellCommandPolicy(config: .default)
         ]),
         toolRegistry: ToolRegistry(tools: [
             FileSystemTool(workspaceGuard: WorkspaceGuard(rootURL: root)),
-            ShellTool(executionRuntime: ProcessExecutionRuntime(), workspaceURL: root, commandPolicy: testShellPolicy),
+            ShellTool(executionRuntime: ProcessExecutionRuntime(), workspaceURL: root, executionPolicy: testShellExecutionPolicy),
         ]),
         persistence: SQLitePersistenceStore(databaseURL: dbURL)
     )
@@ -385,7 +399,7 @@ private let testShellPolicy = ShellCommandPolicy(config: .default)
         ]),
         toolRegistry: ToolRegistry(tools: [
             FileSystemTool(workspaceGuard: WorkspaceGuard(rootURL: root)),
-            ShellTool(executionRuntime: ProcessExecutionRuntime(), workspaceURL: root, commandPolicy: testShellPolicy),
+            ShellTool(executionRuntime: ProcessExecutionRuntime(), workspaceURL: root, executionPolicy: testShellExecutionPolicy),
         ]),
         persistence: SQLitePersistenceStore(databaseURL: dbURL)
     )
@@ -440,7 +454,7 @@ private let testShellPolicy = ShellCommandPolicy(config: .default)
         ]),
         toolRegistry: ToolRegistry(tools: [
             FileSystemTool(workspaceGuard: WorkspaceGuard(rootURL: root)),
-            ShellTool(executionRuntime: ProcessExecutionRuntime(), workspaceURL: root, commandPolicy: testShellPolicy),
+            ShellTool(executionRuntime: ProcessExecutionRuntime(), workspaceURL: root, executionPolicy: testShellExecutionPolicy),
         ]),
         persistence: SQLitePersistenceStore(databaseURL: dbURL)
     )
@@ -493,7 +507,7 @@ private let testShellPolicy = ShellCommandPolicy(config: .default)
         ]),
         toolRegistry: ToolRegistry(tools: [
             FileSystemTool(workspaceGuard: WorkspaceGuard(rootURL: root)),
-            ShellTool(executionRuntime: ProcessExecutionRuntime(), workspaceURL: root, commandPolicy: testShellPolicy),
+            ShellTool(executionRuntime: ProcessExecutionRuntime(), workspaceURL: root, executionPolicy: testShellExecutionPolicy),
         ]),
         persistence: SQLitePersistenceStore(databaseURL: dbURL)
     )

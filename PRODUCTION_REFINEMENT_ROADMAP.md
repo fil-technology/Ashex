@@ -38,7 +38,11 @@ Recent architecture learnings we are now folding in:
   - protected workspace paths are now enforced separately from approval prompts
   - shell command policy now supports explicit allow / prompt / deny rules
   - config policy can now be layered from a global config and a project-local config with project precedence
-  - history loading now uses a session inspection boundary instead of reaching into persistence call-by-call from the TUI
+  - network policy is now a first-class execution rule for shell commands
+- history loading now uses a session inspection boundary instead of reaching into persistence call-by-call from the TUI
+- Delegation coordination has improved:
+  - delegated subtasks now have explicit assignment role/goal events
+  - delegated work now returns a visible handoff summary plus remaining items
 - The remaining refinement work below is still active
 
 ## Refinement Phase 1: Deeper Exploration And File Targeting
