@@ -114,6 +114,18 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                 completedStepSummaries: [],
                 unresolvedItems: [],
                 validationSuggestions: Self.validationSuggestions(for: request.prompt, taskKind: taskKind),
+                plannedChangeSet: initialExplorationPlan.targetPaths,
+                patchObjectives: PatchPlanningStrategy.build(
+                    taskKind: taskKind,
+                    prompt: request.prompt,
+                    explorationTargets: initialExplorationPlan.targetPaths,
+                    pendingExplorationTargets: initialExplorationPlan.targetPaths,
+                    inspectedPaths: [],
+                    changedPaths: [],
+                    recentFindings: [],
+                    workspaceSnapshot: initialWorkspaceSnapshotRecord
+                ).objectives,
+                carryForwardNotes: [],
                 summary: "Run created and waiting for planning/execution.",
                 now: clock()
             )
@@ -167,6 +179,16 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                     completedStepSummaries: stepSummaries,
                     unresolvedItems: stepSummaries.filter { $0.hasPrefix("Skipped:") },
                     overrideSuggestions: Self.validationSuggestions(for: request.prompt, taskKind: taskKind, phase: step.phase)
+                )
+                try emitPatchPlan(
+                    runID: run.id,
+                    taskKind: taskKind,
+                    prompt: request.prompt,
+                    explorationPlan: explorationPlan,
+                    workflowState: nil,
+                    changedFiles: changedFiles,
+                    recentFindings: [],
+                    emitter: emitter
                 )
                 try emitter.emit(.taskStepStarted(runID: run.id, index: index + 1, total: steps.count, title: step.title), runID: run.id)
                 let stepMessage = steps.count > 1
@@ -339,18 +361,41 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
             cancellation: cancellation,
             emitter: emitter
         )
+        let handoff = DelegationStrategy.parseHandoff(outcome.summary)
+        let mergedRemainingItems = Self.orderedUniqueStrings(from: handoff.remainingItems + outcome.remainingItems)
+        try persistWorkingMemory(
+            runID: run.id,
+            currentTask: stepPrompt,
+            currentPhase: stepPhase,
+            explorationPlan: explorationPlan,
+            workflowState: nil,
+            changedFiles: outcome.changedFiles,
+            summary: handoff.summary,
+            completedStepSummaries: [],
+            unresolvedItems: mergedRemainingItems,
+            overrideSuggestions: Self.validationSuggestions(for: stepPrompt, taskKind: taskKind, phase: stepPhase, changedFiles: outcome.changedFiles.map(\.path)),
+            carryForwardNotes: handoff.findings + mergedRemainingItems
+        )
+        try emitter.emit(
+            .patchPlanUpdated(
+                runID: run.id,
+                paths: handoff.recommendedPaths.isEmpty ? outcome.changedFiles.map(\.path) : handoff.recommendedPaths,
+                objectives: handoff.findings.isEmpty ? brief.deliverables : handoff.findings
+            ),
+            runID: run.id
+        )
         try emitter.emit(
             .subagentHandoff(
                 runID: run.id,
                 title: stepTitle,
                 role: brief.role,
-                summary: outcome.summary,
-                remainingItems: outcome.remainingItems
+                summary: handoff.summary,
+                remainingItems: mergedRemainingItems
             ),
             runID: run.id
         )
-        try emitter.emit(.subagentFinished(runID: run.id, title: stepTitle, summary: outcome.summary), runID: run.id)
-        return outcome
+        try emitter.emit(.subagentFinished(runID: run.id, title: stepTitle, summary: handoff.summary), runID: run.id)
+        return .init(summary: handoff.summary, changedFiles: outcome.changedFiles, validationNotes: outcome.validationNotes, remainingItems: mergedRemainingItems)
     }
 
     private func executeStep(
@@ -563,6 +608,16 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                         unresolvedItems: [],
                         overrideSuggestions: Self.validationSuggestions(for: stepPrompt, taskKind: taskKind, phase: stepPhase, changedFiles: changedFiles.map(\.path))
                     )
+                    try emitPatchPlan(
+                        runID: run.id,
+                        taskKind: taskKind,
+                        prompt: stepPrompt,
+                        explorationPlan: explorationPlan,
+                        workflowState: workflowState,
+                        changedFiles: changedFiles,
+                        recentFindings: workflowState.recentFindings,
+                        emitter: emitter
+                    )
                     if !newChanges.isEmpty {
                         try emitter.emit(.changedFilesTracked(runID: run.id, paths: newChanges.map(\.path)), runID: run.id)
                     }
@@ -620,6 +675,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                 SUMMARY:
                 FINDINGS:
                 REMAINING:
+                FILES:
                 """,
                 createdAt: clock()
             )
@@ -987,7 +1043,8 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         summary: String,
         completedStepSummaries: [String] = [],
         unresolvedItems: [String] = [],
-        overrideSuggestions: [String]? = nil
+        overrideSuggestions: [String]? = nil,
+        carryForwardNotes: [String] = []
     ) throws {
         let explorationTargets = explorationPlan?.targetPaths ?? workflowState?.explorationTargets ?? []
         let pendingExplorationTargets = workflowState?.pendingExplorationTargets ?? explorationTargets
@@ -995,6 +1052,22 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         let changedPaths = Self.orderedUniqueChanges(from: changedFiles).map(\.path)
         let recentFindings = workflowState?.recentFindings ?? []
         let suggestions = overrideSuggestions ?? Self.validationSuggestions(for: currentTask, taskKind: TaskPlanner.classify(prompt: currentTask), phase: currentPhase, changedFiles: changedPaths)
+        let patchPlan = PatchPlanningStrategy.build(
+            taskKind: TaskPlanner.classify(prompt: currentTask),
+            prompt: currentTask,
+            explorationTargets: explorationTargets,
+            pendingExplorationTargets: pendingExplorationTargets,
+            inspectedPaths: inspectedPaths,
+            changedPaths: changedPaths,
+            recentFindings: recentFindings,
+            workspaceSnapshot: try persistence.fetchWorkspaceSnapshot(runID: runID)
+        )
+        let carryForward = Self.orderedUniqueStrings(from:
+            carryForwardNotes
+            + (workflowState?.validationNotes ?? [])
+            + Array(recentFindings.suffix(3))
+            + Array(completedStepSummaries.suffix(3))
+        )
         _ = try persistence.upsertWorkingMemory(
             runID: runID,
             currentTask: currentTask,
@@ -1007,9 +1080,36 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
             completedStepSummaries: completedStepSummaries.suffix(6).map { $0 },
             unresolvedItems: unresolvedItems,
             validationSuggestions: suggestions,
+            plannedChangeSet: patchPlan.targetPaths,
+            patchObjectives: patchPlan.objectives,
+            carryForwardNotes: Array(carryForward.suffix(8)),
             summary: summary,
             now: clock()
         )
+    }
+
+    private func emitPatchPlan(
+        runID: UUID,
+        taskKind: TaskKind,
+        prompt: String,
+        explorationPlan: ExplorationPlan?,
+        workflowState: StepWorkflowState?,
+        changedFiles: [ChangedArtifact],
+        recentFindings: [String],
+        emitter: EventEmitter
+    ) throws {
+        let workingMemory = try persistence.fetchWorkingMemory(runID: runID)
+        let patchPlan = PatchPlanningStrategy.build(
+            taskKind: taskKind,
+            prompt: prompt,
+            explorationTargets: explorationPlan?.targetPaths ?? workflowState?.explorationTargets ?? workingMemory?.explorationTargets ?? [],
+            pendingExplorationTargets: workflowState?.pendingExplorationTargets ?? workingMemory?.pendingExplorationTargets ?? [],
+            inspectedPaths: workflowState.map { Array($0.inspectedArtifacts) } ?? workingMemory?.inspectedPaths ?? [],
+            changedPaths: Self.orderedUniqueChanges(from: changedFiles).map(\.path),
+            recentFindings: recentFindings + (workflowState?.recentFindings ?? []) + (workingMemory?.recentFindings ?? []),
+            workspaceSnapshot: try persistence.fetchWorkspaceSnapshot(runID: runID)
+        )
+        try emitter.emit(.patchPlanUpdated(runID: runID, paths: patchPlan.targetPaths, objectives: patchPlan.objectives), runID: runID)
     }
 
     private static func validationSuggestions(

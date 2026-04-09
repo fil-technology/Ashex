@@ -85,6 +85,11 @@ struct AshexCLI {
             print(summary)
         case .changedFilesTracked(_, let paths):
             print("[change] \(paths.joined(separator: ", "))")
+        case .patchPlanUpdated(_, let paths, let objectives):
+            print("[patch-plan] \(paths.isEmpty ? "forming" : paths.joined(separator: ", "))")
+            if !objectives.isEmpty {
+                print("[patch-plan] goals: \(objectives.joined(separator: " | "))")
+            }
         case .status(_, let message):
             print("[status] \(message)")
         case .messageAppended(_, _, let role):

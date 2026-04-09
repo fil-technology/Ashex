@@ -270,6 +270,9 @@ public struct WorkingMemoryRecord: Codable, Sendable, Equatable {
     public let completedStepSummaries: [String]
     public let unresolvedItems: [String]
     public let validationSuggestions: [String]
+    public let plannedChangeSet: [String]
+    public let patchObjectives: [String]
+    public let carryForwardNotes: [String]
     public let summary: String
     public let updatedAt: Date
 
@@ -286,6 +289,9 @@ public struct WorkingMemoryRecord: Codable, Sendable, Equatable {
         completedStepSummaries: [String],
         unresolvedItems: [String],
         validationSuggestions: [String],
+        plannedChangeSet: [String],
+        patchObjectives: [String],
+        carryForwardNotes: [String],
         summary: String,
         updatedAt: Date
     ) {
@@ -301,6 +307,9 @@ public struct WorkingMemoryRecord: Codable, Sendable, Equatable {
         self.completedStepSummaries = completedStepSummaries
         self.unresolvedItems = unresolvedItems
         self.validationSuggestions = validationSuggestions
+        self.plannedChangeSet = plannedChangeSet
+        self.patchObjectives = patchObjectives
+        self.carryForwardNotes = carryForwardNotes
         self.summary = summary
         self.updatedAt = updatedAt
     }

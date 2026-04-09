@@ -206,6 +206,9 @@ import Testing
         completedStepSummaries: [],
         unresolvedItems: [],
         validationSuggestions: ["swift test"],
+        plannedChangeSet: ["Sources/App.swift"],
+        patchObjectives: ["Keep the fix narrow."],
+        carryForwardNotes: ["Inspect the app entry point first."],
         summary: "Investigating app entry point",
         now: now
     )

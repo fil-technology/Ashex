@@ -305,14 +305,16 @@ Already implemented in the repo:
 - Validation gating that requires concrete verification before concluding edited runs
 - Structured patch-style file editing with diff-native summaries
 - Richer working memory with recent findings, completed steps, unresolved items, and better history replay context
+- Durable planned change sets, patch objectives, and carry-forward notes for longer coding sessions
 - Stalled-step recovery and stronger final summaries for larger tasks
+- More managed delegated handoffs with role/goal assignment and carry-forward integration
 
 Most important remaining work:
 
 - deeper automatic exploration and file targeting for bigger coding tasks
-- stronger validation execution and check selection beyond the current gating layer
-- richer patch planning and multi-file edit workflows
-- even stronger longer-session memory quality and thread continuation behavior
+- stronger validation execution and check selection beyond the current automatic validation layer
+- deeper multi-file patch planning and execution status tracking
+- even stronger longer-session memory quality and thread continuation behavior beyond the current carry-forward notes
 - deeper secrets, safety, and sandboxing hardening beyond the current Keychain storage and shell-policy enforcement
 - richer multi-workspace/session UX beyond the new recent-workspace picker and previews
 - richer delegated-agent orchestration beyond the current bounded subtask flow

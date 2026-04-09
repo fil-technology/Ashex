@@ -184,6 +184,7 @@ Ashex is now split a bit more like a real coding-agent harness instead of pushin
 - `WorkingMemory` keeps a distilled per-run view of the current task, phase, inspected paths, changed paths, and suggested validation
 - working memory now also keeps recent findings, completed step summaries, and unresolved items for better long-session continuity
 - working memory now also keeps exploration targets and still-pending exploration targets for better file targeting during larger coding tasks
+- working memory now also keeps a planned change set, patch objectives, and carry-forward notes so longer coding sessions preserve intended file scope and open follow-ups
 - `ToolExecutor` owns tool resolution, approval checks, execution, persistence, and streaming tool events
 - `SessionInspector` provides a cleaner durable run/session inspection boundary over persisted events, steps, compactions, workspace snapshots, and working memory
 - `AgentRuntime` coordinates run lifecycle, step execution, and durable run-step state while staying smaller than before
@@ -194,6 +195,7 @@ The workflow layer is now more deliberate than a generic loop:
 - exploration and validation guidance changes by task kind
 - exploration steps now carry a concrete recommended inspect/search/read sequence based on the task and workspace snapshot
 - exploration targeting now persists likely files, roots, and search queries so history and resumed runs can see what the harness thought was worth inspecting
+- patch planning now persists an explicit planned file set and patch objectives before and during mutation-heavy work
 - the runtime carries those hints into the phased execution flow so coding tasks explore and validate more intentionally
 
 Current runtime capabilities also include:
@@ -208,9 +210,11 @@ Current runtime capabilities also include:
 - validation gating that asks the model for concrete verification before concluding an edited run
 - validation execution can now proactively run checks like `git diff`, read-back verification, and Swift package build/test commands when the model tries to conclude too early
 - a structured `apply_patch` file-edit path for multi-edit diff-native mutations
+- explicit patch-plan events that surface the current intended multi-file change set and its goals in the CLI/TUI
 - stalled-step recovery when the model keeps retrying without useful progress
 - bounded delegated subtasks for selected non-mutation phases, with a smaller iteration budget and visible subagent events
 - delegated subtasks now use an explicit assignment and handoff model with role, goal, and remaining-item reporting
+- delegated handoffs now feed back into working memory as carry-forward notes and recommended follow-up paths
 - final summaries that can include changed files, why they changed, and what remains
 - explicit sandbox-policy and approval-policy separation so execution constraints can evolve without rewriting the loop
 

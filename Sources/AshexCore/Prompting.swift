@@ -351,6 +351,7 @@ public enum PromptBuilder {
             - For coding or editing requests, prefer this workflow: explore relevant files first, plan briefly, then mutate, then validate, then summarize.
             - During exploration, bias toward `find_files`, `search_text`, `list_directory`, `file_info`, `read_text_file`, and read-only git inspection before changing anything.
             - During validation, prefer checking changed files, `git diff`, focused reads, and relevant test/build commands before concluding.
+            - When a patch plan is present in working memory, prefer staying within that planned file set unless new evidence justifies expanding it.
             - If a tool result already contains the needed information, prefer answering directly.
             - Keep final answers concise and useful.
             - Tool arguments must be valid JSON objects.
@@ -472,8 +473,17 @@ public enum PromptBuilder {
         if !memory.changedPaths.isEmpty {
             lines.append("Changed paths: \(memory.changedPaths.joined(separator: ", "))")
         }
+        if !memory.plannedChangeSet.isEmpty {
+            lines.append("Planned file set: \(memory.plannedChangeSet.joined(separator: ", "))")
+        }
+        if !memory.patchObjectives.isEmpty {
+            lines.append("Patch objectives: \(memory.patchObjectives.joined(separator: " | "))")
+        }
         if !memory.recentFindings.isEmpty {
             lines.append("Recent findings: \(memory.recentFindings.joined(separator: " | "))")
+        }
+        if !memory.carryForwardNotes.isEmpty {
+            lines.append("Carry-forward notes: \(memory.carryForwardNotes.joined(separator: " | "))")
         }
         if !memory.completedStepSummaries.isEmpty {
             lines.append("Completed steps: \(memory.completedStepSummaries.joined(separator: " | "))")

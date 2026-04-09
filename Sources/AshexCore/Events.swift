@@ -20,6 +20,7 @@ public enum RuntimeEventPayload: Codable, Sendable {
     case subagentHandoff(runID: UUID, title: String, role: String, summary: String, remainingItems: [String])
     case subagentFinished(runID: UUID, title: String, summary: String)
     case changedFilesTracked(runID: UUID, paths: [String])
+    case patchPlanUpdated(runID: UUID, paths: [String], objectives: [String])
     case status(runID: UUID, message: String)
     case messageAppended(runID: UUID, messageID: UUID, role: MessageRole)
     case approvalRequested(runID: UUID, toolName: String, summary: String, reason: String, risk: ApprovalRisk)

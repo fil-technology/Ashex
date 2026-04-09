@@ -130,6 +130,8 @@ final class TUIApp {
     private var terminalCancellation = CancellationToken()
     private var currentRunPhase: String?
     private var currentChangedFiles: [String] = []
+    private var currentPlannedFiles: [String] = []
+    private var currentPatchObjectives: [String] = []
     private var sessionInspector: SessionInspector
 
     init(configuration: CLIConfiguration) throws {
@@ -1253,9 +1255,14 @@ final class TUIApp {
             for path in paths where !currentChangedFiles.contains(path) {
                 currentChangedFiles.append(path)
             }
+        case .patchPlanUpdated(_, let paths, let objectives):
+            currentPlannedFiles = paths
+            currentPatchObjectives = objectives
         case .runStarted:
             currentRunPhase = nil
             currentChangedFiles = []
+            currentPlannedFiles = []
+            currentPatchObjectives = []
         default:
             break
         }
@@ -1308,6 +1315,12 @@ final class TUIApp {
             return ["[subagent] finished - \(title)"] + summary.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         case .changedFilesTracked(_, let paths):
             return ["[change] " + paths.joined(separator: ", ")]
+        case .patchPlanUpdated(_, let paths, let objectives):
+            var lines = ["[patch-plan] " + (paths.isEmpty ? "forming" : paths.joined(separator: ", "))]
+            if !objectives.isEmpty {
+                lines.append("[patch-plan] goals " + objectives.joined(separator: " | "))
+            }
+            return lines
         case .status(_, let message):
             return ["[status] \(message)"]
         case .messageAppended(_, _, let role):
@@ -1435,15 +1448,19 @@ final class TUIApp {
     private func workflowStrip(width: Int) -> String {
         let phaseLabel = currentRunPhase.map { "\($0)" } ?? (runFinished ? "idle" : "starting")
         let phase = "\(TerminalUIStyle.faint)phase\(TerminalUIStyle.reset) \(TerminalUIStyle.cyan)\(phaseLabel)\(TerminalUIStyle.reset)"
-        let changedSummary: String
-        if currentChangedFiles.isEmpty {
-            changedSummary = "\(TerminalUIStyle.faint)changed\(TerminalUIStyle.reset) \(TerminalUIStyle.slate)none\(TerminalUIStyle.reset)"
+        let rightSummary: String
+        if !currentPlannedFiles.isEmpty {
+            let preview = currentPlannedFiles.prefix(3).joined(separator: ", ")
+            let suffix = currentPlannedFiles.count > 3 ? " +\(currentPlannedFiles.count - 3)" : ""
+            rightSummary = "\(TerminalUIStyle.faint)plan\(TerminalUIStyle.reset) \(TerminalUIStyle.amber)\(preview)\(suffix)\(TerminalUIStyle.reset)"
+        } else if currentChangedFiles.isEmpty {
+            rightSummary = "\(TerminalUIStyle.faint)changed\(TerminalUIStyle.reset) \(TerminalUIStyle.slate)none\(TerminalUIStyle.reset)"
         } else {
             let preview = currentChangedFiles.prefix(3).joined(separator: ", ")
             let suffix = currentChangedFiles.count > 3 ? " +\(currentChangedFiles.count - 3)" : ""
-            changedSummary = "\(TerminalUIStyle.faint)changed\(TerminalUIStyle.reset) \(TerminalUIStyle.green)\(preview)\(suffix)\(TerminalUIStyle.reset)"
+            rightSummary = "\(TerminalUIStyle.faint)changed\(TerminalUIStyle.reset) \(TerminalUIStyle.green)\(preview)\(suffix)\(TerminalUIStyle.reset)"
         }
-        return join(left: phase, right: TerminalUIStyle.truncateVisible(changedSummary, limit: max(width / 2, 20)), width: width)
+        return join(left: phase, right: TerminalUIStyle.truncateVisible(rightSummary, limit: max(width / 2, 20)), width: width)
     }
 
     private func renderBody(width: Int, height: Int) -> [String] {
@@ -2971,8 +2988,17 @@ final class TUIApp {
                 if !memory.changedPaths.isEmpty {
                     runLines.append("  changed \(memory.changedPaths.joined(separator: ", "))")
                 }
+                if !memory.plannedChangeSet.isEmpty {
+                    runLines.append("  patch set \(memory.plannedChangeSet.joined(separator: ", "))")
+                }
+                if !memory.patchObjectives.isEmpty {
+                    runLines.append("  patch goals \(memory.patchObjectives.joined(separator: " | "))")
+                }
                 if !memory.recentFindings.isEmpty {
                     runLines.append("  findings \(memory.recentFindings.joined(separator: " | "))")
+                }
+                if !memory.carryForwardNotes.isEmpty {
+                    runLines.append("  carry \(memory.carryForwardNotes.joined(separator: " | "))")
                 }
                 if !memory.completedStepSummaries.isEmpty {
                     runLines.append("  completed \(memory.completedStepSummaries.joined(separator: " | "))")
@@ -3002,6 +3028,8 @@ final class TUIApp {
             runLines.append(contentsOf: events.flatMap { renderLines(for: $0.payload) })
             currentRunPhase = memory?.currentPhase
             currentChangedFiles = memory?.changedPaths ?? []
+            currentPlannedFiles = memory?.plannedChangeSet ?? []
+            currentPatchObjectives = memory?.patchObjectives ?? []
             transcriptScrollOffset = 0
             runFinished = true
             showHistory = false

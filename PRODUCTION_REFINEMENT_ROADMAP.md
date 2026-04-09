@@ -43,6 +43,12 @@ Recent architecture learnings we are now folding in:
 - Delegation coordination has improved:
   - delegated subtasks now have explicit assignment role/goal events
   - delegated work now returns a visible handoff summary plus remaining items
+  - delegated handoffs now feed carry-forward notes and recommended follow-up paths back into working memory
+- Multi-file patch planning has started:
+  - working memory now persists a planned change set and patch objectives
+  - the runtime emits visible patch-plan updates during planning and mutation
+- Long-session coherence has improved:
+  - working memory now persists carry-forward notes to preserve useful findings across later steps and resumed history views
 - The remaining refinement work below is still active
 
 ## Refinement Phase 1: Deeper Exploration And File Targeting

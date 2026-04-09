@@ -262,13 +262,18 @@ private let testShellExecutionPolicy = ShellExecutionPolicy(
     )
 
     var sawExplorationPlan = false
+    var sawPatchPlan = false
     for await event in runtime.run(RunRequest(prompt: "implement provider settings in the runtime and validate the result carefully")) {
         if case .status(_, let message) = event.payload, message.contains("Exploration plan:") {
             sawExplorationPlan = true
         }
+        if case .patchPlanUpdated(_, let paths, let objectives) = event.payload, !paths.isEmpty, !objectives.isEmpty {
+            sawPatchPlan = true
+        }
     }
 
     #expect(sawExplorationPlan)
+    #expect(sawPatchPlan)
 }
 
 @Test func runtimeCanDelegateBoundedSubagentSteps() async throws {
@@ -576,6 +581,9 @@ private let testShellExecutionPolicy = ShellExecutionPolicy(
         completedStepSummaries: ["Explored the harness files."],
         unresolvedItems: ["Need to validate context persistence."],
         validationSuggestions: ["git diff", "run targeted tests"],
+        plannedChangeSet: ["Sources/AshexCore/Prompting.swift", "README.md"],
+        patchObjectives: ["Keep the change set small.", "Preserve current behavior while improving context persistence."],
+        carryForwardNotes: ["Compaction logic is in Prompting.swift."],
         summary: "Collected relevant harness files.",
         now: now
     )
@@ -595,6 +603,9 @@ private let testShellExecutionPolicy = ShellExecutionPolicy(
     #expect(memory?.recentFindings == ["Inspected Prompting.swift and found compaction entry points."])
     #expect(memory?.completedStepSummaries == ["Explored the harness files."])
     #expect(memory?.unresolvedItems == ["Need to validate context persistence."])
+    #expect(memory?.plannedChangeSet == ["Sources/AshexCore/Prompting.swift", "README.md"])
+    #expect(memory?.patchObjectives == ["Keep the change set small.", "Preserve current behavior while improving context persistence."])
+    #expect(memory?.carryForwardNotes == ["Compaction logic is in Prompting.swift."])
 }
 
 @Test func ollamaGuardrailWarnsForMemoryHeavyModel() {
