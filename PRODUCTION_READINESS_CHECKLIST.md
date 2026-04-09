@@ -23,6 +23,7 @@ This checklist tracks the remaining work between Ashex's current production-shap
 ## Stronger Validation Quality
 
 - [x] Run proactive validation for SwiftPM, JavaScript package managers, Rust, and Go
+- [x] Add typed SwiftPM and Xcode build/test actions instead of relying only on raw shell commands
 - [ ] Add more framework-aware validations for Python, Ruby, and containerized projects
 - [ ] Distinguish "validation attempted" from "validation passed" more clearly in final summaries
 - [ ] Prefer targeted test scopes when enough file/module context is available

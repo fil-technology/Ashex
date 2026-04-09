@@ -8,6 +8,7 @@ Ashex is a minimal local agent runtime foundation for macOS, built as a small Sw
 - Multiple local coding tools behind a typed runtime:
   - `filesystem`
   - `git`
+  - `build`
   - `shell`
 - Live streaming runtime events for CLI or future UI consumers
 - SQLite persistence for threads, messages, runs, tool calls, and append-only events
@@ -31,6 +32,7 @@ swift run ashex
 swift run ashex "list files"
 swift run ashex "read README.md"
 swift run ashex 'write notes/todo.txt :: buy milk'
+swift run ashex "swift build"
 swift run ashex 'shell: ls -la'
 ```
 
@@ -211,6 +213,7 @@ Current runtime capabilities also include:
 - changed-file tracking during the run
 - validation gating that asks the model for concrete verification before concluding an edited run
 - validation execution can now proactively run checks like `git diff`, read-back verification, and workspace-aware build/test commands for SwiftPM, JavaScript package managers, Rust, and Go projects when the model tries to conclude too early
+- typed build actions for SwiftPM and Xcode projects, including `swift_build`, `swift_test`, `xcodebuild_list`, `xcodebuild_build`, and `xcodebuild_test`
 - a structured `apply_patch` file-edit path for multi-edit diff-native mutations
 - explicit patch-plan events that surface the current intended multi-file change set and its goals in the CLI/TUI
 - stalled-step recovery when the model keeps retrying without useful progress

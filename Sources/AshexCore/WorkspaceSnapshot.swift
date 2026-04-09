@@ -80,6 +80,7 @@ public enum WorkspaceSnapshotBuilder {
             "next.config.mjs",
         ]
         let projectMarkers = projectMarkerCandidates.filter { fileNames.contains($0) }
+            + directoryNames.filter { $0.hasSuffix(".xcodeproj") || $0.hasSuffix(".xcworkspace") }
 
         let sourceRootCandidates = ["Sources", "Source", "src", "app", "lib", "pkg", "internal", "cmd"]
         let sourceRoots = sourceRootCandidates.filter { directoryNames.contains($0) }

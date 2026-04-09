@@ -13,6 +13,7 @@ public struct ValidationAction: Sendable, Equatable {
 public enum ValidationStrategy {
     private struct WorkspaceMarkers {
         let topLevelEntries: Set<String>
+        let projectMarkers: Set<String>
         let hasPackageSwift: Bool
         let hasTests: Bool
         let hasPackageJSON: Bool
@@ -20,10 +21,14 @@ public enum ValidationStrategy {
         let hasYarnLock: Bool
         let hasCargoToml: Bool
         let hasGoMod: Bool
+        let xcodeWorkspace: String?
+        let xcodeProject: String?
 
         init(snapshot: WorkspaceSnapshotRecord?) {
             let entries = Set((snapshot?.topLevelEntries ?? []).map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "/")) })
+            let markers = Set(snapshot?.projectMarkers ?? [])
             self.topLevelEntries = entries
+            self.projectMarkers = markers
             self.hasPackageSwift = entries.contains("Package.swift")
             self.hasTests = entries.contains(where: { $0.hasPrefix("Tests") })
             self.hasPackageJSON = entries.contains("package.json")
@@ -31,6 +36,8 @@ public enum ValidationStrategy {
             self.hasYarnLock = entries.contains("yarn.lock")
             self.hasCargoToml = entries.contains("Cargo.toml")
             self.hasGoMod = entries.contains("go.mod")
+            self.xcodeWorkspace = markers.first(where: { $0.hasSuffix(".xcworkspace") })
+            self.xcodeProject = markers.first(where: { $0.hasSuffix(".xcodeproj") })
         }
     }
 
@@ -69,12 +76,22 @@ public enum ValidationStrategy {
             }
         }
 
+        if availableToolNames.contains("build") {
+            actions.append(contentsOf: buildValidationActions(
+                request: request,
+                taskKind: taskKind,
+                changedFiles: normalizedChangedFiles,
+                markers: markers
+            ))
+        }
+
         if availableToolNames.contains("shell") {
             actions.append(contentsOf: shellValidationActions(
                 request: request,
                 taskKind: taskKind,
                 changedFiles: normalizedChangedFiles,
-                markers: markers
+                markers: markers,
+                skippingSwiftAndXcode: availableToolNames.contains("build")
             ))
         }
 
@@ -84,7 +101,7 @@ public enum ValidationStrategy {
         }
     }
 
-    private static func shellValidationActions(
+    private static func buildValidationActions(
         request: String,
         taskKind: TaskKind,
         changedFiles: [String],
@@ -92,11 +109,6 @@ public enum ValidationStrategy {
     ) -> [ValidationAction] {
         let lowered = request.lowercased()
         let touchedSwift = changedFiles.contains { $0.hasSuffix(".swift") || $0 == "Package.swift" }
-        let touchedJS = changedFiles.contains { path in
-            [".js", ".jsx", ".ts", ".tsx", ".json"].contains(where: path.hasSuffix)
-        }
-        let touchedRust = changedFiles.contains { $0.hasSuffix(".rs") || $0 == "Cargo.toml" }
-        let touchedGo = changedFiles.contains { $0.hasSuffix(".go") || $0 == "go.mod" }
         let wantsTests = lowered.contains("test") || lowered.contains("bug") || lowered.contains("fix") || taskKind == .bugFix
         let wantsBuild = lowered.contains("build") || lowered.contains("compile") || touchedSwift || taskKind == .feature || taskKind == .refactor
         var actions: [ValidationAction] = []
@@ -104,8 +116,8 @@ public enum ValidationStrategy {
         if markers.hasPackageSwift && wantsBuild {
             actions.append(.init(
                 summary: "Run `swift build` to validate the changed Swift package code.",
-                call: .init(toolName: "shell", arguments: [
-                    "command": .string("swift build"),
+                call: .init(toolName: "build", arguments: [
+                    "operation": .string("swift_build"),
                     "timeout_seconds": .number(120),
                 ])
             ))
@@ -114,11 +126,80 @@ public enum ValidationStrategy {
         if markers.hasPackageSwift && (wantsTests || (markers.hasTests && touchedSwift)) {
             actions.append(.init(
                 summary: "Run `swift test` to validate the changed Swift package code.",
-                call: .init(toolName: "shell", arguments: [
-                    "command": .string("swift test"),
+                call: .init(toolName: "build", arguments: [
+                    "operation": .string("swift_test"),
                     "timeout_seconds": .number(120),
                 ])
             ))
+        }
+
+        if let workspace = markers.xcodeWorkspace ?? markers.xcodeProject, wantsBuild {
+            var buildArguments: JSONObject = [
+                "operation": .string("xcodebuild_build"),
+                "timeout_seconds": .number(180),
+            ]
+            if workspace.hasSuffix(".xcworkspace") {
+                buildArguments["workspace"] = .string(workspace)
+            } else {
+                buildArguments["project"] = .string(workspace)
+            }
+            actions.append(.init(
+                summary: "Run `xcodebuild build` to validate the Xcode project or workspace.",
+                call: .init(toolName: "build", arguments: buildArguments)
+            ))
+
+            if wantsTests || taskKind == .bugFix {
+                var testArguments = buildArguments
+                testArguments["operation"] = .string("xcodebuild_test")
+                actions.append(.init(
+                    summary: "Run `xcodebuild test` to validate the Xcode project or workspace.",
+                    call: .init(toolName: "build", arguments: testArguments)
+                ))
+            }
+        }
+
+        return actions
+    }
+
+    private static func shellValidationActions(
+        request: String,
+        taskKind: TaskKind,
+        changedFiles: [String],
+        markers: WorkspaceMarkers,
+        skippingSwiftAndXcode: Bool
+    ) -> [ValidationAction] {
+        let lowered = request.lowercased()
+        let touchedJS = changedFiles.contains { path in
+            [".js", ".jsx", ".ts", ".tsx", ".json"].contains(where: path.hasSuffix)
+        }
+        let touchedRust = changedFiles.contains { $0.hasSuffix(".rs") || $0 == "Cargo.toml" }
+        let touchedGo = changedFiles.contains { $0.hasSuffix(".go") || $0 == "go.mod" }
+        let wantsTests = lowered.contains("test") || lowered.contains("bug") || lowered.contains("fix") || taskKind == .bugFix
+        var actions: [ValidationAction] = []
+
+        if !skippingSwiftAndXcode {
+            let touchedSwift = changedFiles.contains { $0.hasSuffix(".swift") || $0 == "Package.swift" }
+            let wantsBuild = lowered.contains("build") || lowered.contains("compile") || touchedSwift || taskKind == .feature || taskKind == .refactor
+
+            if markers.hasPackageSwift && wantsBuild {
+                actions.append(.init(
+                    summary: "Run `swift build` to validate the changed Swift package code.",
+                    call: .init(toolName: "shell", arguments: [
+                        "command": .string("swift build"),
+                        "timeout_seconds": .number(120),
+                    ])
+                ))
+            }
+
+            if markers.hasPackageSwift && (wantsTests || (markers.hasTests && touchedSwift)) {
+                actions.append(.init(
+                    summary: "Run `swift test` to validate the changed Swift package code.",
+                    call: .init(toolName: "shell", arguments: [
+                        "command": .string("swift test"),
+                        "timeout_seconds": .number(120),
+                    ])
+                ))
+            }
         }
 
         if markers.hasPackageJSON && (taskKind == .feature || taskKind == .bugFix || taskKind == .refactor || touchedJS) {

@@ -278,6 +278,10 @@ struct CLIConfiguration {
                     executionRuntime: ProcessExecutionRuntime(),
                     workspaceURL: workspaceURL
                 ),
+                BuildTool(
+                    executionRuntime: ProcessExecutionRuntime(),
+                    workspaceURL: workspaceURL
+                ),
                 ShellTool(
                     executionRuntime: ProcessExecutionRuntime(),
                     workspaceURL: workspaceURL,

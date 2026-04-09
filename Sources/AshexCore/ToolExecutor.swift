@@ -200,6 +200,8 @@ struct ToolExecutor: Sendable {
         case "filesystem":
             let operation = call.arguments["operation"]?.stringValue ?? ""
             return ["write_text_file", "replace_in_file", "apply_patch", "create_directory", "delete_path", "move_path", "copy_path"].contains(operation)
+        case "build":
+            return false
         case "shell":
             let command = call.arguments["command"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             return ShellExecutionPolicy.isMutatingShellCommand(command)
@@ -215,6 +217,8 @@ struct ToolExecutor: Sendable {
         case "git":
             let operation = call.arguments["operation"]?.stringValue ?? "git"
             return .init(inspectedPaths: [".git"], changedPaths: [], validationArtifacts: gitValidationArtifacts(operation: operation), summary: "inspected git \(operation)", representsProgress: true)
+        case "build":
+            return buildMetadata(call: call)
         case "shell":
             let command = call.arguments["command"]?.stringValue ?? "shell"
             if ShellExecutionPolicy.isMutatingShellCommand(command) {
@@ -264,5 +268,31 @@ struct ToolExecutor: Sendable {
             "yarn test", "cargo test", "go test", "bundle exec rspec", "gradle test", "make test"
         ]
         return validationPrefixes.contains(where: lowered.hasPrefix) ? ["<check>"] : []
+    }
+
+    private func buildMetadata(call: ToolCallRequest) -> ToolExecutionMetadata {
+        let operation = call.arguments["operation"]?.stringValue ?? "build"
+        let summary: String
+        switch operation {
+        case "swift_build":
+            summary = "validated with swift build"
+        case "swift_test":
+            summary = "validated with swift test"
+        case "xcodebuild_list":
+            summary = "inspected xcodebuild targets"
+        case "xcodebuild_build":
+            summary = "validated with xcodebuild build"
+        case "xcodebuild_test":
+            summary = "validated with xcodebuild test"
+        default:
+            summary = "validated with build tool"
+        }
+        return .init(
+            inspectedPaths: operation == "xcodebuild_list" ? ["<build>"] : [],
+            changedPaths: [],
+            validationArtifacts: ["<build>"],
+            summary: summary,
+            representsProgress: true
+        )
     }
 }

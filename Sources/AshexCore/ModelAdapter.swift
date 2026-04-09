@@ -142,6 +142,27 @@ private enum ModelPromptRenderer {
                     "command": .object([
                         "type": .array([.string("string"), .string("null")]),
                     ]),
+                    "workspace": .object([
+                        "type": .array([.string("string"), .string("null")]),
+                    ]),
+                    "project": .object([
+                        "type": .array([.string("string"), .string("null")]),
+                    ]),
+                    "scheme": .object([
+                        "type": .array([.string("string"), .string("null")]),
+                    ]),
+                    "configuration": .object([
+                        "type": .array([.string("string"), .string("null")]),
+                    ]),
+                    "destination": .object([
+                        "type": .array([.string("string"), .string("null")]),
+                    ]),
+                    "sdk": .object([
+                        "type": .array([.string("string"), .string("null")]),
+                    ]),
+                    "derived_data_path": .object([
+                        "type": .array([.string("string"), .string("null")]),
+                    ]),
                     "timeout_seconds": .object([
                         "type": .array([.string("number"), .string("null")]),
                     ]),
@@ -162,6 +183,13 @@ private enum ModelPromptRenderer {
                     .string("commit"),
                     .string("create_directories"),
                     .string("command"),
+                    .string("workspace"),
+                    .string("project"),
+                    .string("scheme"),
+                    .string("configuration"),
+                    .string("destination"),
+                    .string("sdk"),
+                    .string("derived_data_path"),
                     .string("timeout_seconds"),
                 ]),
                 "additionalProperties": .bool(false),
@@ -440,6 +468,24 @@ public struct MockModelAdapter: ModelAdapter {
             ]))
         }
 
+        if prompt.contains("swift build") {
+            return .toolCall(.init(toolName: "build", arguments: [
+                "operation": .string("swift_build"),
+            ]))
+        }
+
+        if prompt.contains("swift test") {
+            return .toolCall(.init(toolName: "build", arguments: [
+                "operation": .string("swift_test"),
+            ]))
+        }
+
+        if prompt.contains("xcodebuild") && prompt.contains("list") {
+            return .toolCall(.init(toolName: "build", arguments: [
+                "operation": .string("xcodebuild_list"),
+            ]))
+        }
+
         if let command = Self.extractPrefixedValue(from: lastMessage.content, prefixes: ["shell:", "run:"]) {
             return .toolCall(.init(toolName: "shell", arguments: [
                 "command": .string(command),
@@ -477,6 +523,8 @@ public struct MockModelAdapter: ModelAdapter {
         - write notes/todo.txt :: buy milk
         - mkdir notes/archive
         - shell: ls -la
+        - swift build
+        - swift test
         """)
     }
 
@@ -662,6 +710,8 @@ private enum ToolCallArgumentNormalizer {
             return "git"
         case "shell", "terminal", "command":
             return "shell"
+        case "build", "builder", "swiftpm", "xcode", "xcodebuild":
+            return "build"
         default:
             return toolName
         }
@@ -675,6 +725,8 @@ private enum ToolCallArgumentNormalizer {
             return normalizeGit(arguments: arguments)
         case "shell":
             return normalizeShell(arguments: arguments)
+        case "build":
+            return normalizeBuild(arguments: arguments)
         default:
             return arguments
         }
@@ -871,6 +923,65 @@ private enum ToolCallArgumentNormalizer {
         normalized.removeValue(forKey: "cmd")
         normalized.removeValue(forKey: "script")
         normalized.removeValue(forKey: "input")
+        if normalized["timeout_seconds"] == nil,
+           let timeout = arguments["timeout"]?.intValue ?? arguments["timeoutSecs"]?.intValue {
+            normalized["timeout_seconds"] = .number(Double(timeout))
+        }
+        normalized.removeValue(forKey: "timeout")
+        normalized.removeValue(forKey: "timeoutSecs")
+        return normalized
+    }
+
+    private static func normalizeBuild(arguments: JSONObject) -> JSONObject {
+        var normalized = arguments
+        if normalized["operation"] == nil,
+           let action = string(in: arguments, keys: ["action", "mode", "intent"])?.lowercased() {
+            switch action {
+            case "swift_build", "build_swift", "package_build", "spm_build", "build":
+                normalized["operation"] = .string("swift_build")
+            case "swift_test", "test_swift", "package_test", "spm_test", "test":
+                normalized["operation"] = .string("swift_test")
+            case "xcodebuild_list", "list", "xcode_list":
+                normalized["operation"] = .string("xcodebuild_list")
+            case "xcodebuild_build", "xcode_build":
+                normalized["operation"] = .string("xcodebuild_build")
+            case "xcodebuild_test", "xcode_test":
+                normalized["operation"] = .string("xcodebuild_test")
+            default:
+                break
+            }
+        }
+        normalized.removeValue(forKey: "action")
+        normalized.removeValue(forKey: "mode")
+        normalized.removeValue(forKey: "intent")
+
+        if normalized["workspace"] == nil,
+           let workspace = string(in: arguments, keys: ["workspace_path", "xcworkspace"]) {
+            normalized["workspace"] = .string(workspace)
+        }
+        normalized.removeValue(forKey: "workspace_path")
+        normalized.removeValue(forKey: "xcworkspace")
+
+        if normalized["project"] == nil,
+           let project = string(in: arguments, keys: ["project_path", "xcodeproj"]) {
+            normalized["project"] = .string(project)
+        }
+        normalized.removeValue(forKey: "project_path")
+        normalized.removeValue(forKey: "xcodeproj")
+
+        if normalized["scheme"] == nil,
+           let scheme = string(in: arguments, keys: ["target"]) {
+            normalized["scheme"] = .string(scheme)
+        }
+        normalized.removeValue(forKey: "target")
+
+        if normalized["derived_data_path"] == nil,
+           let derivedDataPath = string(in: arguments, keys: ["derivedDataPath", "derived_data"]) {
+            normalized["derived_data_path"] = .string(derivedDataPath)
+        }
+        normalized.removeValue(forKey: "derivedDataPath")
+        normalized.removeValue(forKey: "derived_data")
+
         if normalized["timeout_seconds"] == nil,
            let timeout = arguments["timeout"]?.intValue ?? arguments["timeoutSecs"]?.intValue {
             normalized["timeout_seconds"] = .number(Double(timeout))

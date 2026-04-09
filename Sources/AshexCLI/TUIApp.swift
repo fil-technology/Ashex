@@ -1601,6 +1601,8 @@ final class TUIApp {
             "\(TerminalUIStyle.blue)\(TerminalUIStyle.truncateVisible("Read a file: read README.md", limit: width))\(TerminalUIStyle.reset)",
             "\(TerminalUIStyle.blue)\(TerminalUIStyle.truncateVisible("List a directory: list files", limit: width))\(TerminalUIStyle.reset)",
             "\(TerminalUIStyle.blue)\(TerminalUIStyle.truncateVisible("Run shell: shell: git status", limit: width))\(TerminalUIStyle.reset)",
+            "\(TerminalUIStyle.blue)\(TerminalUIStyle.truncateVisible("Run Swift build: swift build", limit: width))\(TerminalUIStyle.reset)",
+            "\(TerminalUIStyle.blue)\(TerminalUIStyle.truncateVisible("Run Swift tests: swift test", limit: width))\(TerminalUIStyle.reset)",
             "\(TerminalUIStyle.blue)\(TerminalUIStyle.truncateVisible("Switch workspace live: /workspace /full/path/to/project", limit: width))\(TerminalUIStyle.reset)",
             "\(TerminalUIStyle.blue)\(TerminalUIStyle.truncateVisible("Aliases: :workspace /path, workspace /path, cd /path, /cd /path", limit: width))\(TerminalUIStyle.reset)",
             "\(TerminalUIStyle.blue)\(TerminalUIStyle.truncateVisible("Show current workspace: /pwd", limit: width))\(TerminalUIStyle.reset)",
@@ -1629,6 +1631,13 @@ final class TUIApp {
             "\(TerminalUIStyle.slate)diff_staged\(TerminalUIStyle.reset) Inspect staged changes",
             "\(TerminalUIStyle.slate)log\(TerminalUIStyle.reset) Show recent commit history",
             "\(TerminalUIStyle.slate)show_commit\(TerminalUIStyle.reset) Inspect one commit with patch and stats",
+            "",
+            "\(TerminalUIStyle.ink)Build Tool\(TerminalUIStyle.reset)",
+            "\(TerminalUIStyle.slate)swift_build\(TerminalUIStyle.reset) Run SwiftPM build in the workspace",
+            "\(TerminalUIStyle.slate)swift_test\(TerminalUIStyle.reset) Run SwiftPM tests in the workspace",
+            "\(TerminalUIStyle.slate)xcodebuild_list\(TerminalUIStyle.reset) List Xcode schemes and targets",
+            "\(TerminalUIStyle.slate)xcodebuild_build\(TerminalUIStyle.reset) Run xcodebuild build with typed options",
+            "\(TerminalUIStyle.slate)xcodebuild_test\(TerminalUIStyle.reset) Run xcodebuild test with typed options",
             "",
             "\(TerminalUIStyle.ink)Shell Tool\(TerminalUIStyle.reset)",
             "\(TerminalUIStyle.slate)command\(TerminalUIStyle.reset) Execute a shell command from the workspace root",
@@ -3085,6 +3094,10 @@ final class TUIApp {
             toolRegistry: ToolRegistry(tools: [
                 FileSystemTool(workspaceGuard: workspaceGuard),
                 GitTool(
+                    executionRuntime: ProcessExecutionRuntime(),
+                    workspaceURL: sessionWorkspaceRoot
+                ),
+                BuildTool(
                     executionRuntime: ProcessExecutionRuntime(),
                     workspaceURL: sessionWorkspaceRoot
                 ),

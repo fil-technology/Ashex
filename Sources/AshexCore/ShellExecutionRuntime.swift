@@ -19,6 +19,13 @@ public struct ShellExecutionResult: Sendable {
     public let stderr: String
     public let exitCode: Int32
     public let timedOut: Bool
+
+    public init(stdout: String, stderr: String, exitCode: Int32, timedOut: Bool) {
+        self.stdout = stdout
+        self.stderr = stderr
+        self.exitCode = exitCode
+        self.timedOut = timedOut
+    }
 }
 
 public protocol ExecutionRuntime: Sendable {

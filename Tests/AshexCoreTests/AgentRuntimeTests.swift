@@ -8,6 +8,31 @@ private let testShellExecutionPolicy = ShellExecutionPolicy(
     shell: ShellCommandPolicy(config: .default)
 )
 
+private final class RecordingExecutionRuntime: ExecutionRuntime, @unchecked Sendable {
+    private(set) var requests: [ShellExecutionRequest] = []
+    let result: ShellExecutionResult
+
+    init(result: ShellExecutionResult = .init(stdout: "ok", stderr: "", exitCode: 0, timedOut: false)) {
+        self.result = result
+    }
+
+    func execute(
+        _ request: ShellExecutionRequest,
+        cancellationToken: CancellationToken,
+        onStdout: @escaping @Sendable (String) -> Void,
+        onStderr: @escaping @Sendable (String) -> Void
+    ) async throws -> ShellExecutionResult {
+        requests.append(request)
+        if !result.stdout.isEmpty {
+            onStdout(result.stdout)
+        }
+        if !result.stderr.isEmpty {
+            onStderr(result.stderr)
+        }
+        return result
+    }
+}
+
 @Test func workspaceGuardRejectsTraversal() throws {
     let root = URL(fileURLWithPath: "/tmp/ashex-tests/root")
     let guardrail = WorkspaceGuard(rootURL: root)
@@ -110,6 +135,37 @@ private let testShellExecutionPolicy = ShellExecutionPolicy(
     }
 
     #expect(sawFinalAnswer)
+}
+
+@Test func buildToolRunsTypedSwiftAndXcodeCommands() async throws {
+    let fileManager = FileManager.default
+    let root = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+    let runtime = RecordingExecutionRuntime()
+    let tool = BuildTool(executionRuntime: runtime, workspaceURL: root)
+    let context = ToolContext(runID: UUID(), emit: { _ in }, cancellation: CancellationToken())
+
+    _ = try await tool.execute(arguments: [
+        "operation": .string("swift_build"),
+    ], context: context)
+
+    _ = try await tool.execute(arguments: [
+        "operation": .string("xcodebuild_test"),
+        "workspace": .string("App.xcworkspace"),
+        "scheme": .string("Demo"),
+        "destination": .string("platform=iOS Simulator,name=iPhone 16"),
+    ], context: context)
+
+    #expect(runtime.requests.count == 2)
+    #expect(runtime.requests[0].command == "swift build")
+    #expect(runtime.requests[1].command.contains("xcodebuild"))
+    #expect(runtime.requests[1].command.contains("-workspace"))
+    #expect(runtime.requests[1].command.contains("App.xcworkspace"))
+    #expect(runtime.requests[1].command.contains("-scheme"))
+    #expect(runtime.requests[1].command.contains("Demo"))
+    #expect(runtime.requests[1].command.contains("-destination"))
+    #expect(runtime.requests[1].command.contains("iPhone 16"))
+    #expect(runtime.requests[1].command.hasSuffix(" test"))
 }
 
 @Test func filesystemToolAppliesStructuredPatchEdits() async throws {
@@ -705,6 +761,59 @@ private let testShellExecutionPolicy = ShellExecutionPolicy(
     let commands = actions.compactMap { $0.call.arguments["command"]?.stringValue }
     #expect(commands.contains("pnpm run build"))
     #expect(commands.contains("pnpm test"))
+}
+
+@Test func validationStrategyPrefersTypedBuildToolForSwiftAndXcodeProjects() {
+    let swiftSnapshot = WorkspaceSnapshotRecord(
+        id: UUID(),
+        runID: UUID(),
+        workspaceRootPath: "/tmp/swift-project",
+        topLevelEntries: ["Package.swift", "Sources", "Tests"],
+        instructionFiles: [],
+        projectMarkers: ["Package.swift"],
+        sourceRoots: ["Sources"],
+        testRoots: ["Tests"],
+        gitBranch: nil,
+        gitStatusSummary: nil,
+        createdAt: Date()
+    )
+
+    let swiftActions = ValidationStrategy.plan(
+        request: "fix the Swift runtime and validate it",
+        taskKind: .bugFix,
+        changedFiles: ["Sources/App.swift"],
+        workspaceSnapshot: swiftSnapshot,
+        availableToolNames: ["build"]
+    )
+
+    #expect(swiftActions.contains { $0.call.toolName == "build" && $0.call.arguments["operation"]?.stringValue == "swift_build" })
+    #expect(swiftActions.contains { $0.call.toolName == "build" && $0.call.arguments["operation"]?.stringValue == "swift_test" })
+
+    let xcodeSnapshot = WorkspaceSnapshotRecord(
+        id: UUID(),
+        runID: UUID(),
+        workspaceRootPath: "/tmp/xcode-project",
+        topLevelEntries: ["App.xcodeproj", "Sources", "Tests"],
+        instructionFiles: [],
+        projectMarkers: ["App.xcodeproj"],
+        sourceRoots: ["Sources"],
+        testRoots: ["Tests"],
+        gitBranch: nil,
+        gitStatusSummary: nil,
+        createdAt: Date()
+    )
+
+    let xcodeActions = ValidationStrategy.plan(
+        request: "build and test the app after this fix",
+        taskKind: .bugFix,
+        changedFiles: ["Sources/AppViewController.swift"],
+        workspaceSnapshot: xcodeSnapshot,
+        availableToolNames: ["build"]
+    )
+
+    #expect(xcodeActions.contains { $0.call.toolName == "build" && $0.call.arguments["operation"]?.stringValue == "xcodebuild_build" })
+    #expect(xcodeActions.contains { $0.call.toolName == "build" && $0.call.arguments["operation"]?.stringValue == "xcodebuild_test" })
+    #expect(xcodeActions.contains { $0.call.arguments["project"]?.stringValue == "App.xcodeproj" })
 }
 
 @Test func ollamaGuardrailWarnsForMemoryHeavyModel() {
