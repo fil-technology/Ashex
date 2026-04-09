@@ -42,6 +42,9 @@ private let testShellExecutionPolicy = ShellExecutionPolicy(
         workspaceRootPath: "/tmp/project",
         topLevelEntries: ["Sources/", "Tests/", "README.md"],
         instructionFiles: ["README.md"],
+        projectMarkers: ["Package.swift"],
+        sourceRoots: ["Sources"],
+        testRoots: ["Tests"],
         gitBranch: "main",
         gitStatusSummary: "## main",
         createdAt: Date()
@@ -59,7 +62,28 @@ private let testShellExecutionPolicy = ShellExecutionPolicy(
     #expect(plan.recommendations.contains { $0.contains("read_text_file") })
     #expect(plan.recommendations.contains { $0.contains("README.md") })
     #expect(plan.targetPaths.contains("Sources/AshexCore/ModelAdapter.swift"))
+    #expect(plan.targetPaths.contains("Package.swift"))
+    #expect(plan.targetPaths.contains("Tests"))
     #expect(plan.suggestedQueries.contains { $0.contains("OpenAIModelAdapter") })
+}
+
+@Test func workspaceSnapshotBuilderDetectsRepoProfileMarkersAndRoots() throws {
+    let fileManager = FileManager.default
+    let root = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+    try fileManager.createDirectory(at: root.appendingPathComponent("Sources"), withIntermediateDirectories: true)
+    try fileManager.createDirectory(at: root.appendingPathComponent("Tests"), withIntermediateDirectories: true)
+    try "{}".write(to: root.appendingPathComponent("package.json"), atomically: true, encoding: .utf8)
+    try "name: demo".write(to: root.appendingPathComponent("pnpm-lock.yaml"), atomically: true, encoding: .utf8)
+    try "# Demo".write(to: root.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
+
+    let snapshot = WorkspaceSnapshotBuilder.capture(workspaceRoot: root)
+
+    #expect(snapshot.projectMarkers.contains("package.json"))
+    #expect(snapshot.projectMarkers.contains("pnpm-lock.yaml"))
+    #expect(snapshot.sourceRoots.contains("Sources"))
+    #expect(snapshot.testRoots.contains("Tests"))
+    #expect(snapshot.instructionFiles.contains("README.md"))
 }
 
 @Test func runtimeCompletesSimpleFilesystemRun() async throws {
@@ -609,6 +633,9 @@ private let testShellExecutionPolicy = ShellExecutionPolicy(
         workspaceRootPath: root.path,
         topLevelEntries: ["Sources/", "README.md"],
         instructionFiles: ["README.md"],
+        projectMarkers: ["Package.swift"],
+        sourceRoots: ["Sources"],
+        testRoots: ["Tests"],
         gitBranch: "main",
         gitStatusSummary: "## main",
         now: now
@@ -638,6 +665,9 @@ private let testShellExecutionPolicy = ShellExecutionPolicy(
     #expect(snapshot?.workspaceRootPath == root.path)
     #expect(snapshot?.topLevelEntries == ["Sources/", "README.md"])
     #expect(snapshot?.instructionFiles == ["README.md"])
+    #expect(snapshot?.projectMarkers == ["Package.swift"])
+    #expect(snapshot?.sourceRoots == ["Sources"])
+    #expect(snapshot?.testRoots == ["Tests"])
     #expect(memory?.currentTask == "Fix harness architecture")
     #expect(memory?.currentPhase == "exploration")
     #expect(memory?.explorationTargets == ["Sources/AshexCore/Prompting.swift", "Tests/AshexCoreTests/AgentRuntimeTests.swift"])

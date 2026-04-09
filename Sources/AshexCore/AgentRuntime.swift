@@ -87,6 +87,9 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                     workspaceRootPath: workspaceSnapshot.rootURL.path,
                     topLevelEntries: workspaceSnapshot.topLevelEntries,
                     instructionFiles: workspaceSnapshot.instructionFiles,
+                    projectMarkers: workspaceSnapshot.projectMarkers,
+                    sourceRoots: workspaceSnapshot.sourceRoots,
+                    testRoots: workspaceSnapshot.testRoots,
                     gitBranch: workspaceSnapshot.gitBranch,
                     gitStatusSummary: workspaceSnapshot.gitStatusSummary,
                     now: clock()

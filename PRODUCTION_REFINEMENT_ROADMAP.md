@@ -30,6 +30,7 @@ Recent architecture learnings we are now folding in:
   - exploration targets are now persisted in working memory
   - pending exploration targets are tracked as files and roots are inspected
   - history and prompts now surface that exploration state
+  - workspace snapshots now persist project markers plus likely source/test roots so exploration is anchored to repo shape instead of only broad top-level entries
 - Phase 2 has started:
   - validation can now proactively execute checks instead of only gating completion
   - validation plans can include git diff/status, read-back checks, and workspace-aware build/test checks for SwiftPM, JavaScript package managers, Rust, and Go projects
@@ -164,4 +165,5 @@ Ashex should feel meaningfully closer to stronger coding agents when it can do t
 
 - `IMPLEMENTATION_PHASES.md` tracks the broader product and build history
 - `PRODUCTION_MILESTONES.md` tracks the completed production-foundation milestones
+- `PRODUCTION_READINESS_CHECKLIST.md` tracks the concrete remaining production-grade checklist
 - this file tracks the next refinement path from "production-shaped" toward a stronger day-to-day coding agent

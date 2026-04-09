@@ -438,6 +438,15 @@ public enum PromptBuilder {
         if !snapshot.instructionFiles.isEmpty {
             lines.append("Instruction files: \(snapshot.instructionFiles.joined(separator: ", "))")
         }
+        if !snapshot.projectMarkers.isEmpty {
+            lines.append("Project markers: \(snapshot.projectMarkers.joined(separator: ", "))")
+        }
+        if !snapshot.sourceRoots.isEmpty {
+            lines.append("Source roots: \(snapshot.sourceRoots.joined(separator: ", "))")
+        }
+        if !snapshot.testRoots.isEmpty {
+            lines.append("Test roots: \(snapshot.testRoots.joined(separator: ", "))")
+        }
         if let branch = snapshot.gitBranch {
             lines.append("Git branch: \(branch)")
         }

@@ -108,6 +108,8 @@ public enum ExplorationStrategy {
         let containsSources = topLevel.contains(where: { $0.hasPrefix("Sources") })
         let containsTests = topLevel.contains(where: { $0.hasPrefix("Tests") })
         let containsDocs = topLevel.contains(where: { $0.lowercased().contains("docs") || $0.lowercased().contains("readme") })
+        let sourceRoots = snapshot?.sourceRoots ?? []
+        let testRoots = snapshot?.testRoots ?? []
 
         switch taskKind {
         case .docs:
@@ -117,13 +119,21 @@ public enum ExplorationStrategy {
         case .git:
             return [".git", "."]
         case .shell:
+            if !sourceRoots.isEmpty {
+                return orderedUnique(["."] + sourceRoots)
+            }
             return containsSources ? [".", "Sources"] : ["."]
         case .bugFix, .feature, .refactor, .analysis, .general:
             var roots: [String] = []
-            if containsSources { roots.append("Sources") }
-            if containsTests { roots.append("Tests") }
+            roots.append(contentsOf: sourceRoots)
+            roots.append(contentsOf: testRoots)
+            if roots.isEmpty, containsSources { roots.append("Sources") }
+            if roots.isEmpty, containsTests { roots.append("Tests") }
             if roots.isEmpty { roots.append(".") }
-            return roots
+            if taskKind == .bugFix {
+                roots = orderedUnique(testRoots + roots)
+            }
+            return orderedUnique(roots)
         }
     }
 
@@ -143,14 +153,17 @@ public enum ExplorationStrategy {
         switch taskKind {
         case .bugFix, .feature, .refactor, .analysis, .general:
             targets.append(contentsOf: searchRoots)
-            if searchRoots.contains("Sources") { targets.append("Sources") }
-            if searchRoots.contains("Tests") { targets.append("Tests") }
+            targets.append(contentsOf: snapshot?.projectMarkers ?? [])
+            targets.append(contentsOf: snapshot?.sourceRoots ?? [])
+            targets.append(contentsOf: snapshot?.testRoots ?? [])
         case .docs:
             targets.append(contentsOf: searchRoots)
+            targets.append(contentsOf: snapshot?.instructionFiles ?? [])
         case .git:
             targets.append(contentsOf: [".git", "."])
         case .shell:
             targets.append(contentsOf: searchRoots)
+            targets.append(contentsOf: snapshot?.projectMarkers ?? [])
         }
 
         var seen: Set<String> = []
@@ -173,7 +186,7 @@ public enum ExplorationStrategy {
         }
 
         if queries.isEmpty, let snapshot {
-            queries.append(contentsOf: snapshot.topLevelEntries.prefix(2).map {
+            queries.append(contentsOf: (snapshot.projectMarkers + snapshot.topLevelEntries).prefix(3).map {
                 $0.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
             })
         }
@@ -185,6 +198,11 @@ public enum ExplorationStrategy {
             .filter { seen.insert($0.lowercased()).inserted }
             .prefix(6)
             .map { $0 }
+    }
+
+    private static func orderedUnique(_ values: [String]) -> [String] {
+        var seen: Set<String> = []
+        return values.filter { seen.insert($0.lowercased()).inserted }
     }
 }
 

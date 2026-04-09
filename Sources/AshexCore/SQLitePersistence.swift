@@ -75,6 +75,9 @@ public final class SQLitePersistenceStore: PersistenceStore, @unchecked Sendable
                 workspace_root_path TEXT NOT NULL,
                 top_level_entries_json TEXT NOT NULL,
                 instruction_files_json TEXT NOT NULL,
+                project_markers_json TEXT NOT NULL DEFAULT '[]',
+                source_roots_json TEXT NOT NULL DEFAULT '[]',
+                test_roots_json TEXT NOT NULL DEFAULT '[]',
                 git_branch TEXT,
                 git_status_summary TEXT,
                 created_at REAL NOT NULL
@@ -122,6 +125,9 @@ public final class SQLitePersistenceStore: PersistenceStore, @unchecked Sendable
                 PRIMARY KEY (namespace, key)
             );
             """)
+            try ensureColumnExists(table: "workspace_snapshots", column: "project_markers_json", definition: "TEXT NOT NULL DEFAULT '[]'")
+            try ensureColumnExists(table: "workspace_snapshots", column: "source_roots_json", definition: "TEXT NOT NULL DEFAULT '[]'")
+            try ensureColumnExists(table: "workspace_snapshots", column: "test_roots_json", definition: "TEXT NOT NULL DEFAULT '[]'")
             try ensureColumnExists(table: "working_memory", column: "exploration_targets_json", definition: "TEXT NOT NULL DEFAULT '[]'")
             try ensureColumnExists(table: "working_memory", column: "pending_exploration_targets_json", definition: "TEXT NOT NULL DEFAULT '[]'")
             try ensureColumnExists(table: "working_memory", column: "recent_findings_json", definition: "TEXT NOT NULL DEFAULT '[]'")
@@ -251,6 +257,9 @@ public final class SQLitePersistenceStore: PersistenceStore, @unchecked Sendable
         workspaceRootPath: String,
         topLevelEntries: [String],
         instructionFiles: [String],
+        projectMarkers: [String],
+        sourceRoots: [String],
+        testRoots: [String],
         gitBranch: String?,
         gitStatusSummary: String?,
         now: Date
@@ -262,6 +271,9 @@ public final class SQLitePersistenceStore: PersistenceStore, @unchecked Sendable
                 workspaceRootPath: workspaceRootPath,
                 topLevelEntries: topLevelEntries,
                 instructionFiles: instructionFiles,
+                projectMarkers: projectMarkers,
+                sourceRoots: sourceRoots,
+                testRoots: testRoots,
                 gitBranch: gitBranch,
                 gitStatusSummary: gitStatusSummary,
                 createdAt: now
@@ -269,8 +281,8 @@ public final class SQLitePersistenceStore: PersistenceStore, @unchecked Sendable
             try exec(
                 """
                 INSERT OR REPLACE INTO workspace_snapshots
-                (id, run_id, workspace_root_path, top_level_entries_json, instruction_files_json, git_branch, git_status_summary, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (id, run_id, workspace_root_path, top_level_entries_json, instruction_files_json, project_markers_json, source_roots_json, test_roots_json, git_branch, git_status_summary, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 bind: [
                     .text(record.id.uuidString),
@@ -278,6 +290,9 @@ public final class SQLitePersistenceStore: PersistenceStore, @unchecked Sendable
                     .text(record.workspaceRootPath),
                     .text(try encodeJSONString(record.topLevelEntries)),
                     .text(try encodeJSONString(record.instructionFiles)),
+                    .text(try encodeJSONString(record.projectMarkers)),
+                    .text(try encodeJSONString(record.sourceRoots)),
+                    .text(try encodeJSONString(record.testRoots)),
                     .text(record.gitBranch),
                     .text(record.gitStatusSummary),
                     .double(now.timeIntervalSince1970),
@@ -290,7 +305,7 @@ public final class SQLitePersistenceStore: PersistenceStore, @unchecked Sendable
     public func fetchWorkspaceSnapshot(runID: UUID) throws -> WorkspaceSnapshotRecord? {
         try queue.sync {
             let sql = """
-            SELECT id, workspace_root_path, top_level_entries_json, instruction_files_json, git_branch, git_status_summary, created_at
+            SELECT id, workspace_root_path, top_level_entries_json, instruction_files_json, project_markers_json, source_roots_json, test_roots_json, git_branch, git_status_summary, created_at
             FROM workspace_snapshots
             WHERE run_id = ?
             LIMIT 1
@@ -306,9 +321,12 @@ public final class SQLitePersistenceStore: PersistenceStore, @unchecked Sendable
                 workspaceRootPath: columnText(statement, index: 1),
                 topLevelEntries: try decodeStringArrayJSON(columnText(statement, index: 2)),
                 instructionFiles: try decodeStringArrayJSON(columnText(statement, index: 3)),
-                gitBranch: columnNullableText(statement, index: 4),
-                gitStatusSummary: columnNullableText(statement, index: 5),
-                createdAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 6))
+                projectMarkers: try decodeStringArrayJSON(columnText(statement, index: 4)),
+                sourceRoots: try decodeStringArrayJSON(columnText(statement, index: 5)),
+                testRoots: try decodeStringArrayJSON(columnText(statement, index: 6)),
+                gitBranch: columnNullableText(statement, index: 7),
+                gitStatusSummary: columnNullableText(statement, index: 8),
+                createdAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 9))
             )
         }
     }

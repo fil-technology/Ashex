@@ -190,6 +190,9 @@ import Testing
         workspaceRootPath: "/tmp/project",
         topLevelEntries: ["Package.swift", "Sources"],
         instructionFiles: ["README.md"],
+        projectMarkers: ["Package.swift"],
+        sourceRoots: ["Sources"],
+        testRoots: [],
         gitBranch: "main",
         gitStatusSummary: "clean",
         now: now

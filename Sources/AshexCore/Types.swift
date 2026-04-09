@@ -232,6 +232,9 @@ public struct WorkspaceSnapshotRecord: Codable, Sendable, Equatable {
     public let workspaceRootPath: String
     public let topLevelEntries: [String]
     public let instructionFiles: [String]
+    public let projectMarkers: [String]
+    public let sourceRoots: [String]
+    public let testRoots: [String]
     public let gitBranch: String?
     public let gitStatusSummary: String?
     public let createdAt: Date
@@ -242,6 +245,9 @@ public struct WorkspaceSnapshotRecord: Codable, Sendable, Equatable {
         workspaceRootPath: String,
         topLevelEntries: [String],
         instructionFiles: [String],
+        projectMarkers: [String] = [],
+        sourceRoots: [String] = [],
+        testRoots: [String] = [],
         gitBranch: String?,
         gitStatusSummary: String?,
         createdAt: Date
@@ -251,6 +257,9 @@ public struct WorkspaceSnapshotRecord: Codable, Sendable, Equatable {
         self.workspaceRootPath = workspaceRootPath
         self.topLevelEntries = topLevelEntries
         self.instructionFiles = instructionFiles
+        self.projectMarkers = projectMarkers
+        self.sourceRoots = sourceRoots
+        self.testRoots = testRoots
         self.gitBranch = gitBranch
         self.gitStatusSummary = gitStatusSummary
         self.createdAt = createdAt

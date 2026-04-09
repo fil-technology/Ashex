@@ -2965,6 +2965,15 @@ final class TUIApp {
                 if !snapshot.instructionFiles.isEmpty {
                     runLines.append("  instructions \(snapshot.instructionFiles.joined(separator: ", "))")
                 }
+                if !snapshot.projectMarkers.isEmpty {
+                    runLines.append("  markers \(snapshot.projectMarkers.joined(separator: ", "))")
+                }
+                if !snapshot.sourceRoots.isEmpty {
+                    runLines.append("  source roots \(snapshot.sourceRoots.joined(separator: ", "))")
+                }
+                if !snapshot.testRoots.isEmpty {
+                    runLines.append("  test roots \(snapshot.testRoots.joined(separator: ", "))")
+                }
                 if let branch = snapshot.gitBranch {
                     runLines.append("  branch \(branch)")
                 }

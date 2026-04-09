@@ -181,6 +181,7 @@ Ashex is now split a bit more like a real coding-agent harness instead of pushin
 - `PromptBuilder` assembles provider-facing static and dynamic prompt sections
 - `ContextManager` prepares the active turn context, estimates token pressure, and compacts older transcript history when needed
 - `WorkspaceSnapshotBuilder` captures stable repo facts up front, like top-level entries, instruction files, and lightweight git state
+- workspace snapshots now also persist project markers plus likely source/test roots so exploration starts from a better repo profile
 - `WorkingMemory` keeps a distilled per-run view of the current task, phase, inspected paths, changed paths, and suggested validation
 - working memory now also keeps recent findings, completed step summaries, and unresolved items for better long-session continuity
 - working memory now also keeps exploration targets and still-pending exploration targets for better file targeting during larger coding tasks
@@ -195,6 +196,7 @@ The workflow layer is now more deliberate than a generic loop:
 - exploration and validation guidance changes by task kind
 - exploration steps now carry a concrete recommended inspect/search/read sequence based on the task and workspace snapshot
 - exploration targeting now persists likely files, roots, and search queries so history and resumed runs can see what the harness thought was worth inspecting
+- exploration targeting now also uses persisted project markers and source/test roots instead of only broad top-level folder guesses
 - patch planning now persists an explicit planned file set and patch objectives before and during mutation-heavy work
 - the runtime carries those hints into the phased execution flow so coding tasks explore and validate more intentionally
 
@@ -251,3 +253,4 @@ Ashex is now a serious local coding-agent foundation, but it is still not at Cod
 - richer delegated-agent orchestration beyond the current bounded subtask flow
 
 The current next-stage roadmap for those areas lives in `PRODUCTION_REFINEMENT_ROADMAP.md`.
+The concrete remaining production-grade checklist lives in `PRODUCTION_READINESS_CHECKLIST.md`.

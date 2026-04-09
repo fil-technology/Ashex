@@ -9,7 +9,7 @@ public protocol PersistenceStore: Sendable {
     func createRunSteps(runID: UUID, steps: [String], now: Date) throws -> [RunStepRecord]
     func transitionRunStep(stepID: UUID, to state: RunStepState, summary: String?, now: Date) throws
     func fetchRunSteps(runID: UUID) throws -> [RunStepRecord]
-    func recordWorkspaceSnapshot(runID: UUID, workspaceRootPath: String, topLevelEntries: [String], instructionFiles: [String], gitBranch: String?, gitStatusSummary: String?, now: Date) throws -> WorkspaceSnapshotRecord
+    func recordWorkspaceSnapshot(runID: UUID, workspaceRootPath: String, topLevelEntries: [String], instructionFiles: [String], projectMarkers: [String], sourceRoots: [String], testRoots: [String], gitBranch: String?, gitStatusSummary: String?, now: Date) throws -> WorkspaceSnapshotRecord
     func fetchWorkspaceSnapshot(runID: UUID) throws -> WorkspaceSnapshotRecord?
     func upsertWorkingMemory(runID: UUID, currentTask: String, currentPhase: String?, explorationTargets: [String], pendingExplorationTargets: [String], inspectedPaths: [String], changedPaths: [String], recentFindings: [String], completedStepSummaries: [String], unresolvedItems: [String], validationSuggestions: [String], plannedChangeSet: [String], patchObjectives: [String], carryForwardNotes: [String], summary: String, now: Date) throws -> WorkingMemoryRecord
     func fetchWorkingMemory(runID: UUID) throws -> WorkingMemoryRecord?
