@@ -32,7 +32,7 @@ Recent architecture learnings we are now folding in:
   - history and prompts now surface that exploration state
 - Phase 2 has started:
   - validation can now proactively execute checks instead of only gating completion
-  - validation plans can include git diff/status, read-back checks, and Swift package build/test checks
+  - validation plans can include git diff/status, read-back checks, and workspace-aware build/test checks for SwiftPM, JavaScript package managers, Rust, and Go projects
 - Safety hardening has started:
   - workspace sandbox modes now distinguish read-only, workspace-write, and danger-full-access semantics inside Ashex
   - protected workspace paths are now enforced separately from approval prompts
@@ -44,6 +44,7 @@ Recent architecture learnings we are now folding in:
   - delegated subtasks now have explicit assignment role/goal events
   - delegated work now returns a visible handoff summary plus remaining items
   - delegated handoffs now feed carry-forward notes and recommended follow-up paths back into working memory
+  - bounded read-only parallel subagents can now be launched for exploration and validation lanes when the task has enough meaningful scoped targets
 - Multi-file patch planning has started:
   - working memory now persists a planned change set and patch objectives
   - the runtime emits visible patch-plan updates during planning and mutation

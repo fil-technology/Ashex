@@ -328,6 +328,50 @@ private let testShellExecutionPolicy = ShellExecutionPolicy(
     #expect(sawSubagentFinish)
 }
 
+@Test func runtimeCanLaunchParallelExplorationSubagents() async throws {
+    let fileManager = FileManager.default
+    let root = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let dbURL = root.appendingPathComponent(".ashex/test.sqlite")
+    try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+
+    let runtime = try AgentRuntime(
+        modelAdapter: SequencedModelAdapter(actions: [
+            .finalAnswer("SUMMARY:\nlooked at Sources\nFINDINGS:\n- Runtime likely lives in Sources\nREMAINING:\n- inspect Tests\nFILES:\n- Sources"),
+            .finalAnswer("SUMMARY:\nlooked at Tests\nFINDINGS:\n- Tests cover runtime behavior\nREMAINING:\n- inspect README\nFILES:\n- Tests"),
+            .finalAnswer("Planned implementation."),
+            .finalAnswer("Applied changes."),
+            .finalAnswer("Validated results."),
+        ]),
+        toolRegistry: ToolRegistry(tools: [
+            FileSystemTool(workspaceGuard: WorkspaceGuard(rootURL: root)),
+            GitTool(executionRuntime: ProcessExecutionRuntime(), workspaceURL: root),
+            ShellTool(executionRuntime: ProcessExecutionRuntime(), workspaceURL: root, executionPolicy: testShellExecutionPolicy),
+        ]),
+        persistence: SQLitePersistenceStore(databaseURL: dbURL),
+        workspaceSnapshot: WorkspaceSnapshot(
+            rootURL: root,
+            topLevelEntries: ["Sources/", "Tests/", "README.md"],
+            instructionFiles: ["README.md"],
+            gitBranch: "main",
+            gitStatusSummary: "## main"
+        )
+    )
+
+    var assignments = 0
+    var sawParallelStatus = false
+    for await event in runtime.run(RunRequest(prompt: "implement a new feature across Sources and Tests and validate the result")) {
+        if case .subagentAssigned = event.payload {
+            assignments += 1
+        }
+        if case .status(_, let message) = event.payload, message.contains("Launching 2 bounded read-only subagents") {
+            sawParallelStatus = true
+        }
+    }
+
+    #expect(sawParallelStatus)
+    #expect(assignments >= 2)
+}
+
 @Test func runtimeRequiresConcreteValidationAfterChanges() async throws {
     let fileManager = FileManager.default
     let root = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -606,6 +650,31 @@ private let testShellExecutionPolicy = ShellExecutionPolicy(
     #expect(memory?.plannedChangeSet == ["Sources/AshexCore/Prompting.swift", "README.md"])
     #expect(memory?.patchObjectives == ["Keep the change set small.", "Preserve current behavior while improving context persistence."])
     #expect(memory?.carryForwardNotes == ["Compaction logic is in Prompting.swift."])
+}
+
+@Test func validationStrategyPlansBuildAndTestForPackageManagers() {
+    let snapshot = WorkspaceSnapshotRecord(
+        id: UUID(),
+        runID: UUID(),
+        workspaceRootPath: "/tmp/project",
+        topLevelEntries: ["package.json", "pnpm-lock.yaml", "src", "tests"],
+        instructionFiles: [],
+        gitBranch: nil,
+        gitStatusSummary: nil,
+        createdAt: Date()
+    )
+
+    let actions = ValidationStrategy.plan(
+        request: "fix the failing web feature and validate it",
+        taskKind: .bugFix,
+        changedFiles: ["src/app.ts"],
+        workspaceSnapshot: snapshot,
+        availableToolNames: ["shell", "filesystem", "git"]
+    )
+
+    let commands = actions.compactMap { $0.call.arguments["command"]?.stringValue }
+    #expect(commands.contains("pnpm run build"))
+    #expect(commands.contains("pnpm test"))
 }
 
 @Test func ollamaGuardrailWarnsForMemoryHeavyModel() {

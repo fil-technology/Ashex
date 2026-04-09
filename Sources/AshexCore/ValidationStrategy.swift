@@ -1,12 +1,40 @@
 import Foundation
 
-struct ValidationAction: Sendable, Equatable {
-    let summary: String
-    let call: ToolCallRequest
+public struct ValidationAction: Sendable, Equatable {
+    public let summary: String
+    public let call: ToolCallRequest
+
+    public init(summary: String, call: ToolCallRequest) {
+        self.summary = summary
+        self.call = call
+    }
 }
 
-enum ValidationStrategy {
-    static func plan(
+public enum ValidationStrategy {
+    private struct WorkspaceMarkers {
+        let topLevelEntries: Set<String>
+        let hasPackageSwift: Bool
+        let hasTests: Bool
+        let hasPackageJSON: Bool
+        let hasPnpmLock: Bool
+        let hasYarnLock: Bool
+        let hasCargoToml: Bool
+        let hasGoMod: Bool
+
+        init(snapshot: WorkspaceSnapshotRecord?) {
+            let entries = Set((snapshot?.topLevelEntries ?? []).map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "/")) })
+            self.topLevelEntries = entries
+            self.hasPackageSwift = entries.contains("Package.swift")
+            self.hasTests = entries.contains(where: { $0.hasPrefix("Tests") })
+            self.hasPackageJSON = entries.contains("package.json")
+            self.hasPnpmLock = entries.contains("pnpm-lock.yaml")
+            self.hasYarnLock = entries.contains("yarn.lock")
+            self.hasCargoToml = entries.contains("Cargo.toml")
+            self.hasGoMod = entries.contains("go.mod")
+        }
+    }
+
+    public static func plan(
         request: String,
         taskKind: TaskKind,
         changedFiles: [String],
@@ -14,6 +42,7 @@ enum ValidationStrategy {
         availableToolNames: Set<String>
     ) -> [ValidationAction] {
         let normalizedChangedFiles = changedFiles.filter { !$0.hasPrefix("<") }
+        let markers = WorkspaceMarkers(snapshot: workspaceSnapshot)
         var actions: [ValidationAction] = []
 
         if availableToolNames.contains("git"),
@@ -29,7 +58,7 @@ enum ValidationStrategy {
         }
 
         if availableToolNames.contains("filesystem") {
-            for path in normalizedChangedFiles.prefix(2) {
+            for path in normalizedChangedFiles.prefix(3) {
                 actions.append(.init(
                     summary: "Read back \(path) to confirm the applied changes.",
                     call: .init(toolName: "filesystem", arguments: [
@@ -40,14 +69,13 @@ enum ValidationStrategy {
             }
         }
 
-        if availableToolNames.contains("shell"),
-           let shellAction = shellValidationAction(
+        if availableToolNames.contains("shell") {
+            actions.append(contentsOf: shellValidationActions(
                 request: request,
                 taskKind: taskKind,
                 changedFiles: normalizedChangedFiles,
-                workspaceSnapshot: workspaceSnapshot
-           ) {
-            actions.append(shellAction)
+                markers: markers
+            ))
         }
 
         var seen: Set<String> = []
@@ -56,40 +84,100 @@ enum ValidationStrategy {
         }
     }
 
-    private static func shellValidationAction(
+    private static func shellValidationActions(
         request: String,
         taskKind: TaskKind,
         changedFiles: [String],
-        workspaceSnapshot: WorkspaceSnapshotRecord?
-    ) -> ValidationAction? {
+        markers: WorkspaceMarkers
+    ) -> [ValidationAction] {
         let lowered = request.lowercased()
-        let topLevelEntries = workspaceSnapshot?.topLevelEntries ?? []
-        let hasPackageSwift = topLevelEntries.contains("Package.swift")
-        let hasTests = topLevelEntries.contains(where: { $0.hasPrefix("Tests") })
         let touchedSwift = changedFiles.contains { $0.hasSuffix(".swift") || $0 == "Package.swift" }
+        let touchedJS = changedFiles.contains { path in
+            [".js", ".jsx", ".ts", ".tsx", ".json"].contains(where: path.hasSuffix)
+        }
+        let touchedRust = changedFiles.contains { $0.hasSuffix(".rs") || $0 == "Cargo.toml" }
+        let touchedGo = changedFiles.contains { $0.hasSuffix(".go") || $0 == "go.mod" }
         let wantsTests = lowered.contains("test") || lowered.contains("bug") || lowered.contains("fix") || taskKind == .bugFix
         let wantsBuild = lowered.contains("build") || lowered.contains("compile") || touchedSwift || taskKind == .feature || taskKind == .refactor
+        var actions: [ValidationAction] = []
 
-        if hasPackageSwift && (wantsTests || (hasTests && touchedSwift)) {
-            return .init(
-                summary: "Run `swift test` to validate the changed Swift package code.",
-                call: .init(toolName: "shell", arguments: [
-                    "command": .string("swift test"),
-                    "timeout_seconds": .number(120),
-                ])
-            )
-        }
-
-        if hasPackageSwift && wantsBuild {
-            return .init(
+        if markers.hasPackageSwift && wantsBuild {
+            actions.append(.init(
                 summary: "Run `swift build` to validate the changed Swift package code.",
                 call: .init(toolName: "shell", arguments: [
                     "command": .string("swift build"),
                     "timeout_seconds": .number(120),
                 ])
-            )
+            ))
         }
 
-        return nil
+        if markers.hasPackageSwift && (wantsTests || (markers.hasTests && touchedSwift)) {
+            actions.append(.init(
+                summary: "Run `swift test` to validate the changed Swift package code.",
+                call: .init(toolName: "shell", arguments: [
+                    "command": .string("swift test"),
+                    "timeout_seconds": .number(120),
+                ])
+            ))
+        }
+
+        if markers.hasPackageJSON && (taskKind == .feature || taskKind == .bugFix || taskKind == .refactor || touchedJS) {
+            let packageManager: String
+            if markers.hasPnpmLock {
+                packageManager = "pnpm"
+            } else if markers.hasYarnLock {
+                packageManager = "yarn"
+            } else {
+                packageManager = "npm"
+            }
+            actions.append(.init(
+                summary: "Run `\(packageManager) run build` to validate the web/package changes.",
+                call: .init(toolName: "shell", arguments: [
+                    "command": .string("\(packageManager) run build"),
+                    "timeout_seconds": .number(120),
+                ])
+            ))
+            if wantsTests || taskKind == .bugFix {
+                let testCommand = packageManager == "npm" ? "npm test" : "\(packageManager) test"
+                actions.append(.init(
+                    summary: "Run `\(testCommand)` to validate the web/package test suite.",
+                    call: .init(toolName: "shell", arguments: [
+                        "command": .string(testCommand),
+                        "timeout_seconds": .number(120),
+                    ])
+                ))
+            }
+        }
+
+        if markers.hasCargoToml && (taskKind == .bugFix || taskKind == .feature || taskKind == .refactor || touchedRust) {
+            actions.append(.init(
+                summary: "Run `cargo check` to validate the Rust workspace.",
+                call: .init(toolName: "shell", arguments: [
+                    "command": .string("cargo check"),
+                    "timeout_seconds": .number(120),
+                ])
+            ))
+            if wantsTests || taskKind == .bugFix {
+                actions.append(.init(
+                    summary: "Run `cargo test` to validate the Rust tests.",
+                    call: .init(toolName: "shell", arguments: [
+                        "command": .string("cargo test"),
+                        "timeout_seconds": .number(120),
+                    ])
+                ))
+            }
+        }
+
+        if markers.hasGoMod && (taskKind == .bugFix || taskKind == .feature || taskKind == .refactor || touchedGo) {
+            actions.append(.init(
+                summary: "Run `go test ./...` to validate the Go workspace.",
+                call: .init(toolName: "shell", arguments: [
+                    "command": .string("go test ./..."),
+                    "timeout_seconds": .number(120),
+                ])
+            ))
+        }
+
+        return actions
     }
 }

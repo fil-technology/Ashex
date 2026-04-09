@@ -339,6 +339,31 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         cancellation: CancellationToken,
         emitter: EventEmitter
     ) async throws -> StepExecutionOutcome {
+        let parallelItems = DelegationStrategy.parallelWorkItems(
+            phase: stepPhase,
+            taskKind: taskKind,
+            stepTitle: stepTitle,
+            stepPrompt: stepPrompt,
+            explorationPlan: explorationPlan,
+            changedPaths: existingChangedFiles.map(\.path)
+        )
+        if parallelItems.count > 1 {
+            return try await executeParallelDelegatedStep(
+                thread: thread,
+                run: run,
+                stepPrompt: stepPrompt,
+                stepTitle: stepTitle,
+                taskKind: taskKind,
+                stepPhase: stepPhase,
+                explorationPlan: explorationPlan,
+                existingChangedFiles: existingChangedFiles,
+                workItems: parallelItems,
+                maxIterations: maxIterations,
+                cancellation: cancellation,
+                emitter: emitter
+            )
+        }
+
         let brief = DelegationStrategy.brief(
             phase: stepPhase,
             taskKind: taskKind,
@@ -396,6 +421,128 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         )
         try emitter.emit(.subagentFinished(runID: run.id, title: stepTitle, summary: handoff.summary), runID: run.id)
         return .init(summary: handoff.summary, changedFiles: outcome.changedFiles, validationNotes: outcome.validationNotes, remainingItems: mergedRemainingItems)
+    }
+
+    private func executeParallelDelegatedStep(
+        thread: ThreadRecord,
+        run: RunRecord,
+        stepPrompt: String,
+        stepTitle: String,
+        taskKind: TaskKind,
+        stepPhase: PlannedStepPhase,
+        explorationPlan: ExplorationPlan,
+        existingChangedFiles: [ChangedArtifact],
+        workItems: [DelegatedWorkItem],
+        maxIterations: Int,
+        cancellation: CancellationToken,
+        emitter: EventEmitter
+    ) async throws -> StepExecutionOutcome {
+        try emitter.emit(.status(runID: run.id, message: "Launching \(workItems.count) bounded read-only subagents for \(stepPhase.rawValue)."), runID: run.id)
+
+        struct FinishedDelegatedWork: Sendable {
+            let item: DelegatedWorkItem
+            let outcome: StepExecutionOutcome
+            let handoff: DelegationHandoff
+        }
+
+        var finishedWork: [FinishedDelegatedWork] = []
+        try await withThrowingTaskGroup(of: FinishedDelegatedWork.self) { group in
+            for item in workItems {
+                try emitter.emit(.subagentAssigned(runID: run.id, title: item.title, role: item.brief.role, goal: item.brief.goal), runID: run.id)
+                try emitter.emit(.subagentStarted(runID: run.id, title: item.title, maxIterations: maxIterations), runID: run.id)
+                group.addTask { [self] in
+                    let outcome = try await executeSubagentLoop(
+                        thread: thread,
+                        run: run,
+                        stepPrompt: item.scopedPrompt,
+                        stepTitle: item.title,
+                        delegationBrief: item.brief,
+                        taskKind: taskKind,
+                        stepPhase: stepPhase,
+                        explorationPlan: explorationPlan,
+                        existingChangedFiles: existingChangedFiles,
+                        maxIterations: max(2, min(maxIterations, 3)),
+                        cancellation: cancellation,
+                        allowedToolNames: item.allowedToolNames,
+                        emitter: emitter
+                    )
+                    return FinishedDelegatedWork(
+                        item: item,
+                        outcome: outcome,
+                        handoff: DelegationStrategy.parseHandoff(outcome.summary)
+                    )
+                }
+            }
+
+            for try await finished in group {
+                finishedWork.append(finished)
+            }
+        }
+
+        var mergedSummarySections: [String] = []
+        var mergedChangedFiles: [ChangedArtifact] = existingChangedFiles
+        var mergedValidationNotes: [String] = []
+        var mergedRemainingItems: [String] = []
+        var mergedPaths: [String] = []
+        var mergedObjectives: [String] = []
+        var carryForwardNotes: [String] = []
+
+        for finished in finishedWork.sorted(by: { $0.item.title < $1.item.title }) {
+            let remainingItems = Self.orderedUniqueStrings(from: finished.handoff.remainingItems + finished.outcome.remainingItems)
+            try emitter.emit(
+                .subagentHandoff(
+                    runID: run.id,
+                    title: finished.item.title,
+                    role: finished.item.brief.role,
+                    summary: finished.handoff.summary,
+                    remainingItems: remainingItems
+                ),
+                runID: run.id
+            )
+            try emitter.emit(.subagentFinished(runID: run.id, title: finished.item.title, summary: finished.handoff.summary), runID: run.id)
+
+            mergedSummarySections.append("\(finished.item.title): \(finished.handoff.summary)")
+            mergedChangedFiles = Self.mergeChangedArtifacts(mergedChangedFiles, finished.outcome.changedFiles)
+            mergedValidationNotes.append(contentsOf: finished.outcome.validationNotes)
+            mergedRemainingItems.append(contentsOf: remainingItems)
+            mergedPaths.append(contentsOf: finished.handoff.recommendedPaths)
+            mergedObjectives.append(contentsOf: finished.handoff.findings.isEmpty ? finished.item.brief.deliverables : finished.handoff.findings)
+            carryForwardNotes.append(contentsOf: finished.handoff.findings + remainingItems)
+        }
+
+        let mergedRemaining = Self.orderedUniqueStrings(from: mergedRemainingItems)
+        let mergedObjectiveList = Self.orderedUniqueStrings(from: mergedObjectives)
+        let mergedPathList = Self.orderedUniqueStrings(from: mergedPaths)
+        let mergedSummary = mergedSummarySections.joined(separator: "\n\n")
+
+        try persistWorkingMemory(
+            runID: run.id,
+            currentTask: stepPrompt,
+            currentPhase: stepPhase,
+            explorationPlan: explorationPlan,
+            workflowState: nil,
+            changedFiles: mergedChangedFiles,
+            summary: mergedSummary,
+            completedStepSummaries: [],
+            unresolvedItems: mergedRemaining,
+            overrideSuggestions: Self.validationSuggestions(for: stepPrompt, taskKind: taskKind, phase: stepPhase, changedFiles: mergedChangedFiles.map(\.path)),
+            carryForwardNotes: carryForwardNotes
+        )
+        try emitter.emit(
+            .patchPlanUpdated(
+                runID: run.id,
+                paths: mergedPathList,
+                objectives: mergedObjectiveList
+            ),
+            runID: run.id
+        )
+
+        return .init(
+            summary: mergedSummary,
+            changedFiles: mergedChangedFiles,
+            validationNotes: Self.orderedUniqueStrings(from: mergedValidationNotes),
+            remainingItems: mergedRemaining
+        )
     }
 
     private func executeStep(
@@ -654,6 +801,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         existingChangedFiles: [ChangedArtifact],
         maxIterations: Int,
         cancellation: CancellationToken,
+        allowedToolNames: Set<String>? = nil,
         emitter: EventEmitter
     ) async throws -> StepExecutionOutcome {
         var localMessages: [MessageRecord] = [
@@ -701,7 +849,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                     thread: thread,
                     run: refreshedRun,
                     messages: localMessages,
-                    availableTools: toolRegistry.schema(),
+                    availableTools: toolRegistry.schema().filter { allowedToolNames?.contains($0.name) ?? true },
                     workspaceSnapshot: workspaceSnapshotRecord,
                     workingMemory: workingMemoryRecord
                 ),
@@ -724,7 +872,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                 thread: thread,
                 run: refreshedRun,
                 messages: localMessages,
-                availableTools: toolRegistry.schema(),
+                availableTools: toolRegistry.schema().filter { allowedToolNames?.contains($0.name) ?? true },
                 workspaceSnapshot: workspaceSnapshotRecord,
                 workingMemory: workingMemoryRecord
             ))
@@ -777,6 +925,17 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                 return .init(summary: answer, changedFiles: changedFiles, validationNotes: finalValidationNotes, remainingItems: [])
 
             case .toolCall(let call):
+                if let allowedToolNames, !allowedToolNames.contains(call.toolName) {
+                    localMessages.append(MessageRecord(
+                        id: UUID(),
+                        threadID: thread.id,
+                        runID: run.id,
+                        role: .tool,
+                        content: "Tool \(call.toolName) is not available inside this delegated scope. Stay within the allowed read-only tools.",
+                        createdAt: clock()
+                    ))
+                    continue
+                }
                 let callSignature = Self.toolCallSignature(toolName: call.toolName, arguments: call.arguments)
                 if callSignature == repeatedToolCallSignature {
                     repeatedToolCallCount += 1

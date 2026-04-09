@@ -13,6 +13,13 @@ struct DelegationHandoff: Sendable, Equatable {
     let recommendedPaths: [String]
 }
 
+struct DelegatedWorkItem: Sendable {
+    let title: String
+    let brief: DelegationBrief
+    let scopedPrompt: String
+    let allowedToolNames: Set<String>
+}
+
 enum DelegationStrategy {
     static func brief(
         phase: PlannedStepPhase,
@@ -83,6 +90,78 @@ enum DelegationStrategy {
         )
     }
 
+    static func parallelWorkItems(
+        phase: PlannedStepPhase,
+        taskKind: TaskKind,
+        stepTitle: String,
+        stepPrompt: String,
+        explorationPlan: ExplorationPlan,
+        changedPaths: [String]
+    ) -> [DelegatedWorkItem] {
+        switch phase {
+        case .exploration:
+            let targets = Array(explorationPlan.targetPaths.filter(isMeaningfulParallelTarget).prefix(4))
+            guard targets.count >= 2 else { return [] }
+            let groups = splitEvenly(targets, maxGroups: 2)
+            return groups.enumerated().map { index, paths in
+                let scopedTitle = "\(stepTitle) [lane \(index + 1)]"
+                let scopedPrompt = """
+                \(stepPrompt)
+
+                Focus only on these exploration targets:
+                \(paths.map { "- \($0)" }.joined(separator: "\n"))
+
+                Stay read-only and use filesystem/git tools only.
+                """
+                return DelegatedWorkItem(
+                    title: scopedTitle,
+                    brief: .init(
+                        role: "exploration-scout-\(index + 1)",
+                        goal: "Inspect only the scoped targets for \(stepTitle) and return a narrow read-only handoff.",
+                        deliverables: [
+                            "key findings for the scoped targets",
+                            "recommended files to inspect next",
+                            "remaining unknowns in the scoped area"
+                        ]
+                    ),
+                    scopedPrompt: scopedPrompt,
+                    allowedToolNames: ["filesystem", "git"]
+                )
+            }
+        case .validation:
+            let paths = Array(changedPaths.prefix(4))
+            guard paths.count >= 2 else { return [] }
+            let groups = splitEvenly(paths, maxGroups: 2)
+            return groups.enumerated().map { index, scopedPaths in
+                let scopedTitle = "\(stepTitle) [lane \(index + 1)]"
+                let scopedPrompt = """
+                \(stepPrompt)
+
+                Validate only these changed paths:
+                \(scopedPaths.map { "- \($0)" }.joined(separator: "\n"))
+
+                Stay read-only and use filesystem/git tools only. Focus on diffs, status, and read-back validation.
+                """
+                return DelegatedWorkItem(
+                    title: scopedTitle,
+                    brief: .init(
+                        role: "validation-scout-\(index + 1)",
+                        goal: "Validate only the scoped changed paths for \(stepTitle) and return a read-only handoff.",
+                        deliverables: [
+                            "checks actually performed for the scoped files",
+                            "validated findings for the scoped files",
+                            "remaining validation gaps for the scoped files"
+                        ]
+                    ),
+                    scopedPrompt: scopedPrompt,
+                    allowedToolNames: ["filesystem", "git"]
+                )
+            }
+        case .planning, .mutation:
+            return []
+        }
+    }
+
     private static func parseSections(in text: String) -> [String: [String]] {
         var sections: [String: [String]] = [:]
         var currentKey: String?
@@ -106,5 +185,31 @@ enum DelegationStrategy {
         return lines
             .map { $0.replacingOccurrences(of: "- ", with: "").trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty && seen.insert($0).inserted }
+    }
+
+    private static func splitEvenly(_ values: [String], maxGroups: Int) -> [[String]] {
+        guard !values.isEmpty else { return [] }
+        let groupCount = min(maxGroups, values.count)
+        var groups = Array(repeating: [String](), count: groupCount)
+        for (index, value) in values.enumerated() {
+            groups[index % groupCount].append(value)
+        }
+        return groups.filter { !$0.isEmpty }
+    }
+
+    private static func isMeaningfulParallelTarget(_ path: String) -> Bool {
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        if trimmed == "." || trimmed == ".git" || trimmed == ".ashex" || trimmed == ".codex" {
+            return false
+        }
+        if trimmed.hasPrefix(".") && !trimmed.contains("/") {
+            return false
+        }
+        let genericRoots: Set<String> = ["Sources", "Tests", "README.md", "Package.swift", "docs"]
+        if genericRoots.contains(trimmed) {
+            return true
+        }
+        return trimmed.contains("/") || trimmed.contains(".")
     }
 }
