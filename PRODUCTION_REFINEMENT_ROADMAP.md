@@ -13,6 +13,7 @@ Ashex already has:
 - phased execution with exploration, planning, mutation, and validation
 - inspect-before-mutate enforcement
 - filesystem, git, shell, and patch-style edit workflows
+- typed tool contracts across embedded tools plus bundled installable tool packs for `swiftpm`, `ios_xcode`, and `python`
 - persistence, history, restart recovery, recent workspaces, and a TUI
 - guarded approvals and bounded delegated subtasks
 

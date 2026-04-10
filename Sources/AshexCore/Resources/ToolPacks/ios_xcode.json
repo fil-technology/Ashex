@@ -1,0 +1,154 @@
+{
+  "description" : "Installable Xcode and iOS/macOS build workflows for typed inspection, build, and test actions.",
+  "displayName" : "iOS/Xcode Pack",
+  "id" : "ios_xcode",
+  "tools" : [
+    {
+      "category" : "ios-xcode",
+      "description" : "Typed Xcode project and workspace inspection, build, and test workflows.",
+      "name" : "ios_xcode",
+      "operations" : [
+        {
+          "arguments" : [
+            {
+              "description" : "Operation name",
+              "enumValues" : [
+                "list"
+              ],
+              "name" : "operation",
+              "required" : true,
+              "type" : "string"
+            },
+            {
+              "description" : "Optional xcworkspace path",
+              "name" : "workspace",
+              "required" : false,
+              "type" : "string"
+            },
+            {
+              "description" : "Optional xcodeproj path",
+              "name" : "project",
+              "required" : false,
+              "type" : "string"
+            }
+          ],
+          "commandTemplate" : "xcodebuild[[ -workspace {{workspace}}]][[ -project {{project}}]] -list",
+          "description" : "List schemes and targets in an Xcode workspace or project.",
+          "inspectedPathArguments" : [
+            "workspace",
+            "project"
+          ],
+          "mutatesWorkspace" : false,
+          "name" : "list",
+          "progressSummary" : "listed Xcode schemes",
+          "timeoutSeconds" : 60
+        },
+        {
+          "arguments" : [
+            {
+              "description" : "Operation name",
+              "enumValues" : [
+                "build"
+              ],
+              "name" : "operation",
+              "required" : true,
+              "type" : "string"
+            },
+            {
+              "description" : "Optional xcworkspace path",
+              "name" : "workspace",
+              "required" : false,
+              "type" : "string"
+            },
+            {
+              "description" : "Optional xcodeproj path",
+              "name" : "project",
+              "required" : false,
+              "type" : "string"
+            },
+            {
+              "description" : "Scheme name",
+              "name" : "scheme",
+              "required" : false,
+              "type" : "string"
+            },
+            {
+              "description" : "Optional destination",
+              "name" : "destination",
+              "required" : false,
+              "type" : "string"
+            },
+            {
+              "description" : "Optional configuration",
+              "name" : "configuration",
+              "required" : false,
+              "type" : "string"
+            }
+          ],
+          "commandTemplate" : "xcodebuild[[ -workspace {{workspace}}]][[ -project {{project}}]][[ -scheme {{scheme}}]][[ -destination {{destination}}]][[ -configuration {{configuration}}]] build",
+          "description" : "Build an Xcode scheme.",
+          "mutatesWorkspace" : false,
+          "name" : "build",
+          "progressSummary" : "validated with Xcode build",
+          "timeoutSeconds" : 240,
+          "validationArtifacts" : [
+            "<build>"
+          ]
+        },
+        {
+          "arguments" : [
+            {
+              "description" : "Operation name",
+              "enumValues" : [
+                "test"
+              ],
+              "name" : "operation",
+              "required" : true,
+              "type" : "string"
+            },
+            {
+              "description" : "Optional xcworkspace path",
+              "name" : "workspace",
+              "required" : false,
+              "type" : "string"
+            },
+            {
+              "description" : "Optional xcodeproj path",
+              "name" : "project",
+              "required" : false,
+              "type" : "string"
+            },
+            {
+              "description" : "Scheme name",
+              "name" : "scheme",
+              "required" : false,
+              "type" : "string"
+            },
+            {
+              "description" : "Optional destination",
+              "name" : "destination",
+              "required" : false,
+              "type" : "string"
+            }
+          ],
+          "commandTemplate" : "xcodebuild[[ -workspace {{workspace}}]][[ -project {{project}}]][[ -scheme {{scheme}}]][[ -destination {{destination}}]] test",
+          "description" : "Run Xcode tests for a scheme.",
+          "mutatesWorkspace" : false,
+          "name" : "test",
+          "progressSummary" : "validated with Xcode tests",
+          "timeoutSeconds" : 300,
+          "validationArtifacts" : [
+            "<build>"
+          ]
+        }
+      ],
+      "tags" : [
+        "installable",
+        "ios",
+        "xcode",
+        "apple"
+      ]
+    }
+  ],
+  "version" : 1
+}

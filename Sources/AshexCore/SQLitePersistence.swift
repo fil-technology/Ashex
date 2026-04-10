@@ -16,6 +16,9 @@ public final class SQLitePersistenceStore: PersistenceStore, @unchecked Sendable
 
     public func initialize() throws {
         try queue.sync {
+            if db != nil {
+                return
+            }
             try FileManager.default.createDirectory(at: databaseURL.deletingLastPathComponent(), withIntermediateDirectories: true)
             if sqlite3_open(databaseURL.path, &db) != SQLITE_OK {
                 throw AshexError.persistence("Failed to open database at \(databaseURL.path)")

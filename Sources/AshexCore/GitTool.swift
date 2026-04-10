@@ -3,6 +3,22 @@ import Foundation
 public struct GitTool: Tool {
     public let name = "git"
     public let description = "Inspect git state in the workspace: status, branch, diffs, history, and commits"
+    public let contract = ToolContract(
+        name: "git",
+        description: "Inspect git state in the workspace: status, branch, diffs, history, and commits",
+        kind: .embedded,
+        category: "git",
+        operationArgumentKey: "operation",
+        operations: [
+            .init(name: "status", description: "Show current branch and changed files", mutatesWorkspace: false, validationArtifacts: ["<git>"], inspectedPathArguments: ["path"], progressSummary: "checked git status"),
+            .init(name: "current_branch", description: "Show the current branch", mutatesWorkspace: false, inspectedPathArguments: ["path"], progressSummary: "checked git branch"),
+            .init(name: "diff_unstaged", description: "Inspect unstaged changes", mutatesWorkspace: false, validationArtifacts: ["<git>"], progressSummary: "inspected unstaged diff"),
+            .init(name: "diff_staged", description: "Inspect staged changes", mutatesWorkspace: false, validationArtifacts: ["<git>"], progressSummary: "inspected staged diff"),
+            .init(name: "log", description: "Show recent commit history", mutatesWorkspace: false, progressSummary: "read git history", arguments: [.init(name: "limit", description: "Maximum number of commits to show", type: .number, required: false)]),
+            .init(name: "show_commit", description: "Inspect one commit with patch and stats", mutatesWorkspace: false, validationArtifacts: ["<git>"], progressSummary: "inspected commit", arguments: [.init(name: "commit", description: "Commit SHA or ref", type: .string, required: true)]),
+        ],
+        tags: ["core", "git", "validation"]
+    )
 
     private let executionRuntime: any ExecutionRuntime
     private let workspaceURL: URL

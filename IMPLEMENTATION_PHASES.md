@@ -272,6 +272,13 @@ Already implemented in the repo:
 - Filesystem tool with read/search/write/move/copy/delete/info operations
 - Shell tool
 - Git inspection tool
+- Typed SwiftPM and Xcode build/test tool
+- Shared typed tool-contract model across embedded tools
+- Bundled installable tool packs for:
+  - SwiftPM
+  - iOS/Xcode
+  - Python
+- Embedded tool-pack scaffold tool for creating reusable custom pack manifests
 - Streaming event model
 - SQLite persistence
 - Restart normalization for interrupted runs

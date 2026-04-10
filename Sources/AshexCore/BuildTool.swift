@@ -3,6 +3,21 @@ import Foundation
 public struct BuildTool: Tool {
     public let name = "build"
     public let description = "Run typed SwiftPM and xcodebuild actions in the workspace with structured results"
+    public let contract = ToolContract(
+        name: "build",
+        description: "Run typed SwiftPM and xcodebuild actions in the workspace with structured results",
+        kind: .embedded,
+        category: "build",
+        operationArgumentKey: "operation",
+        operations: [
+            .init(name: "swift_build", description: "Run swift build", mutatesWorkspace: false, validationArtifacts: ["<build>"], progressSummary: "validated with swift build"),
+            .init(name: "swift_test", description: "Run swift test", mutatesWorkspace: false, validationArtifacts: ["<build>"], progressSummary: "validated with swift test"),
+            .init(name: "xcodebuild_list", description: "List Xcode schemes and targets", mutatesWorkspace: false, inspectedPathArguments: ["workspace", "project"], progressSummary: "inspected xcode targets", arguments: [.init(name: "workspace", description: "xcworkspace path", type: .string, required: false), .init(name: "project", description: "xcodeproj path", type: .string, required: false)]),
+            .init(name: "xcodebuild_build", description: "Build an Xcode scheme", mutatesWorkspace: false, validationArtifacts: ["<build>"], progressSummary: "validated with xcodebuild build", arguments: [.init(name: "workspace", description: "xcworkspace path", type: .string, required: false), .init(name: "project", description: "xcodeproj path", type: .string, required: false), .init(name: "scheme", description: "Scheme name", type: .string, required: false), .init(name: "configuration", description: "Build configuration", type: .string, required: false), .init(name: "destination", description: "Build destination", type: .string, required: false), .init(name: "sdk", description: "SDK name", type: .string, required: false), .init(name: "derived_data_path", description: "DerivedData output path", type: .string, required: false)]),
+            .init(name: "xcodebuild_test", description: "Test an Xcode scheme", mutatesWorkspace: false, validationArtifacts: ["<build>"], progressSummary: "validated with xcodebuild test", arguments: [.init(name: "workspace", description: "xcworkspace path", type: .string, required: false), .init(name: "project", description: "xcodeproj path", type: .string, required: false), .init(name: "scheme", description: "Scheme name", type: .string, required: false), .init(name: "configuration", description: "Build configuration", type: .string, required: false), .init(name: "destination", description: "Test destination", type: .string, required: false), .init(name: "sdk", description: "SDK name", type: .string, required: false), .init(name: "derived_data_path", description: "DerivedData output path", type: .string, required: false)]),
+        ],
+        tags: ["core", "build", "swift", "xcode"]
+    )
 
     private let executionRuntime: any ExecutionRuntime
     private let workspaceURL: URL

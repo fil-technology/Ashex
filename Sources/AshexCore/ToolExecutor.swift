@@ -33,13 +33,6 @@ struct ToolExecutor: Sendable {
         cancellation: CancellationToken,
         emitter: EventEmitter
     ) async throws -> ToolExecutionResult {
-        if let mutationReason = inspectBeforeMutateViolation(for: call, preconditions: preconditions) {
-            let toolMessage = try persistence.appendMessage(threadID: threadID, runID: runID, role: .tool, content: mutationReason, now: clock())
-            try emitter.emit(.messageAppended(runID: runID, messageID: toolMessage.id, role: .tool), runID: runID)
-            try emitter.emit(.status(runID: runID, message: "Inspect-before-mutate policy blocked a write action. Asking the model to inspect relevant files first."), runID: runID)
-            return .retryableFailure
-        }
-
         let tool: any Tool
         do {
             tool = try toolRegistry.tool(named: call.toolName)
@@ -48,6 +41,13 @@ struct ToolExecutor: Sendable {
                 return .retryableFailure
             }
             throw error
+        }
+
+        if let mutationReason = inspectBeforeMutateViolation(for: call, tool: tool, preconditions: preconditions) {
+            let toolMessage = try persistence.appendMessage(threadID: threadID, runID: runID, role: .tool, content: mutationReason, now: clock())
+            try emitter.emit(.messageAppended(runID: runID, messageID: toolMessage.id, role: .tool), runID: runID)
+            try emitter.emit(.status(runID: runID, message: "Inspect-before-mutate policy blocked a write action. Asking the model to inspect relevant files first."), runID: runID)
+            return .retryableFailure
         }
 
         let toolCall = try persistence.recordToolCall(runID: runID, toolName: tool.name, arguments: call.arguments, now: clock())
@@ -62,7 +62,7 @@ struct ToolExecutor: Sendable {
 
         let policyDrivenApprovalRequest = shellApprovalRequest(for: call, runID: runID)
 
-        if let approvalRequest = policyDrivenApprovalRequest ?? ApprovalClassifier.requestForTool(runID: runID, toolName: tool.name, arguments: call.arguments),
+        if let approvalRequest = policyDrivenApprovalRequest ?? approvalRequest(for: tool, call: call, runID: runID),
            approvalPolicy.mode == .guarded {
             try emitter.emit(.approvalRequested(
                 runID: runID,
@@ -105,7 +105,7 @@ struct ToolExecutor: Sendable {
         do {
             let result = try await tool.execute(arguments: call.arguments, context: toolContext)
             let text = result.displayText
-            let metadata = metadata(for: call, result: result)
+            let metadata = metadata(for: tool, call: call, result: result)
             let toolMessage = try persistence.appendMessage(threadID: threadID, runID: runID, role: .tool, content: text, now: clock())
             try emitter.emit(.messageAppended(runID: runID, messageID: toolMessage.id, role: .tool), runID: runID)
             try persistence.finishToolCall(toolCallID: toolCall.id, status: "completed", output: text, finishedAt: clock())
@@ -187,15 +187,19 @@ struct ToolExecutor: Sendable {
         )
     }
 
-    private func inspectBeforeMutateViolation(for call: ToolCallRequest, preconditions: ToolExecutionPreconditions) -> String? {
-        if preconditions.phase != .mutation, isMutation(call: call) {
+    private func inspectBeforeMutateViolation(for call: ToolCallRequest, tool: any Tool, preconditions: ToolExecutionPreconditions) -> String? {
+        if preconditions.phase != .mutation, isMutation(call: call, tool: tool) {
             return "Tool error: the current workflow phase is \(preconditions.phase.rawValue). Mutating actions are only allowed during the implementation phase. Inspect, plan, or validate first."
         }
-        guard isMutation(call: call), !preconditions.hasPriorInspection else { return nil }
+        guard isMutation(call: call, tool: tool), !preconditions.hasPriorInspection else { return nil }
         return "Tool error: inspect-before-mutate policy requires reading or searching relevant files before making changes. Inspect the target files or repository state first, then retry the mutation."
     }
 
-    private func isMutation(call: ToolCallRequest) -> Bool {
+    private func isMutation(call: ToolCallRequest, tool: any Tool) -> Bool {
+        if let operation = tool.contract.operation(for: call.arguments) {
+            return operation.mutatesWorkspace
+        }
+
         switch call.toolName {
         case "filesystem":
             let operation = call.arguments["operation"]?.stringValue ?? ""
@@ -210,7 +214,22 @@ struct ToolExecutor: Sendable {
         }
     }
 
-    private func metadata(for call: ToolCallRequest, result: ToolContent) -> ToolExecutionMetadata {
+    private func metadata(for tool: any Tool, call: ToolCallRequest, result: ToolContent) -> ToolExecutionMetadata {
+        if tool.contract.kind == .installable,
+           let operation = tool.contract.operation(for: call.arguments) {
+            let inspectedPaths = resolveArgumentValues(keys: operation.inspectedPathArguments, from: call.arguments)
+            let changedPaths = resolveArgumentValues(keys: operation.changedPathArguments, from: call.arguments)
+            if !operation.validationArtifacts.isEmpty || !inspectedPaths.isEmpty || !changedPaths.isEmpty || operation.progressSummary != nil {
+                return .init(
+                    inspectedPaths: inspectedPaths,
+                    changedPaths: changedPaths,
+                    validationArtifacts: operation.validationArtifacts,
+                    summary: operation.progressSummary ?? result.displayText,
+                    representsProgress: true
+                )
+            }
+        }
+
         switch call.toolName {
         case "filesystem":
             return filesystemMetadata(call: call, result: result)
@@ -294,5 +313,37 @@ struct ToolExecutor: Sendable {
             summary: summary,
             representsProgress: true
         )
+    }
+
+    private func approvalRequest(for tool: any Tool, call: ToolCallRequest, runID: UUID) -> ApprovalRequest? {
+        if let operation = tool.contract.operation(for: call.arguments),
+           let approval = operation.approval {
+            return ApprovalRequest(
+                runID: runID,
+                toolName: tool.name,
+                arguments: call.arguments,
+                summary: approval.summary,
+                reason: renderApprovalReason(template: approval.reasonTemplate, arguments: call.arguments),
+                risk: approval.risk
+            )
+        }
+
+        return ApprovalClassifier.requestForTool(runID: runID, toolName: tool.name, arguments: call.arguments)
+    }
+
+    private func resolveArgumentValues(keys: [String], from arguments: JSONObject) -> [String] {
+        keys.compactMap { arguments[$0]?.stringValue }.filter { !$0.isEmpty }
+    }
+
+    private func renderApprovalReason(template: String?, arguments: JSONObject) -> String {
+        guard let template, !template.isEmpty else {
+            return JSONValue.object(arguments).prettyPrinted
+        }
+
+        var rendered = template
+        for (key, value) in arguments {
+            rendered = rendered.replacingOccurrences(of: "{{\(key)}}", with: value.stringValue ?? value.prettyPrinted)
+        }
+        return rendered
     }
 }

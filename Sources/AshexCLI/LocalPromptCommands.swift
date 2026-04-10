@@ -3,6 +3,9 @@ import Foundation
 enum LocalPromptCommand: Equatable {
     case showWorkspace
     case showSandbox
+    case showToolPacks
+    case installToolPack(String)
+    case uninstallToolPack(String)
     case switchWorkspace(String)
     case openWorkspaces
     case showHelp
@@ -16,9 +19,11 @@ enum LocalPromptCommand: Equatable {
             return .showWorkspace
         case "sandbox", ":sandbox", "/sandbox":
             return .showSandbox
+        case "toolpacks", ":toolpacks", "/toolpacks":
+            return .showToolPacks
         case ":workspaces", "/workspaces":
             return .openWorkspaces
-        case ":workspace", "/workspace", "workspace", ":cd", "/cd", "cd":
+        case ":workspace", "/workspace", "workspace", ":cd", "/cd", "cd", ":install-pack", "/install-pack", ":uninstall-pack", "/uninstall-pack":
             return .showHelp
         default:
             break
@@ -28,6 +33,20 @@ enum LocalPromptCommand: Equatable {
             if trimmed.hasPrefix(prefix) {
                 let path = String(trimmed.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
                 return path.isEmpty ? .showHelp : .switchWorkspace(path)
+            }
+        }
+
+        for prefix in [":install-pack ", "/install-pack "] {
+            if trimmed.hasPrefix(prefix) {
+                let packID = String(trimmed.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                return packID.isEmpty ? .showHelp : .installToolPack(packID)
+            }
+        }
+
+        for prefix in [":uninstall-pack ", "/uninstall-pack "] {
+            if trimmed.hasPrefix(prefix) {
+                let packID = String(trimmed.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                return packID.isEmpty ? .showHelp : .uninstallToolPack(packID)
             }
         }
 
@@ -45,6 +64,9 @@ enum LocalPromptCommand: Equatable {
             "Aliases: :workspace /path, workspace /path, cd /path, /cd /path",
             "Show current workspace: /pwd",
             "Show sandbox policy: /sandbox",
+            "List installable tool packs: /toolpacks",
+            "Enable a bundled pack: /install-pack swiftpm",
+            "Disable a bundled pack: /uninstall-pack swiftpm",
             "Open recent workspaces view: /workspaces",
         ]
     }

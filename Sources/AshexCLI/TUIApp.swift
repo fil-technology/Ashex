@@ -1127,6 +1127,15 @@ final class TUIApp {
             focus = .transcript
             statusLine = "Sandbox policy shown"
             return true
+        case .showToolPacks:
+            presentToolPackStatus(prompt: "/toolpacks")
+            return true
+        case .installToolPack(let packID):
+            installBundledToolPack(packID)
+            return true
+        case .uninstallToolPack(let packID):
+            uninstallBundledToolPack(packID)
+            return true
         case .openWorkspaces:
             runLines = [
                 "Prompt: /workspaces",
@@ -1163,6 +1172,89 @@ final class TUIApp {
             workspacePathInput = workspacePath
             commitWorkspacePathInput()
             return true
+        }
+    }
+
+    private func presentToolPackStatus(prompt: String) {
+        runTask?.cancel()
+        runExecutionControl = nil
+        stopWorkingIndicator()
+        let availablePacks = (try? ToolPackManager.availableBundledPacks()) ?? []
+        let enabledIDs = (try? ToolPackManager.enabledBundledPackIDs(persistence: historyStore)) ?? ToolPackSettings.defaultBundledPackIDs
+        let packLines: [String]
+        if availablePacks.isEmpty {
+            packLines = ["No bundled tool packs found."]
+        } else {
+            packLines = availablePacks.map { pack in
+                let enabled = enabledIDs.contains(pack.id) ? "enabled" : "disabled"
+                return "- \(pack.id) (\(enabled)): \(pack.description)"
+            }
+        }
+
+        runLines = [
+            "Prompt: \(prompt)",
+            "",
+            "[local] Tool packs",
+            "Bundled packs:",
+        ] + packLines + [
+            "",
+            "Custom manifests auto-load from:",
+            "- \(sessionWorkspaceRoot.appendingPathComponent("toolpacks").path)",
+            "- \(FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/ashex/toolpacks").path)",
+        ]
+        transcriptScrollOffset = 0
+        runFinished = true
+        runStartedAt = nil
+        promptText = ""
+        inputMode = .prompt
+        focus = .transcript
+        statusLine = "Tool packs"
+    }
+
+    private func installBundledToolPack(_ packID: String) {
+        do {
+            let available = try ToolPackManager.availableBundledPacks()
+            guard available.contains(where: { $0.id == packID }) else {
+                runLines = ["Prompt: /install-pack \(packID)", "", "[local] Tool packs", "Unknown bundled tool pack '\(packID)'."]
+                runFinished = true
+                statusLine = "Unknown tool pack"
+                promptText = ""
+                inputMode = .prompt
+                focus = .transcript
+                return
+            }
+
+            var enabled = try ToolPackManager.enabledBundledPackIDs(persistence: historyStore)
+            if !enabled.contains(packID) {
+                enabled.append(packID)
+            }
+            try ToolPackManager.saveEnabledBundledPackIDs(enabled, persistence: historyStore, now: Date())
+            presentToolPackStatus(prompt: "/install-pack \(packID)")
+            statusLine = "Installed tool pack \(packID)"
+        } catch {
+            runLines = ["Prompt: /install-pack \(packID)", "", "[local] Tool packs", "Failed to install tool pack: \(error.localizedDescription)"]
+            runFinished = true
+            statusLine = "Tool pack install failed"
+            promptText = ""
+            inputMode = .prompt
+            focus = .transcript
+        }
+    }
+
+    private func uninstallBundledToolPack(_ packID: String) {
+        do {
+            var enabled = try ToolPackManager.enabledBundledPackIDs(persistence: historyStore)
+            enabled.removeAll { $0 == packID }
+            try ToolPackManager.saveEnabledBundledPackIDs(enabled, persistence: historyStore, now: Date())
+            presentToolPackStatus(prompt: "/uninstall-pack \(packID)")
+            statusLine = "Removed tool pack \(packID)"
+        } catch {
+            runLines = ["Prompt: /uninstall-pack \(packID)", "", "[local] Tool packs", "Failed to remove tool pack: \(error.localizedDescription)"]
+            runFinished = true
+            statusLine = "Tool pack removal failed"
+            promptText = ""
+            inputMode = .prompt
+            focus = .transcript
         }
     }
 
@@ -1608,6 +1700,9 @@ final class TUIApp {
             "\(TerminalUIStyle.blue)\(TerminalUIStyle.truncateVisible("Show current workspace: /pwd", limit: width))\(TerminalUIStyle.reset)",
             "\(TerminalUIStyle.blue)\(TerminalUIStyle.truncateVisible("Show sandbox policy: /sandbox", limit: width))\(TerminalUIStyle.reset)",
             "\(TerminalUIStyle.blue)\(TerminalUIStyle.truncateVisible("Open recent workspaces: /workspaces", limit: width))\(TerminalUIStyle.reset)",
+            "\(TerminalUIStyle.blue)\(TerminalUIStyle.truncateVisible("List installable packs: /toolpacks", limit: width))\(TerminalUIStyle.reset)",
+            "\(TerminalUIStyle.blue)\(TerminalUIStyle.truncateVisible("Enable a bundled pack: /install-pack swiftpm", limit: width))\(TerminalUIStyle.reset)",
+            "\(TerminalUIStyle.blue)\(TerminalUIStyle.truncateVisible("Disable a bundled pack: /uninstall-pack python", limit: width))\(TerminalUIStyle.reset)",
             "\(TerminalUIStyle.blue)\(TerminalUIStyle.truncateVisible("Open side terminal: press t or choose Terminal in the launcher", limit: width))\(TerminalUIStyle.reset)",
             "",
             "\(TerminalUIStyle.ink)Filesystem Tool\(TerminalUIStyle.reset)",
@@ -1638,6 +1733,12 @@ final class TUIApp {
             "\(TerminalUIStyle.slate)xcodebuild_list\(TerminalUIStyle.reset) List Xcode schemes and targets",
             "\(TerminalUIStyle.slate)xcodebuild_build\(TerminalUIStyle.reset) Run xcodebuild build with typed options",
             "\(TerminalUIStyle.slate)xcodebuild_test\(TerminalUIStyle.reset) Run xcodebuild test with typed options",
+            "",
+            "\(TerminalUIStyle.ink)Tool Pack Tools\(TerminalUIStyle.reset)",
+            "\(TerminalUIStyle.slate)toolpack.scaffold_pack\(TerminalUIStyle.reset) Create a reusable installable tool-pack manifest",
+            "\(TerminalUIStyle.slate)Bundled packs\(TerminalUIStyle.reset) swiftpm, ios_xcode, python",
+            "\(TerminalUIStyle.slate)Custom pack folders\(TerminalUIStyle.reset) WORKSPACE/toolpacks and ~/.config/ashex/toolpacks",
+            "\(TerminalUIStyle.slate)Manifest format\(TerminalUIStyle.reset) JSON with pack metadata, typed operations, approvals, and shell templates",
             "",
             "\(TerminalUIStyle.ink)Shell Tool\(TerminalUIStyle.reset)",
             "\(TerminalUIStyle.slate)command\(TerminalUIStyle.reset) Execute a shell command from the workspace root",
@@ -3088,25 +3189,14 @@ final class TUIApp {
             network: sessionUserConfig.network,
             shell: shellPolicy
         )
-        let workspaceGuard = WorkspaceGuard(rootURL: sessionWorkspaceRoot, sandbox: sessionUserConfig.sandbox)
         return try AgentRuntime(
             modelAdapter: modelAdapter,
-            toolRegistry: ToolRegistry(tools: [
-                FileSystemTool(workspaceGuard: workspaceGuard),
-                GitTool(
-                    executionRuntime: ProcessExecutionRuntime(),
-                    workspaceURL: sessionWorkspaceRoot
-                ),
-                BuildTool(
-                    executionRuntime: ProcessExecutionRuntime(),
-                    workspaceURL: sessionWorkspaceRoot
-                ),
-                ShellTool(
-                    executionRuntime: ProcessExecutionRuntime(),
-                    workspaceURL: sessionWorkspaceRoot,
-                    executionPolicy: shellExecutionPolicy
-                ),
-            ]),
+            toolRegistry: ToolRegistry(tools: try RuntimeToolFactory.makeTools(
+                workspaceURL: sessionWorkspaceRoot,
+                persistence: persistence,
+                sandbox: sessionUserConfig.sandbox,
+                shellExecutionPolicy: shellExecutionPolicy
+            )),
             persistence: persistence,
             approvalPolicy: approvalPolicy,
             shellExecutionPolicy: shellExecutionPolicy,

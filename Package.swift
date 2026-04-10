@@ -22,7 +22,10 @@ let package = Package(
         ),
         .target(
             name: "AshexCore",
-            dependencies: ["CSQLite"]
+            dependencies: ["CSQLite"],
+            resources: [
+                .process("Resources"),
+            ]
         ),
         .executableTarget(
             name: "AshexCLI",

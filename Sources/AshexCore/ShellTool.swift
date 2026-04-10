@@ -3,6 +3,32 @@ import Foundation
 public struct ShellTool: Tool {
     public let name = "shell"
     public let description = "Execute shell commands inside the workspace with streaming stdout/stderr"
+    public let contract = ToolContract(
+        name: "shell",
+        description: "Execute shell commands inside the workspace with streaming stdout/stderr",
+        kind: .embedded,
+        category: "shell",
+        operationArgumentKey: nil,
+        defaultOperationName: "execute",
+        operations: [
+            .init(
+                name: "execute",
+                description: "Run a shell command in the current workspace",
+                mutatesWorkspace: true,
+                requiresNetwork: true,
+                validationArtifacts: ["<check>"],
+                inspectedPathArguments: [],
+                changedPathArguments: ["path"],
+                progressSummary: "executed shell command",
+                approval: .init(risk: .medium, summary: "Shell command", reasonTemplate: "{{command}}"),
+                arguments: [
+                    .init(name: "command", description: "Shell command to execute", type: .string, required: true),
+                    .init(name: "timeout_seconds", description: "Optional timeout in seconds", type: .number, required: false),
+                ]
+            )
+        ],
+        tags: ["core", "shell", "validation"]
+    )
 
     private let executionRuntime: any ExecutionRuntime
     private let workspaceURL: URL

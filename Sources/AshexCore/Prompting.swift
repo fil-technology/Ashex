@@ -322,7 +322,12 @@ public enum PromptBuilder {
     ) -> PromptAssembly {
         let prepared = ContextManager.prepare(context: context, provider: provider, model: model)
         let toolBlock = prepared.base.availableTools
-            .map { "- \($0.name): \($0.description)" }
+            .map { tool in
+                let operationNames = tool.operations.map(\.name)
+                let operationSuffix = operationNames.isEmpty ? "" : " [ops: \(operationNames.joined(separator: ", "))]"
+                let kindSuffix = tool.kind == .installable ? " (installable \(tool.category))" : " (\(tool.category))"
+                return "- \(tool.name)\(kindSuffix): \(tool.description)\(operationSuffix)"
+            }
             .joined(separator: "\n")
 
         let transcript = prepared.retainedMessages.map { message in
@@ -368,6 +373,7 @@ public enum PromptBuilder {
             For git tool calls, always use the `operation` field with one of:
             `status`, `current_branch`, `diff_unstaged`, `diff_staged`, `log`, `show_commit`.
             For shell tool calls, always send `command` and optional `timeout_seconds`.
+            For installable tools, use the tool's listed operations and argument names exactly as shown in the available tools block.
 
             Prefer `apply_patch` when multiple targeted edits are needed in the same file. Use `edits` as an array of objects with `old_text`, `new_text`, and `replace_all`.
 

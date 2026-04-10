@@ -10,12 +10,14 @@ Ashex is a minimal local agent runtime foundation for macOS, built as a small Sw
   - `git`
   - `build`
   - `shell`
+  - `toolpack` scaffold support for installable tool manifests
 - Live streaming runtime events for CLI or future UI consumers
 - SQLite persistence for threads, messages, runs, tool calls, and append-only events
 - Generic SQLite-backed persisted settings for session defaults and future runtime preferences
 - Restart normalization that marks previously running work as `interrupted`
 - A replaceable model boundary with `mock`, OpenAI, Anthropic, and local Ollama-backed adapters
 - A terminal TUI with provider switching, workspace switching, local history browsing, side terminal, and guarded approvals
+- Bundled installable tool packs for `swiftpm`, `ios_xcode`, and `python`
 
 ## Package layout
 
@@ -170,7 +172,67 @@ Live workspace commands in the running TUI:
 - `/workspaces`: open the recent-workspaces picker
 - `/pwd`: show the current active workspace
 - `/sandbox`: show the current effective sandbox and command-policy state
+- `/toolpacks`: show bundled and custom installable tool packs
+- `/install-pack swiftpm`: enable a bundled installable tool pack
+- `/uninstall-pack python`: disable a bundled installable tool pack
 - supported aliases: `:workspace /path`, `workspace /path`, `cd /path`, `/cd /path`
+
+## Tool Contracts And Installable Tool Packs
+
+Ashex now has two tool layers:
+
+- embedded core tools:
+  - `filesystem`
+  - `git`
+  - `build`
+  - `shell`
+  - `toolpack`
+- installable tool packs:
+  - bundled now: `swiftpm`, `ios_xcode`, `python`
+  - custom packs loaded from:
+    - `WORKSPACE/toolpacks`
+    - `~/.config/ashex/toolpacks`
+
+All tools use the same typed contract model:
+
+- tool identity and category
+- operation list
+- typed arguments
+- approval metadata
+- structured outputs/events
+
+This keeps approvals, sandbox integration, persistence, and model-facing tool schemas consistent between built-in and installable tools.
+
+### Bundled Installable Packs
+
+- `swiftpm`
+  - `describe_package`
+  - `build`
+  - `test`
+  - `run`
+- `ios_xcode`
+  - `list`
+  - `build`
+  - `test`
+- `python`
+  - `pytest`
+  - `ruff_check`
+  - `mypy`
+  - `pip_install`
+
+### Creating A Custom Tool Pack
+
+Ashex includes an embedded `toolpack.scaffold_pack` tool that creates a starter manifest which humans or other agents can edit.
+
+The manifest format is intentionally simple JSON:
+
+- pack metadata
+- tool name and description
+- typed operations
+- optional approval metadata
+- shell command templates with placeholders like `{{path}}`
+
+Starter packs should be easy to create by hand or through the agent because the runtime reads the same declarative format it documents in the TUI.
 
 ## Runtime boundary
 

@@ -1,0 +1,141 @@
+{
+  "description" : "Installable Python workflows for linting, typing, testing, and package inspection.",
+  "displayName" : "Python Pack",
+  "id" : "python",
+  "tools" : [
+    {
+      "category" : "python",
+      "description" : "Typed Python project workflows for inspection, linting, type checking, and tests.",
+      "name" : "python",
+      "operations" : [
+        {
+          "arguments" : [
+            {
+              "description" : "Operation name",
+              "enumValues" : [
+                "pytest"
+              ],
+              "name" : "operation",
+              "required" : true,
+              "type" : "string"
+            },
+            {
+              "description" : "Optional test path or selector",
+              "name" : "test_path",
+              "required" : false,
+              "type" : "string"
+            }
+          ],
+          "commandTemplate" : "pytest[[ {{test_path}}]]",
+          "description" : "Run pytest against the workspace or a targeted path.",
+          "mutatesWorkspace" : false,
+          "name" : "pytest",
+          "progressSummary" : "validated with pytest",
+          "timeoutSeconds" : 180,
+          "validationArtifacts" : [
+            "<check>"
+          ]
+        },
+        {
+          "arguments" : [
+            {
+              "description" : "Operation name",
+              "enumValues" : [
+                "ruff_check"
+              ],
+              "name" : "operation",
+              "required" : true,
+              "type" : "string"
+            },
+            {
+              "description" : "Optional path to lint",
+              "name" : "path",
+              "required" : false,
+              "type" : "string"
+            }
+          ],
+          "commandTemplate" : "ruff check[[ {{path}}]]",
+          "description" : "Run Ruff lint checks.",
+          "mutatesWorkspace" : false,
+          "name" : "ruff_check",
+          "progressSummary" : "validated with Ruff",
+          "timeoutSeconds" : 90,
+          "validationArtifacts" : [
+            "<check>"
+          ]
+        },
+        {
+          "arguments" : [
+            {
+              "description" : "Operation name",
+              "enumValues" : [
+                "mypy"
+              ],
+              "name" : "operation",
+              "required" : true,
+              "type" : "string"
+            },
+            {
+              "description" : "Optional path to type check",
+              "name" : "path",
+              "required" : false,
+              "type" : "string"
+            }
+          ],
+          "commandTemplate" : "mypy[[ {{path}}]]",
+          "description" : "Run mypy type checking.",
+          "mutatesWorkspace" : false,
+          "name" : "mypy",
+          "progressSummary" : "validated with mypy",
+          "timeoutSeconds" : 120,
+          "validationArtifacts" : [
+            "<check>"
+          ]
+        },
+        {
+          "arguments" : [
+            {
+              "description" : "Operation name",
+              "enumValues" : [
+                "pip_install"
+              ],
+              "name" : "operation",
+              "required" : true,
+              "type" : "string"
+            },
+            {
+              "description" : "Package requirement specifier",
+              "name" : "package_name",
+              "required" : true,
+              "type" : "string"
+            },
+            {
+              "description" : "Optional virtual environment path",
+              "name" : "venv_path",
+              "required" : false,
+              "type" : "string"
+            }
+          ],
+          "approval" : {
+            "reasonTemplate" : "{{package_name}}",
+            "risk" : "medium",
+            "summary" : "Install Python package"
+          },
+          "commandTemplate" : "[[source {{venv_path}}/bin/activate && ]]pip install {{package_name}}",
+          "description" : "Install a Python package, optionally into a virtual environment.",
+          "mutatesWorkspace" : false,
+          "name" : "pip_install",
+          "progressSummary" : "installed Python package",
+          "requiresNetwork" : true,
+          "timeoutSeconds" : 180
+        }
+      ],
+      "tags" : [
+        "installable",
+        "python",
+        "validation"
+      ]
+    }
+  ],
+  "version" : 1
+}

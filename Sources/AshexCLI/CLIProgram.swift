@@ -262,6 +262,7 @@ struct CLIConfiguration {
     func makeRuntime(provider: String, model: String, approvalPolicy: any ApprovalPolicy) throws -> AgentRuntime {
         let workspaceURL = workspaceRoot.standardizedFileURL
         let persistence = SQLitePersistenceStore(databaseURL: storageRoot.appendingPathComponent("ashex.sqlite"))
+        try persistence.initialize()
         let workspaceSnapshot = WorkspaceSnapshotBuilder.capture(workspaceRoot: workspaceURL)
         let shellPolicy = ShellCommandPolicy(config: userConfig.shell)
         let shellExecutionPolicy = ShellExecutionPolicy(
@@ -269,25 +270,15 @@ struct CLIConfiguration {
             network: userConfig.network,
             shell: shellPolicy
         )
-        let workspaceGuard = WorkspaceGuard(rootURL: workspaceURL, sandbox: userConfig.sandbox)
+        let tools = try RuntimeToolFactory.makeTools(
+            workspaceURL: workspaceURL,
+            persistence: persistence,
+            sandbox: userConfig.sandbox,
+            shellExecutionPolicy: shellExecutionPolicy
+        )
         return try AgentRuntime(
             modelAdapter: makeModelAdapter(provider: provider, model: model),
-            toolRegistry: ToolRegistry(tools: [
-                FileSystemTool(workspaceGuard: workspaceGuard),
-                GitTool(
-                    executionRuntime: ProcessExecutionRuntime(),
-                    workspaceURL: workspaceURL
-                ),
-                BuildTool(
-                    executionRuntime: ProcessExecutionRuntime(),
-                    workspaceURL: workspaceURL
-                ),
-                ShellTool(
-                    executionRuntime: ProcessExecutionRuntime(),
-                    workspaceURL: workspaceURL,
-                    executionPolicy: shellExecutionPolicy
-                ),
-            ]),
+            toolRegistry: ToolRegistry(tools: tools),
             persistence: persistence,
             approvalPolicy: approvalPolicy,
             shellExecutionPolicy: shellExecutionPolicy,

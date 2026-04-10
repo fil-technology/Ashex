@@ -1,0 +1,153 @@
+{
+  "description" : "Installable Swift Package Manager workflows for describing, building, testing, and running Swift packages.",
+  "displayName" : "SwiftPM Pack",
+  "id" : "swiftpm",
+  "tools" : [
+    {
+      "category" : "swiftpm",
+      "description" : "Typed Swift Package Manager workflows for package inspection, validation, and execution.",
+      "name" : "swiftpm",
+      "operations" : [
+        {
+          "arguments" : [
+            {
+              "description" : "Operation name",
+              "enumValues" : [
+                "describe_package"
+              ],
+              "name" : "operation",
+              "required" : true,
+              "type" : "string"
+            },
+            {
+              "description" : "Optional package path",
+              "name" : "package_path",
+              "required" : false,
+              "type" : "string"
+            }
+          ],
+          "commandTemplate" : "swift package describe[[ --package-path {{package_path}}]]",
+          "description" : "Describe the current Swift package manifest and targets.",
+          "inspectedPathArguments" : [
+            "package_path"
+          ],
+          "mutatesWorkspace" : false,
+          "name" : "describe_package",
+          "progressSummary" : "described Swift package",
+          "timeoutSeconds" : 45
+        },
+        {
+          "arguments" : [
+            {
+              "description" : "Operation name",
+              "enumValues" : [
+                "build"
+              ],
+              "name" : "operation",
+              "required" : true,
+              "type" : "string"
+            },
+            {
+              "description" : "Optional build configuration",
+              "name" : "configuration",
+              "required" : false,
+              "type" : "string"
+            },
+            {
+              "description" : "Optional package path",
+              "name" : "package_path",
+              "required" : false,
+              "type" : "string"
+            }
+          ],
+          "commandTemplate" : "swift build[[ --package-path {{package_path}}]][[ -c {{configuration}}]]",
+          "description" : "Build a Swift package.",
+          "mutatesWorkspace" : false,
+          "name" : "build",
+          "progressSummary" : "validated with SwiftPM build",
+          "timeoutSeconds" : 120,
+          "validationArtifacts" : [
+            "<build>"
+          ]
+        },
+        {
+          "arguments" : [
+            {
+              "description" : "Operation name",
+              "enumValues" : [
+                "test"
+              ],
+              "name" : "operation",
+              "required" : true,
+              "type" : "string"
+            },
+            {
+              "description" : "Optional test filter",
+              "name" : "test_path",
+              "required" : false,
+              "type" : "string"
+            },
+            {
+              "description" : "Optional package path",
+              "name" : "package_path",
+              "required" : false,
+              "type" : "string"
+            }
+          ],
+          "commandTemplate" : "swift test[[ --package-path {{package_path}}]][[ --filter {{test_path}}]]",
+          "description" : "Run Swift package tests.",
+          "mutatesWorkspace" : false,
+          "name" : "test",
+          "progressSummary" : "validated with SwiftPM tests",
+          "timeoutSeconds" : 180,
+          "validationArtifacts" : [
+            "<build>"
+          ]
+        },
+        {
+          "arguments" : [
+            {
+              "description" : "Operation name",
+              "enumValues" : [
+                "run"
+              ],
+              "name" : "operation",
+              "required" : true,
+              "type" : "string"
+            },
+            {
+              "description" : "Optional executable product name",
+              "name" : "module",
+              "required" : false,
+              "type" : "string"
+            },
+            {
+              "description" : "Optional extra arguments",
+              "name" : "args",
+              "required" : false,
+              "type" : "array"
+            },
+            {
+              "description" : "Optional package path",
+              "name" : "package_path",
+              "required" : false,
+              "type" : "string"
+            }
+          ],
+          "commandTemplate" : "swift run[[ --package-path {{package_path}}]][[ {{module}}]][[ {{args}}]]",
+          "description" : "Run a Swift package executable.",
+          "mutatesWorkspace" : false,
+          "name" : "run",
+          "progressSummary" : "ran SwiftPM executable",
+          "timeoutSeconds" : 180
+        }
+      ],
+      "tags" : [
+        "installable",
+        "swift",
+        "swiftpm"
+      ]
+    }
+  ],
+  "version" : 1
+}

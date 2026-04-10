@@ -3,10 +3,31 @@ import Foundation
 public struct ToolSchema: Sendable {
     public let name: String
     public let description: String
+    public let kind: ToolKind
+    public let category: String
+    public let operationArgumentKey: String?
+    public let defaultOperationName: String?
+    public let operations: [ToolOperationContract]
+    public let tags: [String]
 
-    public init(name: String, description: String) {
+    public init(
+        name: String,
+        description: String,
+        kind: ToolKind = .embedded,
+        category: String = "general",
+        operationArgumentKey: String? = "operation",
+        defaultOperationName: String? = nil,
+        operations: [ToolOperationContract] = [],
+        tags: [String] = []
+    ) {
         self.name = name
         self.description = description
+        self.kind = kind
+        self.category = category
+        self.operationArgumentKey = operationArgumentKey
+        self.defaultOperationName = defaultOperationName
+        self.operations = operations
+        self.tags = tags
     }
 }
 
@@ -58,151 +79,124 @@ public protocol ModelAdapter: Sendable {
 }
 
 private enum ModelPromptRenderer {
-    static let responseSchema: JSONObject = [
-        "type": .string("object"),
-        "properties": .object([
-            "type": .object([
-                "type": .string("string"),
-                "enum": .array([.string("final_answer"), .string("tool_call")]),
+    static func responseSchema(for tools: [ToolSchema]) -> JSONObject {
+        let argumentNames = Set(defaultArgumentSchemas.keys)
+            .union(tools.flatMap { tool in
+                tool.operations.flatMap { operation in
+                    operation.arguments.map(\.name)
+                }
+            })
+            .sorted()
+
+        let properties = Dictionary(uniqueKeysWithValues: argumentNames.map { argumentName in
+            let schema = defaultArgumentSchemas[argumentName] ?? fallbackSchema(for: argumentName)
+            return (argumentName, JSONValue.object(schema))
+        })
+
+        return [
+            "type": .string("object"),
+            "properties": .object([
+                "type": .object([
+                    "type": .string("string"),
+                    "enum": .array([.string("final_answer"), .string("tool_call")]),
+                ]),
+                "final_answer": .object([
+                    "type": .array([.string("string"), .string("null")]),
+                ]),
+                "tool_name": .object([
+                    "type": .array([.string("string"), .string("null")]),
+                ]),
+                "arguments": .object([
+                    "type": .string("object"),
+                    "properties": .object(properties),
+                    "required": .array(argumentNames.map(JSONValue.string)),
+                    "additionalProperties": .bool(false),
+                ]),
             ]),
-            "final_answer": .object([
-                "type": .array([.string("string"), .string("null")]),
+            "required": .array([
+                .string("type"),
+                .string("final_answer"),
+                .string("tool_name"),
+                .string("arguments"),
             ]),
-            "tool_name": .object([
-                "type": .array([.string("string"), .string("null")]),
+            "additionalProperties": .bool(false),
+        ]
+    }
+
+    private static let defaultArgumentSchemas: [String: JSONObject] = [
+        "operation": nullableScalar(.string("string")),
+        "path": nullableScalar(.string("string")),
+        "content": nullableScalar(.string("string")),
+        "source_path": nullableScalar(.string("string")),
+        "destination_path": nullableScalar(.string("string")),
+        "query": nullableScalar(.string("string")),
+        "max_results": nullableScalar(.string("number")),
+        "old_text": nullableScalar(.string("string")),
+        "new_text": nullableScalar(.string("string")),
+        "replace_all": nullableScalar(.string("boolean")),
+        "limit": nullableScalar(.string("number")),
+        "commit": nullableScalar(.string("string")),
+        "create_directories": nullableScalar(.string("boolean")),
+        "command": nullableScalar(.string("string")),
+        "workspace": nullableScalar(.string("string")),
+        "project": nullableScalar(.string("string")),
+        "scheme": nullableScalar(.string("string")),
+        "configuration": nullableScalar(.string("string")),
+        "destination": nullableScalar(.string("string")),
+        "sdk": nullableScalar(.string("string")),
+        "derived_data_path": nullableScalar(.string("string")),
+        "timeout_seconds": nullableScalar(.string("number")),
+        "module": nullableScalar(.string("string")),
+        "package_path": nullableScalar(.string("string")),
+        "package_name": nullableScalar(.string("string")),
+        "script": nullableScalar(.string("string")),
+        "venv_path": nullableScalar(.string("string")),
+        "test_path": nullableScalar(.string("string")),
+        "python_version": nullableScalar(.string("string")),
+        "package_manager": nullableScalar(.string("string")),
+        "edits": [
+            "type": .array([
+                .string("array"),
+                .string("null"),
             ]),
-            "arguments": .object([
+            "items": .object([
                 "type": .string("object"),
                 "properties": .object([
-                    "operation": .object([
-                        "type": .array([.string("string"), .string("null")]),
-                    ]),
-                    "path": .object([
-                        "type": .array([.string("string"), .string("null")]),
-                    ]),
-                    "content": .object([
-                        "type": .array([.string("string"), .string("null")]),
-                    ]),
-                    "source_path": .object([
-                        "type": .array([.string("string"), .string("null")]),
-                    ]),
-                    "destination_path": .object([
-                        "type": .array([.string("string"), .string("null")]),
-                    ]),
-                    "query": .object([
-                        "type": .array([.string("string"), .string("null")]),
-                    ]),
-                    "max_results": .object([
-                        "type": .array([.string("number"), .string("null")]),
-                    ]),
-                    "old_text": .object([
-                        "type": .array([.string("string"), .string("null")]),
-                    ]),
-                    "new_text": .object([
-                        "type": .array([.string("string"), .string("null")]),
-                    ]),
-                    "edits": .object([
-                        "type": .array([
-                            .string("array"),
-                            .string("null"),
-                        ]),
-                        "items": .object([
-                            "type": .string("object"),
-                            "properties": .object([
-                                "old_text": .object([
-                                    "type": .array([.string("string"), .string("null")]),
-                                ]),
-                                "new_text": .object([
-                                    "type": .array([.string("string"), .string("null")]),
-                                ]),
-                                "replace_all": .object([
-                                    "type": .array([.string("boolean"), .string("null")]),
-                                ]),
-                            ]),
-                            "required": .array([
-                                .string("old_text"),
-                                .string("new_text"),
-                                .string("replace_all"),
-                            ]),
-                            "additionalProperties": .bool(false),
-                        ]),
-                    ]),
-                    "replace_all": .object([
-                        "type": .array([.string("boolean"), .string("null")]),
-                    ]),
-                    "limit": .object([
-                        "type": .array([.string("number"), .string("null")]),
-                    ]),
-                    "commit": .object([
-                        "type": .array([.string("string"), .string("null")]),
-                    ]),
-                    "create_directories": .object([
-                        "type": .array([.string("boolean"), .string("null")]),
-                    ]),
-                    "command": .object([
-                        "type": .array([.string("string"), .string("null")]),
-                    ]),
-                    "workspace": .object([
-                        "type": .array([.string("string"), .string("null")]),
-                    ]),
-                    "project": .object([
-                        "type": .array([.string("string"), .string("null")]),
-                    ]),
-                    "scheme": .object([
-                        "type": .array([.string("string"), .string("null")]),
-                    ]),
-                    "configuration": .object([
-                        "type": .array([.string("string"), .string("null")]),
-                    ]),
-                    "destination": .object([
-                        "type": .array([.string("string"), .string("null")]),
-                    ]),
-                    "sdk": .object([
-                        "type": .array([.string("string"), .string("null")]),
-                    ]),
-                    "derived_data_path": .object([
-                        "type": .array([.string("string"), .string("null")]),
-                    ]),
-                    "timeout_seconds": .object([
-                        "type": .array([.string("number"), .string("null")]),
-                    ]),
+                    "old_text": .object(nullableScalar(.string("string"))),
+                    "new_text": .object(nullableScalar(.string("string"))),
+                    "replace_all": .object(nullableScalar(.string("boolean"))),
                 ]),
                 "required": .array([
-                    .string("operation"),
-                    .string("path"),
-                    .string("content"),
-                    .string("source_path"),
-                    .string("destination_path"),
-                    .string("query"),
-                    .string("max_results"),
                     .string("old_text"),
                     .string("new_text"),
-                    .string("edits"),
                     .string("replace_all"),
-                    .string("limit"),
-                    .string("commit"),
-                    .string("create_directories"),
-                    .string("command"),
-                    .string("workspace"),
-                    .string("project"),
-                    .string("scheme"),
-                    .string("configuration"),
-                    .string("destination"),
-                    .string("sdk"),
-                    .string("derived_data_path"),
-                    .string("timeout_seconds"),
                 ]),
                 "additionalProperties": .bool(false),
             ]),
-        ]),
-        "required": .array([
-            .string("type"),
-            .string("final_answer"),
-            .string("tool_name"),
-            .string("arguments"),
-        ]),
-        "additionalProperties": .bool(false),
+        ],
+        "args": [
+            "type": .array([
+                .string("array"),
+                .string("null"),
+            ]),
+            "items": .object([
+                "type": .string("string"),
+            ]),
+        ],
     ]
+
+    private static func nullableScalar(_ type: JSONValue) -> JSONObject {
+        [
+            "type": .array([type, .string("null")]),
+        ]
+    }
+
+    private static func fallbackSchema(for argumentName: String) -> JSONObject {
+        if argumentName.hasSuffix("_path") || argumentName == "path" {
+            return nullableScalar(.string("string"))
+        }
+        return nullableScalar(.string("string"))
+    }
 }
 
 public struct OpenAIModelConfiguration: Sendable {
@@ -244,6 +238,7 @@ public struct OpenAIResponsesModelAdapter: ModelAdapter {
 
     public func nextAction(for context: ModelContext) async throws -> ModelAction {
         let assembly = PromptBuilder.build(for: context, provider: "openai", model: configuration.model)
+        let responseSchema = ModelPromptRenderer.responseSchema(for: context.availableTools)
         let requestBody = OpenAIResponsesRequest(
             model: configuration.model,
             input: assembly.combinedPrompt,
@@ -252,7 +247,7 @@ public struct OpenAIResponsesModelAdapter: ModelAdapter {
                 type: "json_schema",
                 name: "ashex_model_action",
                 strict: true,
-                schema: ModelPromptRenderer.responseSchema
+                schema: responseSchema
             ))
         )
 
@@ -334,13 +329,14 @@ public struct OllamaChatModelAdapter: ModelAdapter {
 
     public func nextAction(for context: ModelContext) async throws -> ModelAction {
         let assembly = PromptBuilder.build(for: context, provider: "ollama", model: configuration.model)
+        let responseSchema = ModelPromptRenderer.responseSchema(for: context.availableTools)
         let requestBody = OllamaChatRequest(
             model: configuration.model,
             messages: [
                 .init(role: "system", content: assembly.systemPrompt),
                 .init(role: "user", content: assembly.userPrompt),
             ],
-            format: ModelPromptRenderer.responseSchema,
+            format: responseSchema,
             options: [
                 "temperature": .number(0),
             ],
