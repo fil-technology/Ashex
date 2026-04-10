@@ -411,7 +411,7 @@ final class TUIApp {
         case .launcher:
             moveSelection(1)
         case .workspaces:
-            workspaceSelection = min(workspaceSelection + 1, max(recentWorkspaces.count - 1, 0))
+            workspaceSelection = min(workspaceSelection + 1, max(recentWorkspaces.count, 0))
             refreshWorkspacePreview()
         case .history:
             historySelection = min(historySelection + 1, max(historyThreads.count - 1, 0))
@@ -2014,13 +2014,20 @@ final class TUIApp {
             ""
         ]
 
-        if recentWorkspaces.isEmpty {
-            lines.append("\(TerminalUIStyle.slate)No recent workspaces yet. Switch to another project to populate this list.\(TerminalUIStyle.reset)")
-            return lines
+        lines.append("\(TerminalUIStyle.ink)Workspace Actions\(TerminalUIStyle.reset)")
+        let addSelected = focus == .workspaces && workspaceSelection == 0
+        let addMarker = addSelected ? "\(TerminalUIStyle.selection) \(TerminalUIStyle.reset)" : " "
+        let addColor = addSelected ? TerminalUIStyle.cyan : TerminalUIStyle.ink
+        lines.append("\(addMarker) \(TerminalUIStyle.bold)\(addColor)Add Workspace\(TerminalUIStyle.reset)")
+        lines.append("   \(TerminalUIStyle.slate)\(TerminalUIStyle.truncateVisible("Type or paste a project path and switch the current session there", limit: max(width - 3, 10)))\(TerminalUIStyle.reset)")
+
+        if !recentWorkspaces.isEmpty {
+            lines.append("")
+            lines.append("\(TerminalUIStyle.ink)Recent Workspaces\(TerminalUIStyle.reset)")
         }
 
-        lines.append("\(TerminalUIStyle.ink)Recent Workspaces\(TerminalUIStyle.reset)")
-        for (index, workspace) in recentWorkspaces.enumerated().prefix(8) {
+        for (offset, workspace) in recentWorkspaces.enumerated().prefix(8) {
+            let index = offset + 1
             let selected = focus == .workspaces && index == workspaceSelection
             let marker = selected ? "\(TerminalUIStyle.selection) \(TerminalUIStyle.reset)" : " "
             let color = selected ? TerminalUIStyle.cyan : TerminalUIStyle.ink
@@ -2029,9 +2036,14 @@ final class TUIApp {
             let subtitle = "\(workspace.path) • \(Self.timeString(workspace.lastUsedAt))"
             lines.append("\(marker) \(TerminalUIStyle.bold)\(color)\(TerminalUIStyle.truncateVisible(title, limit: width - 2))\(TerminalUIStyle.reset)")
             lines.append("   \(TerminalUIStyle.slate)\(TerminalUIStyle.truncateVisible(subtitle, limit: max(width - 3, 10)))\(TerminalUIStyle.reset)")
-            if index != min(recentWorkspaces.count, 8) - 1 {
+            if offset != min(recentWorkspaces.count, 8) - 1 {
                 lines.append("")
             }
+        }
+
+        if recentWorkspaces.isEmpty {
+            lines.append("")
+            lines.append("\(TerminalUIStyle.slate)No recent workspaces yet. Add one manually to start building a list.\(TerminalUIStyle.reset)")
         }
 
         if !workspacePreviewLines.isEmpty {
@@ -2967,14 +2979,15 @@ final class TUIApp {
     }
 
     private var selectedWorkspace: RecentWorkspaceRecord? {
-        guard recentWorkspaces.indices.contains(workspaceSelection) else { return nil }
-        return recentWorkspaces[workspaceSelection]
+        let recentIndex = workspaceSelection - 1
+        guard recentWorkspaces.indices.contains(recentIndex) else { return nil }
+        return recentWorkspaces[recentIndex]
     }
 
     private func loadRecentWorkspaces() {
         do {
             recentWorkspaces = try RecentWorkspaceStore.load()
-            workspaceSelection = min(workspaceSelection, max(recentWorkspaces.count - 1, 0))
+            workspaceSelection = min(workspaceSelection, max(recentWorkspaces.count, 0))
             refreshWorkspacePreview()
         } catch {
             recentWorkspaces = []
@@ -2983,6 +2996,15 @@ final class TUIApp {
     }
 
     private func refreshWorkspacePreview() {
+        if workspaceSelection == 0 {
+            workspacePreviewLines = [
+                "Add a project root manually.",
+                "Press Enter to type or paste a full directory path.",
+                "Tip: you can also use /workspace /full/path/from/the/input/bar."
+            ]
+            return
+        }
+
         guard let workspace = selectedWorkspace else {
             workspacePreviewLines = []
             return
@@ -3202,6 +3224,14 @@ final class TUIApp {
     }
 
     private func openSelectedWorkspace() {
+        if workspaceSelection == 0 {
+            inputMode = .workspacePath
+            workspacePathInput = sessionWorkspaceRoot.path
+            focus = .input
+            statusLine = "Enter a project directory and press Enter"
+            return
+        }
+
         guard let workspace = selectedWorkspace else {
             statusLine = "No workspace selected"
             return
