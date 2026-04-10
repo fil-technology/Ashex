@@ -1569,7 +1569,8 @@ final class TUIApp {
             title: "Launcher",
             lines: renderHomeLines(width: leftWidth - 4),
             width: leftWidth,
-            maxBodyHeight: bodyHeight
+            maxBodyHeight: bodyHeight,
+            isFocused: focus == .launcher
         )
 
         let rightTitle: String
@@ -1611,7 +1612,8 @@ final class TUIApp {
             title: rightTitle,
             lines: rightLines,
             width: rightWidth,
-            maxBodyHeight: bodyHeight
+            maxBodyHeight: bodyHeight,
+            isFocused: isRightPanelFocused
         )
 
         if showTerminalPane {
@@ -1619,7 +1621,8 @@ final class TUIApp {
                 title: "Terminal",
                 lines: renderTerminalLines(width: terminalWidth - 4, maxBodyHeight: bodyHeight),
                 width: terminalWidth,
-                maxBodyHeight: bodyHeight
+                maxBodyHeight: bodyHeight,
+                isFocused: focus == .terminal
             )
             return zip(zip(leftPanel, rightPanel), terminalPanel).map { pair, terminal in
                 pair.0 + String(repeating: " ", count: gap) + pair.1 + String(repeating: " ", count: gap) + terminal
@@ -2160,19 +2163,31 @@ final class TUIApp {
         return TerminalUIStyle.padVisible(TerminalUIStyle.truncateVisible(value, limit: width), to: width)
     }
 
-    private func panel(title: String, lines: [String], width: Int, maxBodyHeight: Int) -> [String] {
+    private func panel(title: String, lines: [String], width: Int, maxBodyHeight: Int, isFocused: Bool) -> [String] {
         let innerWidth = max(width - 4, 20)
         let body = Array(lines.prefix(maxBodyHeight))
+        let borderColor = isFocused ? TerminalUIStyle.focusBorder : TerminalUIStyle.border
+        let titleColor = isFocused ? TerminalUIStyle.focusTitle : TerminalUIStyle.cyan
+        let focusMarker = isFocused ? "● " : ""
         var rendered: [String] = []
-        rendered.append("\(TerminalUIStyle.border)┌─ \(TerminalUIStyle.bold)\(TerminalUIStyle.cyan)\(title)\(TerminalUIStyle.reset) \(TerminalUIStyle.border)" + String(repeating: "─", count: max(innerWidth - TerminalUIStyle.visibleWidth(of: title) - 3, 0)) + "┐\(TerminalUIStyle.reset)")
+        rendered.append("\(borderColor)┌─ \(TerminalUIStyle.bold)\(titleColor)\(focusMarker)\(title)\(TerminalUIStyle.reset) \(borderColor)" + String(repeating: "─", count: max(innerWidth - TerminalUIStyle.visibleWidth(of: focusMarker + title) - 3, 0)) + "┐\(TerminalUIStyle.reset)")
         for line in body {
-            rendered.append("\(TerminalUIStyle.border)│ \(TerminalUIStyle.reset)\(TerminalUIStyle.padVisible(TerminalUIStyle.truncateVisible(line, limit: innerWidth), to: innerWidth))\(TerminalUIStyle.border) │\(TerminalUIStyle.reset)")
+            rendered.append("\(borderColor)│ \(TerminalUIStyle.reset)\(TerminalUIStyle.padVisible(TerminalUIStyle.truncateVisible(line, limit: innerWidth), to: innerWidth))\(borderColor) │\(TerminalUIStyle.reset)")
         }
         if body.count < maxBodyHeight {
-            rendered.append(contentsOf: Array(repeating: "\(TerminalUIStyle.border)│ \(TerminalUIStyle.reset)\(String(repeating: " ", count: innerWidth))\(TerminalUIStyle.border) │\(TerminalUIStyle.reset)", count: maxBodyHeight - body.count))
+            rendered.append(contentsOf: Array(repeating: "\(borderColor)│ \(TerminalUIStyle.reset)\(String(repeating: " ", count: innerWidth))\(borderColor) │\(TerminalUIStyle.reset)", count: maxBodyHeight - body.count))
         }
-        rendered.append("\(TerminalUIStyle.border)└" + String(repeating: "─", count: innerWidth + 2) + "┘\(TerminalUIStyle.reset)")
+        rendered.append("\(borderColor)└" + String(repeating: "─", count: innerWidth + 2) + "┘\(TerminalUIStyle.reset)")
         return rendered
+    }
+
+    private var isRightPanelFocused: Bool {
+        switch focus {
+        case .transcript, .settings, .history, .workspaces, .approval:
+            return true
+        case .launcher, .terminal, .input:
+            return false
+        }
     }
 
     private func stylizeRunLine(_ line: String, width: Int) -> String {
@@ -3468,8 +3483,10 @@ private enum TerminalUIStyle {
     static let ink = rgb(230, 236, 245)
     static let slate = rgb(150, 163, 184)
     static let border = rgb(77, 90, 132)
+    static let focusBorder = rgb(107, 214, 255)
     static let blue = rgb(116, 167, 255)
     static let cyan = rgb(107, 214, 255)
+    static let focusTitle = rgb(156, 232, 255)
     static let violet = rgb(184, 142, 255)
     static let pink = rgb(255, 135, 182)
     static let green = rgb(130, 223, 166)
