@@ -721,7 +721,8 @@ final class TUIApp {
             showWorkspaces = false
             showSettings = false
             showHelp = false
-            focus = .launcher
+            transcriptScrollOffset = 0
+            focus = .transcript
             statusLine = "Commands"
         case .terminal:
             toggleTerminalPane()
@@ -1587,10 +1588,20 @@ final class TUIApp {
             rightLines = renderSettingsLines(width: rightWidth - 4)
         } else if showCommands {
             rightTitle = "Commands"
-            rightLines = renderCommandCatalogLines(width: rightWidth - 4)
+            rightLines = renderScrollableStaticLines(
+                renderCommandCatalogLines(width: rightWidth - 4),
+                width: rightWidth - 4,
+                maxBodyHeight: bodyHeight,
+                emptyState: "No command catalog entries."
+            )
         } else if showHelp {
             rightTitle = "Controls"
-            rightLines = renderHelpLines(width: rightWidth - 4)
+            rightLines = renderScrollableStaticLines(
+                renderHelpLines(width: rightWidth - 4),
+                width: rightWidth - 4,
+                maxBodyHeight: bodyHeight,
+                emptyState: "No help entries."
+            )
         } else {
             rightTitle = runFinished ? "Run Transcript" : "Live Run"
             rightLines = renderRunLines(width: rightWidth - 4, maxBodyHeight: bodyHeight)
@@ -1640,6 +1651,21 @@ final class TUIApp {
     private func renderRunLines(width: Int, maxBodyHeight: Int) -> [String] {
         let bodyLimit = max(maxBodyHeight - 3, 1)
         let expanded = wrappedRunLines(width: width)
+        let maxOffset = max(expanded.count - bodyLimit, 0)
+        transcriptScrollOffset = min(max(transcriptScrollOffset, 0), maxOffset)
+        let endIndex = max(expanded.count - transcriptScrollOffset, 0)
+        let startIndex = max(endIndex - bodyLimit, 0)
+        let viewport = Array(expanded[startIndex..<endIndex])
+
+        var output = [transcriptHeader(width: width, totalLines: expanded.count, visibleLines: bodyLimit), ""]
+        output.append(contentsOf: viewport)
+        return output
+    }
+
+    private func renderScrollableStaticLines(_ lines: [String], width: Int, maxBodyHeight: Int, emptyState: String) -> [String] {
+        let bodyLimit = max(maxBodyHeight - 3, 1)
+        let source = lines.isEmpty ? [emptyState] : lines
+        let expanded = source.flatMap { wrapRunLine($0, width: width) }
         let maxOffset = max(expanded.count - bodyLimit, 0)
         transcriptScrollOffset = min(max(transcriptScrollOffset, 0), maxOffset)
         let endIndex = max(expanded.count - transcriptScrollOffset, 0)
