@@ -657,6 +657,7 @@ final class TUIApp {
     }
 
     private func handleCharacter(_ character: Character) {
+        guard focus == .input else { return }
         switch inputMode {
         case .prompt:
             promptText.append(character)
@@ -674,7 +675,6 @@ final class TUIApp {
             terminalCommandInput.append(character)
             statusLine = "Editing terminal command"
         }
-        focus = .input
         if inputMode == .prompt {
             showHelp = false
             showSettings = false
