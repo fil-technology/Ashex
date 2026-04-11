@@ -14,12 +14,14 @@ public struct ContextIndexedFile: Sendable, Equatable {
     public let relativePath: String
     public let contentTokens: [String]
     public let importTokens: [String]
+    public let symbols: [SymbolNode]
     public let lastModifiedAt: Date?
 
-    public init(relativePath: String, contentTokens: [String], importTokens: [String], lastModifiedAt: Date?) {
+    public init(relativePath: String, contentTokens: [String], importTokens: [String], symbols: [SymbolNode], lastModifiedAt: Date?) {
         self.relativePath = relativePath
         self.contentTokens = contentTokens
         self.importTokens = importTokens
+        self.symbols = symbols
         self.lastModifiedAt = lastModifiedAt
     }
 }
@@ -118,6 +120,8 @@ public struct ContextPlanningBrief: Sendable, Equatable {
 }
 
 public enum ContextIndexBuilder {
+    private static let symbolExtractor = SymbolExtractor()
+
     public static func build(
         workspaceRootURL: URL,
         fileManager: FileManager = .default
@@ -144,7 +148,12 @@ public enum ContextIndexBuilder {
             let relativePath = relativePath(for: fileURL, rootPath: rootPath)
             let content = (try? String(contentsOf: fileURL, encoding: .utf8)) ?? ""
             let truncated = String(content.prefix(24_000))
-            let importTokens = extractImportTokens(from: truncated)
+            let extraction = symbolExtractor.extractSymbols(
+                from: truncated,
+                relativePath: relativePath,
+                language: language(for: fileURL)
+            )
+            let importTokens = Array(tokenSet(from: extraction.imports.joined(separator: " ")).prefix(50))
             let contentTokens = Array(tokenSet(from: relativePath + "\n" + truncated).prefix(400))
 
             files.append(
@@ -152,6 +161,7 @@ public enum ContextIndexBuilder {
                     relativePath: relativePath,
                     contentTokens: contentTokens,
                     importTokens: importTokens,
+                    symbols: extraction.symbols,
                     lastModifiedAt: values.contentModificationDate
                 )
             )
@@ -189,18 +199,6 @@ public enum ContextIndexBuilder {
         return fileURL.lastPathComponent
     }
 
-    private static func extractImportTokens(from text: String) -> [String] {
-        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
-        var imports: [String] = []
-        for line in lines.prefix(120) {
-            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.hasPrefix("import ") {
-                imports.append(String(trimmed.dropFirst("import ".count)))
-            }
-        }
-        return Array(tokenSet(from: imports.joined(separator: " ")).prefix(50))
-    }
-
     fileprivate static func tokenSet(from text: String) -> Set<String> {
         let separatedCamelCase = text.unicodeScalars.reduce(into: "") { partial, scalar in
             if CharacterSet.uppercaseLetters.contains(scalar), !partial.isEmpty {
@@ -224,6 +222,15 @@ public enum ContextIndexBuilder {
                 .filter { $0.count >= 2 }
         )
     }
+
+    private static func language(for fileURL: URL) -> String? {
+        switch fileURL.pathExtension.lowercased() {
+        case "swift":
+            return "swift"
+        default:
+            return nil
+        }
+    }
 }
 
 public struct ContextQueryEngine: Sendable {
@@ -245,11 +252,13 @@ public struct ContextQueryEngine: Sendable {
             let basenameTokens = ContextIndexBuilder.tokenSet(from: URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent)
             let contentTokens = Set(file.contentTokens)
             let importTokens = Set(file.importTokens)
+            let symbolTokens = Set(file.symbols.flatMap { ContextIndexBuilder.tokenSet(from: $0.name) })
 
             let matchedPath = queryTerms.intersection(pathTokens)
             let matchedBasename = queryTerms.intersection(basenameTokens)
             let matchedContent = queryTerms.intersection(contentTokens)
             let matchedImports = queryTerms.intersection(importTokens)
+            let matchedSymbols = queryTerms.intersection(symbolTokens)
 
             var score = 0.0
             var reasons: [String] = []
@@ -275,8 +284,12 @@ public struct ContextQueryEngine: Sendable {
                 score += Double(matchedImports.count) * 2
                 reasons.append("import token match")
             }
+            if !matchedSymbols.isEmpty {
+                score += Double(matchedSymbols.count) * 9
+                reasons.append("symbol token match")
+            }
 
-            let matchedTerms = matchedPath.union(matchedBasename).union(matchedContent).union(matchedImports)
+            let matchedTerms = matchedPath.union(matchedBasename).union(matchedContent).union(matchedImports).union(matchedSymbols)
             if !queryTerms.isEmpty {
                 let coverage = Double(matchedTerms.count) / Double(queryTerms.count)
                 if coverage > 0 {
@@ -313,11 +326,21 @@ public struct ContextQueryEngine: Sendable {
                 return nil
             }
 
+            let relatedSymbols = file.symbols.filter { symbol in
+                let loweredName = symbol.name.lowercased()
+                return queryTerms.contains { loweredName.contains($0) }
+            }
+            let suggestedRanges = Array(
+                relatedSymbols.prefix(3).map {
+                    SourceRangeHint(lineStart: max($0.lineStart - 3, 1), lineEnd: $0.lineEnd + 8)
+                }
+            )
+
             return RankedContextResult(
                 filePath: path,
                 score: score,
                 reasons: Array(NSOrderedSet(array: reasons)) as? [String] ?? reasons,
-                suggestedRanges: [SourceRangeHint(lineStart: 1, lineEnd: 40)]
+                suggestedRanges: suggestedRanges.isEmpty ? [SourceRangeHint(lineStart: 1, lineEnd: 40)] : suggestedRanges
             )
         }
 
