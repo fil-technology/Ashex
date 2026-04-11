@@ -1351,16 +1351,31 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                 prompt: prompt,
                 workspaceSnapshot: workspaceSnapshot
             )
+            let planningBrief = workspaceSnapshot
+                .flatMap { snapshot in
+                    let workspaceRootURL = URL(fileURLWithPath: snapshot.workspaceRootPath, isDirectory: true)
+                    return ContextPlanningService().makeBrief(task: prompt, workspaceRootURL: workspaceRootURL)
+                }
+                .map { $0.formatted }
             return """
             Recommended exploration sequence:
             \(plan.formatted)
+            \(planningBrief.map { "\n\nRepo-aware context brief:\n\($0)" } ?? "")
+            """
+        case .planning:
+            guard let workspaceSnapshot else { return "" }
+            let workspaceRootURL = URL(fileURLWithPath: workspaceSnapshot.workspaceRootPath, isDirectory: true)
+            let planningBrief = ContextPlanningService().makeBrief(task: prompt, workspaceRootURL: workspaceRootURL)
+            return """
+            Repo-aware planning brief:
+            \(planningBrief.formatted)
             """
         case .validation:
             return """
             Suggested validation focus:
             \(validationSuggestions(for: prompt, taskKind: taskKind, phase: phase).joined(separator: "\n"))
             """
-        case .planning, .mutation:
+        case .mutation:
             return ""
         }
     }

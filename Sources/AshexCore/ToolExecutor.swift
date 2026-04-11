@@ -235,7 +235,18 @@ struct ToolExecutor: Sendable {
             return filesystemMetadata(call: call, result: result)
         case "git":
             let operation = call.arguments["operation"]?.stringValue ?? "git"
-            return .init(inspectedPaths: [".git"], changedPaths: [], validationArtifacts: gitValidationArtifacts(operation: operation), summary: "inspected git \(operation)", representsProgress: true)
+            let mutatingOperations: Set<String> = [
+                "init", "add", "add_all", "commit", "create_branch", "switch_branch", "switch_new_branch",
+                "restore_worktree", "restore_staged", "reset_mixed", "reset_hard", "clean_force",
+                "tag", "merge", "rebase", "pull", "push"
+            ]
+            return .init(
+                inspectedPaths: mutatingOperations.contains(operation) ? [] : [".git"],
+                changedPaths: mutatingOperations.contains(operation) ? [".git"] : [],
+                validationArtifacts: gitValidationArtifacts(operation: operation),
+                summary: mutatingOperations.contains(operation) ? "changed git state with \(operation)" : "inspected git \(operation)",
+                representsProgress: true
+            )
         case "build":
             return buildMetadata(call: call)
         case "shell":
@@ -273,7 +284,10 @@ struct ToolExecutor: Sendable {
 
     private func gitValidationArtifacts(operation: String) -> [String] {
         switch operation {
-        case "status", "diff_unstaged", "diff_staged", "show_commit":
+        case "status", "diff_unstaged", "diff_staged", "show_commit",
+             "add", "add_all", "commit", "create_branch", "switch_branch", "switch_new_branch",
+             "restore_worktree", "restore_staged", "reset_mixed", "reset_hard", "clean_force",
+             "tag", "merge", "rebase", "pull", "push":
             return ["<git>"]
         default:
             return []

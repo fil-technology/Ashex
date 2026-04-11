@@ -371,7 +371,7 @@ public enum PromptBuilder {
             For filesystem tool calls, always use the `operation` field with one of:
             `read_text_file`, `write_text_file`, `replace_in_file`, `apply_patch`, `list_directory`, `create_directory`, `delete_path`, `move_path`, `copy_path`, `file_info`, `find_files`, `search_text`.
             For git tool calls, always use the `operation` field with one of:
-            `status`, `current_branch`, `diff_unstaged`, `diff_staged`, `log`, `show_commit`.
+            `status`, `current_branch`, `diff_unstaged`, `diff_staged`, `log`, `show_commit`, `init`, `add`, `add_all`, `commit`, `create_branch`, `switch_branch`, `switch_new_branch`, `restore_worktree`, `restore_staged`, `reset_mixed`, `reset_hard`, `clean_force`, `tag`, `merge`, `rebase`, `pull`, `push`.
             For shell tool calls, always send `command` and optional `timeout_seconds`.
             For installable tools, use the tool's listed operations and argument names exactly as shown in the available tools block.
 
@@ -383,6 +383,8 @@ public enum PromptBuilder {
             {"type":"tool_call","final_answer":null,"tool_name":"filesystem","arguments":{"operation":"search_text","path":"Sources","query":"ApprovalPolicy","max_results":20}}
             {"type":"tool_call","final_answer":null,"tool_name":"filesystem","arguments":{"operation":"apply_patch","path":"README.md","edits":[{"old_text":"old","new_text":"new","replace_all":false}]}}
             {"type":"tool_call","final_answer":null,"tool_name":"git","arguments":{"operation":"status","limit":null,"commit":null}}
+            {"type":"tool_call","final_answer":null,"tool_name":"git","arguments":{"operation":"add","paths":["README.md","Sources/App.swift"]}}
+            {"type":"tool_call","final_answer":null,"tool_name":"git","arguments":{"operation":"commit","message":"Initial project setup","amend":false,"allow_empty":false}}
             {"type":"tool_call","final_answer":null,"tool_name":"shell","arguments":{"command":"ls -la","timeout_seconds":30}}
             """,
             kind: .cachedStatic

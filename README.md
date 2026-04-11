@@ -7,7 +7,8 @@ Ashex is a minimal local agent runtime foundation for macOS, built as a small Sw
 - A real single-agent loop with max-iteration and cancellation guards
 - Multiple local coding tools behind a typed runtime:
   - `filesystem`
-  - `git`
+- `git`
+  - inspect and mutate repository state through typed git operations
   - `build`
   - `shell`
   - `toolpack` scaffold support for installable tool manifests
@@ -186,7 +187,40 @@ Ashex now has two tool layers:
   - `git`
   - `build`
   - `shell`
-  - `toolpack`
+- `toolpack`
+
+The built-in `git` tool supports both read-only and mutating operations including:
+
+- `status`
+- `current_branch`
+- `diff_unstaged`
+- `diff_staged`
+- `log`
+- `show_commit`
+- `init`
+- `add`
+- `add_all`
+- `commit`
+- `create_branch`
+- `switch_branch`
+- `switch_new_branch`
+- `restore_worktree`
+- `restore_staged`
+- `reset_mixed`
+- `reset_hard`
+- `clean_force`
+- `tag`
+- `merge`
+- `rebase`
+- `pull`
+- `push`
+
+For a disposable real-model end-to-end test, you can also use:
+
+```bash
+export OPENAI_API_KEY=your_key_here
+./scripts/smoke_real_model_project_flow.sh /tmp/ashex-smoke DemoApp openai gpt-5.4
+```
 - installable tool packs:
   - bundled now: `swiftpm`, `ios_xcode`, `python`
   - custom packs loaded from:
