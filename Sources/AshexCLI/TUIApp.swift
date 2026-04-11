@@ -645,6 +645,12 @@ final class TUIApp {
             return
         }
 
+        if isComposeTranscriptVisible {
+            focus = .launcher
+            statusLine = "Back to launcher"
+            return
+        }
+
         if !runFinished && !runLines.isEmpty {
             runExecutionControl = nil
             runTask?.cancel()
@@ -1374,6 +1380,7 @@ final class TUIApp {
                     self.runExecutionControl = nil
                     self.finishRun()
                     self.processPromptQueueIfPossible()
+                    self.restorePromptEntryIfIdle()
                 }
             } catch {
                 await MainActor.run {
@@ -1397,8 +1404,9 @@ final class TUIApp {
                     self.runFinished = true
                     self.runStartedAt = nil
                     self.statusLine = "Run blocked"
-                    self.render()
                     self.processPromptQueueIfPossible()
+                    self.restorePromptEntryIfIdle()
+                    self.render()
                 }
             }
         }
@@ -1427,6 +1435,16 @@ final class TUIApp {
             runLines.append("[queue] \(promptQueue.count) queued prompt(s) still waiting")
         }
         render()
+    }
+
+    private func restorePromptEntryIfIdle() {
+        guard runFinished, runTask == nil, activeQueuedPrompt == nil, pendingApproval == nil, promptQueue.isEmpty else { return }
+        guard !showSettings, !showHelp, !showHistory, !showCommands, !showWorkspaces else { return }
+        inputMode = .prompt
+        focus = .input
+        if promptText.isEmpty {
+            statusLine = "Type your next prompt"
+        }
     }
 
     private func updateLiveRunState(from payload: RuntimeEventPayload) {
@@ -1692,6 +1710,9 @@ final class TUIApp {
                 maxBodyHeight: bodyHeight,
                 emptyState: "No help entries."
             )
+        } else if isComposeTranscriptVisible {
+            rightTitle = "New Chat"
+            rightLines = renderComposeLines(width: rightWidth - 4, maxBodyHeight: bodyHeight)
         } else {
             rightTitle = runFinished ? "Run Transcript" : "Live Run"
             rightLines = renderRunLines(width: rightWidth - 4, maxBodyHeight: bodyHeight)
@@ -1743,6 +1764,20 @@ final class TUIApp {
     private func renderRunLines(width: Int, maxBodyHeight: Int) -> [String] {
         let bodyLimit = max(maxBodyHeight - 3, 1)
         let expanded = wrappedRunLines(width: width)
+        let maxOffset = max(expanded.count - bodyLimit, 0)
+        transcriptScrollOffset = min(max(transcriptScrollOffset, 0), maxOffset)
+        let endIndex = max(expanded.count - transcriptScrollOffset, 0)
+        let startIndex = max(endIndex - bodyLimit, 0)
+        let viewport = Array(expanded[startIndex..<endIndex])
+
+        var output = [transcriptHeader(width: width, totalLines: expanded.count, visibleLines: bodyLimit), ""]
+        output.append(contentsOf: viewport)
+        return output
+    }
+
+    private func renderComposeLines(width: Int, maxBodyHeight: Int) -> [String] {
+        let bodyLimit = max(maxBodyHeight - 3, 1)
+        let expanded = composeTranscriptLines(width: width)
         let maxOffset = max(expanded.count - bodyLimit, 0)
         transcriptScrollOffset = min(max(transcriptScrollOffset, 0), maxOffset)
         let endIndex = max(expanded.count - transcriptScrollOffset, 0)
@@ -2511,7 +2546,12 @@ final class TUIApp {
     }
 
     private func transcriptHeader(width: Int, totalLines: Int, visibleLines: Int) -> String {
-        let state = runLines.isEmpty ? "empty" : (runFinished ? "idle" : "streaming")
+        let state: String
+        if isComposeTranscriptVisible {
+            state = "draft"
+        } else {
+            state = runLines.isEmpty ? "empty" : (runFinished ? "idle" : "streaming")
+        }
         let focusInfo = focus == .transcript
             ? "\(TerminalUIStyle.cyan)\(transcriptScrollOffset == 0 ? "live tail" : "scroll +\(transcriptScrollOffset)")\(TerminalUIStyle.reset)"
             : "\(TerminalUIStyle.faint)tab to scroll\(TerminalUIStyle.reset)"
@@ -2528,6 +2568,34 @@ final class TUIApp {
             expanded.append(contentsOf: wrapRunLine(line, width: width))
         }
         return expanded
+    }
+
+    private func composeTranscriptLines(width: Int) -> [String] {
+        var lines: [String] = [
+            "\(TerminalUIStyle.ink)Start a new conversation\(TerminalUIStyle.reset)",
+            "\(TerminalUIStyle.slate)Describe what you want Ashex to build, inspect, edit, or run in this workspace.\(TerminalUIStyle.reset)",
+            "",
+            "\(TerminalUIStyle.faint)workspace\(TerminalUIStyle.reset) \(TerminalUIStyle.truncateVisible(sessionWorkspaceRoot.path, limit: width))",
+            "\(TerminalUIStyle.faint)provider\(TerminalUIStyle.reset) \(sessionProvider)  \(TerminalUIStyle.faint)model\(TerminalUIStyle.reset) \(sessionModel)",
+            ""
+        ]
+
+        if promptText.isEmpty {
+            lines.append("\(TerminalUIStyle.cyan)You\(TerminalUIStyle.reset)")
+            lines.append("\(TerminalUIStyle.faint)Draft is empty. Type below, then press Enter to queue and run it.\(TerminalUIStyle.reset)")
+            lines.append("")
+            lines.append("\(TerminalUIStyle.ink)Try prompts like:\(TerminalUIStyle.reset)")
+            lines.append("\(TerminalUIStyle.slate)- Create a Swift package for ... in /tmp/demo-project\(TerminalUIStyle.reset)")
+            lines.append("\(TerminalUIStyle.slate)- Review this repository and fix failing tests\(TerminalUIStyle.reset)")
+            lines.append("\(TerminalUIStyle.slate)- Initialize git, commit the current safe changes, and explain what changed\(TerminalUIStyle.reset)")
+        } else {
+            lines.append("\(TerminalUIStyle.cyan)You\(TerminalUIStyle.reset)")
+            lines.append(contentsOf: wrapRunLine(promptText, width: width))
+            lines.append("")
+            lines.append("\(TerminalUIStyle.faint)Press Enter to enqueue this prompt. Ashex will open the live transcript as soon as execution starts.\(TerminalUIStyle.reset)")
+        }
+
+        return lines
     }
 
     private func scrollTranscript(by delta: Int) {
@@ -2562,6 +2630,18 @@ final class TUIApp {
     private func jumpTranscriptToBottom() {
         transcriptScrollOffset = 0
         statusLine = "Transcript at live tail"
+    }
+
+    private var isComposeTranscriptVisible: Bool {
+        guard pendingApproval == nil else { return false }
+        guard !showWorkspaces, !showHistory, !showSettings, !showCommands, !showHelp else { return false }
+        guard runFinished, runLines.isEmpty, inputMode == .prompt else { return false }
+        switch focus {
+        case .input, .transcript:
+            return true
+        default:
+            return false
+        }
     }
 
     private func scrollTerminal(by delta: Int) {
