@@ -125,6 +125,9 @@ final class TUIApp {
     private var recentWorkspaces: [RecentWorkspaceRecord] = []
     private var workspaceSelection = 0
     private var workspacePreviewLines: [String] = []
+    private var promptQueue = PromptQueueState()
+    private var activeQueuedPrompt: QueuedPrompt?
+    private var queueRetryTask: Task<Void, Never>?
     private var terminalLines: [String] = ["No terminal commands yet. Open the pane and run one from the input bar."]
     private var terminalTask: Task<Void, Never>?
     private var terminalCancellation = CancellationToken()
@@ -411,7 +414,7 @@ final class TUIApp {
         case .launcher:
             moveSelection(1)
         case .workspaces:
-            workspaceSelection = min(workspaceSelection + 1, max(recentWorkspaces.count, 0))
+            workspaceSelection = WorkspaceSelection.clamped(workspaceSelection + 1, recentWorkspaceCount: recentWorkspaces.count)
             refreshWorkspacePreview()
         case .history:
             historySelection = min(historySelection + 1, max(historyThreads.count - 1, 0))
@@ -484,7 +487,7 @@ final class TUIApp {
                 if handleLocalPromptCommand(prompt) {
                     return
                 }
-                startRun(prompt: prompt)
+                enqueuePrompt(prompt)
                 return
             }
         case .model:
@@ -648,8 +651,10 @@ final class TUIApp {
             runTask = nil
             stopWorkingIndicator()
             runFinished = true
+            activeQueuedPrompt = nil
             runLines.append("[local] Run cancelled from TUI")
             statusLine = "Run cancelled"
+            processPromptQueueIfPossible()
             return
         }
 
@@ -851,14 +856,14 @@ final class TUIApp {
     }
 
     private func commitWorkspacePathInput() {
-        let trimmed = workspacePathInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
+        let normalizedInput = normalizeWorkspacePathInput(workspacePathInput)
+        guard !normalizedInput.isEmpty else {
             statusLine = "Workspace path is empty"
             return
         }
 
         let proposed = URL(
-            fileURLWithPath: trimmed,
+            fileURLWithPath: normalizedInput,
             relativeTo: URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         ).standardizedFileURL
 
@@ -869,18 +874,7 @@ final class TUIApp {
         }
 
         do {
-            let loadedConfig = try UserConfigStore.loadMerged(for: proposed)
-            let storageRoot = proposed.appendingPathComponent(".ashex")
-            let store = SQLitePersistenceStore(databaseURL: storageRoot.appendingPathComponent("ashex.sqlite"))
-            try store.initialize()
-
-            sessionWorkspaceRoot = proposed
-            sessionStorageRoot = storageRoot
-            sessionUserConfig = loadedConfig.effectiveConfig
-            sessionUserConfigFile = loadedConfig.workspaceFileURL
-            sessionGlobalUserConfigFile = loadedConfig.globalFileURL
-            historyStore = store
-            sessionInspector = SessionInspector(persistence: store)
+            try switchWorkspace(to: proposed)
             inputMode = .prompt
             workspacePathInput = ""
             focus = .transcript
@@ -891,12 +885,31 @@ final class TUIApp {
             transcriptScrollOffset = 0
             try? RecentWorkspaceStore.record(workspaceURL: proposed)
             loadRecentWorkspaces()
-            refreshSessionRuntime()
             loadHistory()
             statusLine = "Workspace updated"
+            Task { [weak self] in
+                await self?.refreshProviderStatus()
+            }
         } catch {
-            statusLine = "Failed to switch workspace"
+            statusLine = "Failed to switch workspace: \(error.localizedDescription)"
         }
+    }
+
+    private func normalizeWorkspacePathInput(_ raw: String) -> String {
+        var trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("\""), trimmed.hasSuffix("\""), trimmed.count >= 2 {
+            trimmed.removeFirst()
+            trimmed.removeLast()
+        }
+        if trimmed.hasPrefix("'"), trimmed.hasSuffix("'"), trimmed.count >= 2 {
+            trimmed.removeFirst()
+            trimmed.removeLast()
+        }
+        if trimmed.hasPrefix("~") {
+            let home = FileManager.default.homeDirectoryForCurrentUser.path
+            trimmed = home + trimmed.dropFirst()
+        }
+        return trimmed
     }
 
     private func commitTerminalCommand() {
@@ -1050,22 +1063,71 @@ final class TUIApp {
     }
 
     private func refreshSessionRuntime() {
+        let previousRuntime = runtime
         do {
             runtime = try makeSessionRuntime()
+            providerStartupIssue = nil
         } catch {
-            runtime = try! makeSessionRuntime(provider: "mock", model: CLIConfiguration.defaultModel(for: "mock"))
+            providerStartupIssue = error.localizedDescription
+
+            do {
+                runtime = try makeSessionRuntime(provider: "mock", model: CLIConfiguration.defaultModel(for: "mock"))
+            } catch {
+                runtime = previousRuntime
+            }
+
             providerStatus = .init(
                 headline: "Provider needs attention",
                 details: [
-                    error.localizedDescription,
-                    "Ashex kept the TUI running with a safe mock fallback.",
+                    self.providerStartupIssue ?? error.localizedDescription,
+                    "Ashex could not rebuild the selected provider runtime. The TUI stays alive and queued prompts will wait until the provider is available again.",
                     Self.recoveryHint(for: sessionProvider)
                 ],
                 availableModels: [],
                 guardrailAssessment: nil
             )
-            statusLine = "Provider needs attention"
+            statusLine = promptQueue.isEmpty ? "Provider needs attention" : "Prompt queue waiting for provider"
+            if !promptQueue.isEmpty {
+                schedulePromptQueueRetry()
+            }
         }
+
+        processPromptQueueIfPossible()
+    }
+
+    private func switchWorkspace(to proposed: URL) throws {
+        stopWorkingIndicator()
+        runTask?.cancel()
+        runTask = nil
+        runExecutionControl = nil
+        activeQueuedPrompt = nil
+        queueRetryTask?.cancel()
+        queueRetryTask = nil
+
+        terminalTask?.cancel()
+        terminalTask = nil
+        terminalCancellation = CancellationToken()
+        terminalLines = ["No terminal commands yet. Open the pane and run one from the input bar."]
+        terminalScrollOffset = 0
+
+        let loadedConfig = try UserConfigStore.loadMerged(for: proposed)
+        let storageRoot = proposed.appendingPathComponent(".ashex")
+        let store = SQLitePersistenceStore(databaseURL: storageRoot.appendingPathComponent("ashex.sqlite"))
+        try store.initialize()
+
+        sessionWorkspaceRoot = proposed
+        sessionStorageRoot = storageRoot
+        sessionUserConfig = loadedConfig.effectiveConfig
+        sessionUserConfigFile = loadedConfig.workspaceFileURL
+        sessionGlobalUserConfigFile = loadedConfig.globalFileURL
+        historyStore = store
+        sessionInspector = SessionInspector(persistence: store)
+        workspaceSelection = 0
+        workspacePreviewLines = []
+        providerStartupIssue = nil
+        promptQueue = PromptQueueState()
+        activeQueuedPrompt = nil
+        refreshSessionRuntime()
     }
 
     @discardableResult
@@ -1260,6 +1322,8 @@ final class TUIApp {
     }
 
     private func startRun(prompt: String) {
+        queueRetryTask?.cancel()
+        queueRetryTask = nil
         runTask?.cancel()
         let executionControl = ExecutionControl()
         runExecutionControl = executionControl
@@ -1280,7 +1344,11 @@ final class TUIApp {
         showHistory = false
         focus = .transcript
         statusLine = "Checking model guardrails"
+        if let activeQueuedPrompt {
+            runLines.append("[queue] Starting prompt #\(activeQueuedPrompt.id) (\(promptQueue.count) queued behind it)")
+        }
         startWorkingIndicator()
+        let queuedPrompt = activeQueuedPrompt
         runTask = Task { [weak self] in
             guard let self else { return }
 
@@ -1301,18 +1369,36 @@ final class TUIApp {
                     }
                 }
                 await MainActor.run {
+                    self.activeQueuedPrompt = nil
+                    self.runTask = nil
                     self.runExecutionControl = nil
                     self.finishRun()
+                    self.processPromptQueueIfPossible()
                 }
             } catch {
                 await MainActor.run {
+                    self.runTask = nil
                     self.runExecutionControl = nil
                     self.stopWorkingIndicator()
+                    if let queuedPrompt, PromptFailureRouting.shouldRetry(message: error.localizedDescription) {
+                        let retriedPrompt = queuedPrompt.incrementingAttemptCount()
+                        self.promptQueue.requeueAtFront(retriedPrompt)
+                        self.activeQueuedPrompt = nil
+                        self.runLines.append("[queue] Prompt #\(retriedPrompt.id) is waiting to retry: \(error.localizedDescription)")
+                        self.runFinished = true
+                        self.runStartedAt = nil
+                        self.statusLine = "Prompt queue waiting for provider"
+                        self.schedulePromptQueueRetry()
+                        self.render()
+                        return
+                    }
+                    self.activeQueuedPrompt = nil
                     self.runLines.append("[error] \(error.localizedDescription)")
                     self.runFinished = true
                     self.runStartedAt = nil
                     self.statusLine = "Run blocked"
                     self.render()
+                    self.processPromptQueueIfPossible()
                 }
             }
         }
@@ -1336,6 +1422,9 @@ final class TUIApp {
         runStartedAt = nil
         if statusLine == "Running" {
             statusLine = "Run finished"
+        } else if !promptQueue.isEmpty {
+            statusLine = "Queued prompts remaining: \(promptQueue.count)"
+            runLines.append("[queue] \(promptQueue.count) queued prompt(s) still waiting")
         }
         render()
     }
@@ -2026,7 +2115,7 @@ final class TUIApp {
             lines.append("\(TerminalUIStyle.ink)Recent Workspaces\(TerminalUIStyle.reset)")
         }
 
-        for (offset, workspace) in recentWorkspaces.enumerated().prefix(8) {
+        for (offset, workspace) in recentWorkspaces.enumerated().prefix(WorkspaceSelection.visibleRecentWorkspaceLimit) {
             let index = offset + 1
             let selected = focus == .workspaces && index == workspaceSelection
             let marker = selected ? "\(TerminalUIStyle.selection) \(TerminalUIStyle.reset)" : " "
@@ -2987,7 +3076,7 @@ final class TUIApp {
     private func loadRecentWorkspaces() {
         do {
             recentWorkspaces = try RecentWorkspaceStore.load()
-            workspaceSelection = min(workspaceSelection, max(recentWorkspaces.count, 0))
+            workspaceSelection = WorkspaceSelection.clamped(workspaceSelection, recentWorkspaceCount: recentWorkspaces.count)
             refreshWorkspacePreview()
         } catch {
             recentWorkspaces = []
@@ -3224,11 +3313,12 @@ final class TUIApp {
     }
 
     private func openSelectedWorkspace() {
+        workspaceSelection = WorkspaceSelection.clamped(workspaceSelection, recentWorkspaceCount: recentWorkspaces.count)
         if workspaceSelection == 0 {
             inputMode = .workspacePath
-            workspacePathInput = sessionWorkspaceRoot.path
+            workspacePathInput = ""
             focus = .input
-            statusLine = "Enter a project directory and press Enter"
+            statusLine = "Enter or paste a project directory and press Enter"
             return
         }
 
@@ -3241,6 +3331,94 @@ final class TUIApp {
         commitWorkspacePathInput()
         showWorkspaces = false
         focus = .launcher
+    }
+
+    private func enqueuePrompt(_ prompt: String) {
+        let queuedPrompt = promptQueue.enqueue(prompt)
+        promptText = ""
+        inputMode = .prompt
+        showSettings = false
+        showHelp = false
+        showHistory = false
+        showCommands = false
+        focus = .transcript
+
+        let queuePosition = promptQueue.count
+        runLines.append("[queue] Added prompt #\(queuedPrompt.id) at position \(queuePosition)")
+        transcriptScrollOffset = 0
+        if activeQueuedPrompt == nil && runFinished {
+            statusLine = "Prompt queued"
+        } else {
+            statusLine = "Prompt queued behind \(max(queuePosition - 1, 0)) active request(s)"
+        }
+
+        processPromptQueueIfPossible()
+    }
+
+    private func processPromptQueueIfPossible() {
+        guard runTask == nil, runFinished, pendingApproval == nil, activeQueuedPrompt == nil else { return }
+        guard let nextPrompt = promptQueue.first else { return }
+
+        if let blockedReason = queuedPromptBlockedReason() {
+            statusLine = "Prompt queue waiting"
+            if runLines.isEmpty || runFinished {
+                runLines = [
+                    "[queue] Waiting to send prompt #\(nextPrompt.id)",
+                    blockedReason
+                ]
+                transcriptScrollOffset = 0
+            }
+            schedulePromptQueueRetry()
+            render()
+            return
+        }
+
+        _ = promptQueue.dequeue()
+        activeQueuedPrompt = nextPrompt
+        startRun(prompt: nextPrompt.text)
+    }
+
+    private func queuedPromptBlockedReason() -> String? {
+        if let providerStartupIssue {
+            return providerStartupIssue
+        }
+
+        switch sessionProvider {
+        case "openai", "anthropic":
+            let apiKey = try? configuration.resolvedAPIKey(for: sessionProvider)
+            if (apiKey ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return "\(sessionProvider.capitalized) API key is missing."
+            }
+        case "ollama":
+            if providerStatus.headline == "Ollama connection failed" {
+                return providerStatus.details.first ?? "Ollama is unavailable."
+            }
+            if let assessment = providerStatus.guardrailAssessment, assessment.severity == .blocked {
+                return ([assessment.headline] + assessment.details).joined(separator: " ")
+            }
+        default:
+            break
+        }
+
+        return nil
+    }
+
+    private func schedulePromptQueueRetry() {
+        guard queueRetryTask == nil else { return }
+        queueRetryTask = Task { [weak self] in
+            guard let self else { return }
+
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(5))
+                guard !Task.isCancelled else { return }
+                await self.refreshProviderStatus()
+                await MainActor.run {
+                    self.queueRetryTask?.cancel()
+                    self.queueRetryTask = nil
+                    self.processPromptQueueIfPossible()
+                }
+            }
+        }
     }
 
     private func makeSessionRuntime() throws -> AgentRuntime {
@@ -3295,6 +3473,7 @@ final class TUIApp {
         if showSettings || statusLine == "Ready" {
             statusLine = snapshot.headline
         }
+        processPromptQueueIfPossible()
         render()
     }
 
