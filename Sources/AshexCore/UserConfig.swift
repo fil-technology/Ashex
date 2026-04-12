@@ -5,17 +5,26 @@ public struct AshexUserConfig: Codable, Sendable {
     public var sandbox: SandboxPolicyConfig
     public var network: NetworkPolicyConfig
     public var shell: ShellCommandPolicyConfig
+    public var daemon: DaemonConfig
+    public var telegram: TelegramConfig
+    public var logging: LoggingConfig
 
     public init(
         version: Int = 1,
         sandbox: SandboxPolicyConfig = .default,
         network: NetworkPolicyConfig = .default,
-        shell: ShellCommandPolicyConfig = .default
+        shell: ShellCommandPolicyConfig = .default,
+        daemon: DaemonConfig = .default,
+        telegram: TelegramConfig = .default,
+        logging: LoggingConfig = .default
     ) {
         self.version = version
         self.sandbox = sandbox
         self.network = network
         self.shell = shell
+        self.daemon = daemon
+        self.telegram = telegram
+        self.logging = logging
     }
 
     public static let `default` = AshexUserConfig()
@@ -25,6 +34,9 @@ public struct AshexUserConfig: Codable, Sendable {
         case sandbox
         case network
         case shell
+        case daemon
+        case telegram
+        case logging
     }
 
     public init(from decoder: any Decoder) throws {
@@ -33,7 +45,119 @@ public struct AshexUserConfig: Codable, Sendable {
         sandbox = try container.decodeIfPresent(SandboxPolicyConfig.self, forKey: .sandbox) ?? .default
         network = try container.decodeIfPresent(NetworkPolicyConfig.self, forKey: .network) ?? .default
         shell = try container.decodeIfPresent(ShellCommandPolicyConfig.self, forKey: .shell) ?? .default
+        daemon = try container.decodeIfPresent(DaemonConfig.self, forKey: .daemon) ?? .default
+        telegram = try container.decodeIfPresent(TelegramConfig.self, forKey: .telegram) ?? .default
+        logging = try container.decodeIfPresent(LoggingConfig.self, forKey: .logging) ?? .default
     }
+}
+
+public struct DaemonConfig: Codable, Sendable {
+    public var enabled: Bool
+    public var foregroundPollIntervalSeconds: Int
+
+    public init(enabled: Bool, foregroundPollIntervalSeconds: Int = 2) {
+        self.enabled = enabled
+        self.foregroundPollIntervalSeconds = foregroundPollIntervalSeconds
+    }
+
+    public static let `default` = DaemonConfig(enabled: false, foregroundPollIntervalSeconds: 2)
+
+    private enum CodingKeys: String, CodingKey {
+        case enabled
+        case foregroundPollIntervalSeconds
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
+        foregroundPollIntervalSeconds = max(1, try container.decodeIfPresent(Int.self, forKey: .foregroundPollIntervalSeconds) ?? 2)
+    }
+}
+
+public enum ConnectorExecutionPolicyMode: String, Codable, Sendable, CaseIterable {
+    case assistantOnly = "assistant_only"
+    case approvalRequired = "approval_required"
+}
+
+public enum LoggingLevel: String, Codable, Sendable, CaseIterable {
+    case debug
+    case info
+    case warning
+    case error
+}
+
+public struct LoggingConfig: Codable, Sendable {
+    public var level: LoggingLevel
+
+    public init(level: LoggingLevel = .info) {
+        self.level = level
+    }
+
+    public static let `default` = LoggingConfig(level: .info)
+
+    private enum CodingKeys: String, CodingKey {
+        case level
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        level = try container.decodeIfPresent(LoggingLevel.self, forKey: .level) ?? .info
+    }
+}
+
+public struct TelegramConfig: Codable, Sendable {
+    public var enabled: Bool
+    public var botToken: String?
+    public var pollingTimeoutSeconds: Int
+    public var allowedChatIDs: [String]
+    public var allowedUserIDs: [String]
+    public var responseMode: TelegramResponseMode
+    public var executionPolicy: ConnectorExecutionPolicyMode
+
+    public init(
+        enabled: Bool = false,
+        botToken: String? = nil,
+        pollingTimeoutSeconds: Int = 20,
+        allowedChatIDs: [String] = [],
+        allowedUserIDs: [String] = [],
+        responseMode: TelegramResponseMode = .finalMessage,
+        executionPolicy: ConnectorExecutionPolicyMode = .assistantOnly
+    ) {
+        self.enabled = enabled
+        self.botToken = botToken
+        self.pollingTimeoutSeconds = pollingTimeoutSeconds
+        self.allowedChatIDs = allowedChatIDs
+        self.allowedUserIDs = allowedUserIDs
+        self.responseMode = responseMode
+        self.executionPolicy = executionPolicy
+    }
+
+    public static let `default` = TelegramConfig()
+
+    private enum CodingKeys: String, CodingKey {
+        case enabled
+        case botToken
+        case pollingTimeoutSeconds
+        case allowedChatIDs
+        case allowedUserIDs
+        case responseMode
+        case executionPolicy
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
+        botToken = try container.decodeIfPresent(String.self, forKey: .botToken)
+        pollingTimeoutSeconds = max(1, try container.decodeIfPresent(Int.self, forKey: .pollingTimeoutSeconds) ?? 20)
+        allowedChatIDs = try container.decodeIfPresent([String].self, forKey: .allowedChatIDs) ?? []
+        allowedUserIDs = try container.decodeIfPresent([String].self, forKey: .allowedUserIDs) ?? []
+        responseMode = try container.decodeIfPresent(TelegramResponseMode.self, forKey: .responseMode) ?? .finalMessage
+        executionPolicy = try container.decodeIfPresent(ConnectorExecutionPolicyMode.self, forKey: .executionPolicy) ?? .assistantOnly
+    }
+}
+
+public enum TelegramResponseMode: String, Codable, Sendable, CaseIterable {
+    case finalMessage = "final_message"
 }
 
 public enum WorkspaceSandboxMode: String, Codable, Sendable, CaseIterable {

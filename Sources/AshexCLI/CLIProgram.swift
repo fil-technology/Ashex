@@ -5,6 +5,10 @@ import Foundation
 struct AshexCLI {
     static func main() async {
         do {
+            if try await DaemonCLI.handle(arguments: CommandLine.arguments) {
+                return
+            }
+
             let configuration = try CLIConfiguration(arguments: CommandLine.arguments)
             try configuration.persistSessionSettings()
 
@@ -260,16 +264,30 @@ struct CLIConfiguration {
     }
 
     func makeRuntime(provider: String, model: String, approvalPolicy: any ApprovalPolicy) throws -> AgentRuntime {
-        let workspaceURL = workspaceRoot.standardizedFileURL
-        let persistence = SQLitePersistenceStore(databaseURL: storageRoot.appendingPathComponent("ashex.sqlite"))
-        try persistence.initialize()
-        let workspaceSnapshot = WorkspaceSnapshotBuilder.capture(workspaceRoot: workspaceURL)
-        let shellPolicy = ShellCommandPolicy(config: userConfig.shell)
-        let shellExecutionPolicy = ShellExecutionPolicy(
-            sandbox: userConfig.sandbox,
-            network: userConfig.network,
-            shell: shellPolicy
+        let persistence = try makePersistenceStore()
+        return try makeRuntime(
+            persistence: persistence,
+            provider: provider,
+            model: model,
+            approvalPolicy: approvalPolicy
         )
+    }
+
+    func makePersistenceStore() throws -> SQLitePersistenceStore {
+        let store = SQLitePersistenceStore(databaseURL: storageRoot.appendingPathComponent("ashex.sqlite"))
+        try store.initialize()
+        return store
+    }
+
+    func makeRuntime(
+        persistence: SQLitePersistenceStore,
+        provider: String,
+        model: String,
+        approvalPolicy: any ApprovalPolicy
+    ) throws -> AgentRuntime {
+        let workspaceURL = workspaceRoot.standardizedFileURL
+        let workspaceSnapshot = WorkspaceSnapshotBuilder.capture(workspaceRoot: workspaceURL)
+        let shellExecutionPolicy = makeShellExecutionPolicy()
         let tools = try RuntimeToolFactory.makeTools(
             workspaceURL: workspaceURL,
             persistence: persistence,
@@ -283,6 +301,15 @@ struct CLIConfiguration {
             approvalPolicy: approvalPolicy,
             shellExecutionPolicy: shellExecutionPolicy,
             workspaceSnapshot: workspaceSnapshot
+        )
+    }
+
+    func makeShellExecutionPolicy() -> ShellExecutionPolicy {
+        let shellPolicy = ShellCommandPolicy(config: userConfig.shell)
+        return ShellExecutionPolicy(
+            sandbox: userConfig.sandbox,
+            network: userConfig.network,
+            shell: shellPolicy
         )
     }
 

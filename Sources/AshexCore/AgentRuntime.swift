@@ -3,11 +3,13 @@ import Foundation
 public struct RunRequest: Sendable {
     public let prompt: String
     public let maxIterations: Int
+    public let threadID: UUID?
     public let executionControl: ExecutionControl?
 
-    public init(prompt: String, maxIterations: Int = 8, executionControl: ExecutionControl? = nil) {
+    public init(prompt: String, maxIterations: Int = 8, threadID: UUID? = nil, executionControl: ExecutionControl? = nil) {
         self.prompt = prompt
         self.maxIterations = maxIterations
+        self.threadID = threadID
         self.executionControl = executionControl
     }
 }
@@ -74,7 +76,15 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         let now = clock()
 
         do {
-            let thread = try persistence.createThread(now: now)
+            let thread: ThreadRecord
+            if let threadID = request.threadID {
+                guard let existingThread = try persistence.fetchThread(threadID: threadID) else {
+                    throw AshexError.persistence("Requested thread \(threadID.uuidString) does not exist")
+                }
+                thread = existingThread
+            } else {
+                thread = try persistence.createThread(now: now)
+            }
             let run = try persistence.createRun(threadID: thread.id, state: .pending, now: now)
             try persistence.transitionRun(runID: run.id, to: .running, reason: nil, now: clock())
 

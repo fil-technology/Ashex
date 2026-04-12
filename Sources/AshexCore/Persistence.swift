@@ -4,6 +4,7 @@ public protocol PersistenceStore: Sendable {
     func initialize() throws
     func normalizeInterruptedRuns(now: Date) throws
     func createThread(now: Date) throws -> ThreadRecord
+    func fetchThread(threadID: UUID) throws -> ThreadRecord?
     func createRun(threadID: UUID, state: RunState, now: Date) throws -> RunRecord
     func transitionRun(runID: UUID, to state: RunState, reason: String?, now: Date) throws
     func createRunSteps(runID: UUID, steps: [String], now: Date) throws -> [RunStepRecord]

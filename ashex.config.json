@@ -1,4 +1,11 @@
 {
+  "daemon" : {
+    "enabled" : false,
+    "foregroundPollIntervalSeconds" : 2
+  },
+  "logging" : {
+    "level" : "info"
+  },
   "sandbox" : {
     "mode" : "workspace_write",
     "protectedPaths" : [
@@ -32,6 +39,19 @@
     "rules" : [
 
     ]
+  },
+  "telegram" : {
+    "allowedChatIDs" : [
+
+    ],
+    "allowedUserIDs" : [
+
+    ],
+    "botToken" : null,
+    "enabled" : false,
+    "executionPolicy" : "assistant_only",
+    "pollingTimeoutSeconds" : 20,
+    "responseMode" : "final_message"
   },
   "version" : 1
 }
