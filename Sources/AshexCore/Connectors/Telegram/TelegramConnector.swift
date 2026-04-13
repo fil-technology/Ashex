@@ -1,6 +1,6 @@
 import Foundation
 
-public actor TelegramConnector: Connector {
+public actor TelegramConnector: Connector, ConnectorActivityControlling {
     public let id: String
     public let kind: String = "telegram"
 
@@ -10,6 +10,7 @@ public actor TelegramConnector: Connector {
     private let persistence: PersistenceStore
     private let logger: DaemonLogger?
     private var pollTask: Task<Void, Never>?
+    private var activityTasks: [String: Task<Void, Never>] = [:]
 
     public init(
         id: String = "telegram",
@@ -46,8 +47,47 @@ public actor TelegramConnector: Connector {
             throw AshexError.model("Invalid Telegram chat ID: \(message.conversation.externalConversationID)")
         }
         for chunk in Self.chunk(text: message.text, limit: 4000) {
-            try await client.sendMessage(token: token, chatID: chatID, text: chunk)
+            try await client.sendMessage(
+                token: token,
+                chatID: chatID,
+                text: TelegramMessageFormatter.format(chunk),
+                parseMode: TelegramMessageFormatter.parseMode
+            )
         }
+    }
+
+    public func beginActivity(_ activity: ConnectorActivity, for conversation: ConnectorConversationReference) async throws {
+        let key = activityKey(activity, conversation: conversation)
+        if let existingTask = activityTasks[key], !existingTask.isCancelled {
+            return
+        }
+        guard let chatID = Int64(conversation.externalConversationID) else {
+            throw AshexError.model("Invalid Telegram chat ID: \(conversation.externalConversationID)")
+        }
+        try await sendChatAction(activity, chatID: chatID)
+        activityTasks[key] = Task {
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(nanoseconds: 4_000_000_000)
+                    try Task.checkCancellation()
+                    try await self.sendChatAction(activity, chatID: chatID)
+                } catch is CancellationError {
+                    return
+                } catch {
+                    await self.logger?.log(.warning, subsystem: "telegram", message: "Failed to refresh chat activity", metadata: [
+                        "chat_id": .string(conversation.externalConversationID),
+                        "activity": .string(activity.rawValue),
+                        "error": .string(error.localizedDescription),
+                    ])
+                }
+            }
+        }
+    }
+
+    public func endActivity(_ activity: ConnectorActivity, for conversation: ConnectorConversationReference) async {
+        let key = activityKey(activity, conversation: conversation)
+        activityTasks[key]?.cancel()
+        activityTasks[key] = nil
     }
 
     public func verifyConnection() async throws -> TelegramBotIdentity {
@@ -187,5 +227,13 @@ public actor TelegramConnector: Connector {
             chunks.append(String(remaining))
         }
         return chunks
+    }
+
+    private func sendChatAction(_ activity: ConnectorActivity, chatID: Int64) async throws {
+        try await client.sendChatAction(token: token, chatID: chatID, action: activity.rawValue)
+    }
+
+    private func activityKey(_ activity: ConnectorActivity, conversation: ConnectorConversationReference) -> String {
+        "\(activity.rawValue):\(conversation.externalConversationID)"
     }
 }

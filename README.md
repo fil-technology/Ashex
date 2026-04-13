@@ -72,8 +72,11 @@ You can also install somewhere else:
 TUI highlights:
 
 - Switch between `mock`, `ollama`, `openai`, and `anthropic` without restarting
+- Use `Assistant Setup` in the launcher to configure provider, Telegram, and daemon controls
 - Edit the active model name from the TUI
 - Save provider API keys from the TUI settings screen
+- Save the Telegram bot token from the TUI into macOS Keychain
+- Enable Telegram, set safety mode, edit allowed chat IDs, test connectivity, and start/stop the daemon from the TUI
 - Store provider API keys in macOS Keychain instead of SQLite settings
 - Persist provider/model defaults across launches
 - Switch the active workspace live from the TUI or with `:workspace /path`
@@ -123,6 +126,18 @@ export ASHEX_TELEGRAM_BOT_TOKEN=123456:bot-token
 swift run ashex telegram test
 swift run ashex daemon run --provider openai --model gpt-5.4-mini
 ```
+
+TUI onboarding path:
+
+1. Launch `swift run ashex`
+2. Open `Assistant Setup` from the launcher
+3. Choose the provider and model you want for daemon runs
+4. Save the provider API key if needed
+5. Enable Telegram, save the Telegram bot token, and optionally add allowed private chat IDs
+6. Use `Telegram Test` to verify the bot token
+7. Use `Daemon` to start the background process
+
+After that, the bot should keep running until you stop the daemon from the same settings screen or by CLI.
 
 Provider environment variables:
 

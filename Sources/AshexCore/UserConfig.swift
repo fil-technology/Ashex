@@ -7,6 +7,7 @@ public struct AshexUserConfig: Codable, Sendable {
     public var shell: ShellCommandPolicyConfig
     public var daemon: DaemonConfig
     public var telegram: TelegramConfig
+    public var dflash: DFlashConfig
     public var logging: LoggingConfig
 
     public init(
@@ -16,6 +17,7 @@ public struct AshexUserConfig: Codable, Sendable {
         shell: ShellCommandPolicyConfig = .default,
         daemon: DaemonConfig = .default,
         telegram: TelegramConfig = .default,
+        dflash: DFlashConfig = .default,
         logging: LoggingConfig = .default
     ) {
         self.version = version
@@ -24,6 +26,7 @@ public struct AshexUserConfig: Codable, Sendable {
         self.shell = shell
         self.daemon = daemon
         self.telegram = telegram
+        self.dflash = dflash
         self.logging = logging
     }
 
@@ -36,6 +39,7 @@ public struct AshexUserConfig: Codable, Sendable {
         case shell
         case daemon
         case telegram
+        case dflash
         case logging
     }
 
@@ -47,7 +51,49 @@ public struct AshexUserConfig: Codable, Sendable {
         shell = try container.decodeIfPresent(ShellCommandPolicyConfig.self, forKey: .shell) ?? .default
         daemon = try container.decodeIfPresent(DaemonConfig.self, forKey: .daemon) ?? .default
         telegram = try container.decodeIfPresent(TelegramConfig.self, forKey: .telegram) ?? .default
+        dflash = try container.decodeIfPresent(DFlashConfig.self, forKey: .dflash) ?? .default
         logging = try container.decodeIfPresent(LoggingConfig.self, forKey: .logging) ?? .default
+    }
+}
+
+public struct DFlashConfig: Codable, Sendable {
+    public var enabled: Bool
+    public var baseURL: String
+    public var model: String?
+    public var draftModel: String?
+    public var requestTimeoutSeconds: Int
+
+    public init(
+        enabled: Bool = false,
+        baseURL: String = "http://127.0.0.1:8000",
+        model: String? = nil,
+        draftModel: String? = nil,
+        requestTimeoutSeconds: Int = 120
+    ) {
+        self.enabled = enabled
+        self.baseURL = baseURL
+        self.model = model
+        self.draftModel = draftModel
+        self.requestTimeoutSeconds = requestTimeoutSeconds
+    }
+
+    public static let `default` = DFlashConfig()
+
+    private enum CodingKeys: String, CodingKey {
+        case enabled
+        case baseURL
+        case model
+        case draftModel
+        case requestTimeoutSeconds
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
+        baseURL = try container.decodeIfPresent(String.self, forKey: .baseURL) ?? Self.default.baseURL
+        model = try container.decodeIfPresent(String.self, forKey: .model)
+        draftModel = try container.decodeIfPresent(String.self, forKey: .draftModel)
+        requestTimeoutSeconds = max(5, try container.decodeIfPresent(Int.self, forKey: .requestTimeoutSeconds) ?? Self.default.requestTimeoutSeconds)
     }
 }
 

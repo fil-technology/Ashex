@@ -1,15 +1,22 @@
 import Foundation
 
 public struct RunRequest: Sendable {
+    public enum Mode: Sendable {
+        case agent
+        case directChat
+    }
+
     public let prompt: String
     public let maxIterations: Int
     public let threadID: UUID?
+    public let mode: Mode
     public let executionControl: ExecutionControl?
 
-    public init(prompt: String, maxIterations: Int = 8, threadID: UUID? = nil, executionControl: ExecutionControl? = nil) {
+    public init(prompt: String, maxIterations: Int = 8, threadID: UUID? = nil, mode: Mode = .agent, executionControl: ExecutionControl? = nil) {
         self.prompt = prompt
         self.maxIterations = maxIterations
         self.threadID = threadID
+        self.mode = mode
         self.executionControl = executionControl
     }
 }
@@ -108,6 +115,12 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
 
             let userMessage = try persistence.appendMessage(threadID: thread.id, runID: run.id, role: .user, content: request.prompt, now: clock())
             try emitter.emit(.messageAppended(runID: run.id, messageID: userMessage.id, role: .user), runID: run.id)
+
+            if request.mode == .directChat {
+                try await executeDirectChatRun(thread: thread, run: run, request: request, emitter: emitter)
+                return
+            }
+
             let taskKind = TaskPlanner.classify(prompt: request.prompt)
             let initialWorkspaceSnapshotRecord = try persistence.fetchWorkspaceSnapshot(runID: run.id)
             let initialExplorationPlan = ExplorationStrategy.recommend(
@@ -157,7 +170,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                 try emitter.emit(.taskPlanCreated(runID: run.id, steps: plan.steps.map(\.title)), runID: run.id)
             }
 
-            let steps = plan?.steps ?? [PlannedStep(title: "Complete the user request")]
+            let steps = plan?.steps ?? [TaskPlanner.defaultSingleStep(for: request.prompt, taskKind: taskKind)]
             let stepRecords = try persistence.createRunSteps(runID: run.id, steps: steps.map(\.title), now: clock())
             for (index, step) in steps.enumerated() {
                 try await cancellation.checkCancellation()
@@ -320,6 +333,32 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         } catch {
             await finalizeFailure(error: error, emitter: emitter)
         }
+    }
+
+    private func executeDirectChatRun(
+        thread: ThreadRecord,
+        run: RunRecord,
+        request: RunRequest,
+        emitter: EventEmitter
+    ) async throws {
+        guard let adapter = modelAdapter as? any DirectChatModelAdapter else {
+            throw AshexError.model("Selected provider does not support direct chat mode")
+        }
+
+        let history = try persistence.fetchMessages(threadID: thread.id)
+        let systemPrompt = """
+        You are Ash, a helpful local-first assistant replying in a Telegram chat.
+        Answer naturally and conversationally.
+        Do not inspect the workspace, do not call tools, and do not mention internal runtime mechanics unless the user asks.
+        Keep answers concise unless the user asks for more detail.
+        """
+        let reply = try await adapter.directReply(history: history, systemPrompt: systemPrompt)
+        let assistantMessage = try persistence.appendMessage(threadID: thread.id, runID: run.id, role: .assistant, content: reply, now: clock())
+        try emitter.emit(.messageAppended(runID: run.id, messageID: assistantMessage.id, role: .assistant), runID: run.id)
+        try emitter.emit(.finalAnswer(runID: run.id, messageID: assistantMessage.id, text: reply), runID: run.id)
+        try persistence.transitionRun(runID: run.id, to: .completed, reason: nil, now: clock())
+        try emitter.emit(.runStateChanged(runID: run.id, state: .completed, reason: nil), runID: run.id)
+        try emitter.emit(.runFinished(runID: run.id, state: .completed), runID: run.id)
     }
 
     private static func shouldDelegateStep(

@@ -58,6 +58,10 @@ public enum TaskPlanner {
     public static func classify(prompt: String) -> TaskKind {
         let lowered = prompt.lowercased()
 
+        if isAnalysisOverviewPrompt(lowered) {
+            return .analysis
+        }
+
         if ["bug", "fix", "error", "regression", "failing", "broken", "issue"].contains(where: lowered.contains) {
             return .bugFix
         }
@@ -80,6 +84,26 @@ public enum TaskPlanner {
             return .analysis
         }
         return .general
+    }
+
+    public static func defaultSingleStep(for prompt: String, taskKind: TaskKind) -> PlannedStep {
+        switch taskKind {
+        case .analysis:
+            return PlannedStep(title: "Inspect the relevant workspace context and summarize the answer", phase: .exploration)
+        case .docs:
+            return PlannedStep(title: "Inspect the relevant documentation context and answer or edit as requested", phase: .exploration)
+        case .git:
+            return PlannedStep(title: "Inspect repository state and complete the git request", phase: .exploration)
+        case .shell:
+            return PlannedStep(title: "Run the requested command sequence safely and summarize the result", phase: .mutation)
+        case .bugFix, .feature, .refactor:
+            return PlannedStep(title: "Complete the user request", phase: .mutation)
+        case .general:
+            if isAnalysisOverviewPrompt(prompt.lowercased()) {
+                return PlannedStep(title: "Inspect the relevant workspace context and summarize the answer", phase: .exploration)
+            }
+            return PlannedStep(title: "Complete the user request", phase: .mutation)
+        }
     }
 
     public static func plan(for prompt: String) -> TaskPlan? {
@@ -186,10 +210,30 @@ public enum TaskPlanner {
         case .analysis, .general:
             return [
                 PlannedStep(title: "Inspect the current workspace state relevant to the request", phase: .exploration),
-                PlannedStep(title: "Plan the exact changes or commands needed", phase: .planning),
-                PlannedStep(title: "Implement or execute the requested changes", phase: .mutation),
-                PlannedStep(title: "Validate the result and summarize what changed", phase: .validation)
+                PlannedStep(title: "Synthesize the findings needed to answer the request", phase: .planning),
+                PlannedStep(title: "Deliver a concise answer grounded in the inspected workspace context", phase: .validation)
             ]
         }
+    }
+
+    private static func isAnalysisOverviewPrompt(_ lowered: String) -> Bool {
+        let overviewMarkers = [
+            "what is this project about",
+            "what's this project about",
+            "what does this project do",
+            "summarize this project",
+            "summarize this repo",
+            "summarize this repository",
+            "explain this project",
+            "explain this repo",
+            "explain this repository",
+            "give me an overview",
+            "overview of this project",
+            "overview of this repo",
+            "understand this project",
+            "understand this repo",
+            "understand this codebase"
+        ]
+        return overviewMarkers.contains(where: lowered.contains)
     }
 }

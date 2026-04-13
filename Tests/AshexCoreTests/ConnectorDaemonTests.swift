@@ -117,6 +117,122 @@ import Testing
     #expect(await counter.value == 1)
 }
 
+@Test func connectorMessageIntentClassifierUsesDirectChatForCasualQuestions() {
+    #expect(ConnectorMessageIntentClassifier.classify("How are you?") == .directChat)
+    #expect(ConnectorMessageIntentClassifier.classify("Tell me a joke") == .directChat)
+    #expect(ConnectorMessageIntentClassifier.classify("Summarize this repository") == .workspaceTask)
+}
+
+@Test func runDispatcherDirectChatModeAvoidsToolLoopForCasualMessage() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let persistence = SQLitePersistenceStore(databaseURL: root.appendingPathComponent("ashex.sqlite"))
+    try persistence.initialize()
+    let thread = try persistence.createThread(now: Date())
+
+    let runtime = try AgentRuntime(
+        modelAdapter: MockModelAdapter(),
+        toolRegistry: ToolRegistry(tools: []),
+        persistence: persistence
+    )
+    let dispatcher = RunDispatcher(runtime: runtime)
+    let result = try await dispatcher.dispatch(
+        prompt: "How are you?",
+        threadID: thread.id,
+        maxIterations: 1,
+        mode: .directChat
+    )
+
+    #expect(result.finalText.contains("I'm doing well"))
+    let messages = try persistence.fetchMessages(threadID: thread.id)
+    #expect(messages.count == 2)
+    #expect(messages.last?.role == .assistant)
+}
+
+@Test func telegramConnectorActivityHeartbeatStartsAndStopsForTyping() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let persistence = SQLitePersistenceStore(databaseURL: root.appendingPathComponent("ashex.sqlite"))
+    try persistence.initialize()
+
+    let client = MockTelegramBotClient()
+    let connector = TelegramConnector(
+        token: "test-token",
+        config: TelegramConfig(enabled: true),
+        client: client,
+        persistence: persistence
+    )
+    let conversation = ConnectorConversationReference(
+        connectorKind: "telegram",
+        connectorID: "telegram",
+        externalConversationID: "33"
+    )
+
+    try await connector.beginActivity(.typing, for: conversation)
+    try await Task.sleep(nanoseconds: 100_000_000)
+    await connector.endActivity(.typing, for: conversation)
+
+    let actions = await client.chatActions
+    #expect(actions.count == 1)
+    #expect(actions.first?.0 == 33)
+    #expect(actions.first?.1 == "typing")
+}
+
+@Test func telegramMessageFormatterRendersCommonAssistantMarkdownForTelegram() {
+    let rendered = TelegramMessageFormatter.format("""
+    For example:
+
+    * **Understand the files:** Tell me what `ashex.config.json` does.
+
+    ```swift
+    print("hi")
+    ```
+    """)
+
+    #expect(rendered.contains("<b>Understand the files:</b>"))
+    #expect(rendered.contains("<code>ashex.config.json</code>"))
+    #expect(rendered.contains("<pre><code>print(\"hi\")</code></pre>"))
+}
+
+@Test func telegramConnectorSendsHTMLFormattedMessages() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let persistence = SQLitePersistenceStore(databaseURL: root.appendingPathComponent("ashex.sqlite"))
+    try persistence.initialize()
+
+    let client = MockTelegramBotClient()
+    let connector = TelegramConnector(
+        token: "test-token",
+        config: TelegramConfig(enabled: true),
+        client: client,
+        persistence: persistence
+    )
+    let conversation = ConnectorConversationReference(
+        connectorKind: "telegram",
+        connectorID: "telegram",
+        externalConversationID: "33"
+    )
+
+    try await connector.send(.init(
+        connectorID: "telegram",
+        conversation: conversation,
+        text: "**Hello** from `Ash`"
+    ))
+
+    let sentMessages = await client.sentMessages
+    #expect(sentMessages.count == 1)
+    #expect(sentMessages.first?.0 == 33)
+    #expect(sentMessages.first?.1.contains("<b>Hello</b>") == true)
+    #expect(sentMessages.first?.2 == "HTML")
+}
+
+@Test func telegramChatActionResponseDecodesTelegramBoolPayload() throws {
+    let data = """
+    {"ok":true,"result":true}
+    """.data(using: .utf8)!
+
+    let decoded = try JSONDecoder().decode(TelegramBoolResponse.self, from: data)
+    #expect(decoded.ok == true)
+    #expect(decoded.result == true)
+}
+
 private actor Counter {
     private(set) var value = 0
 
@@ -145,7 +261,8 @@ private actor SequencedDaemonModelAdapter: ModelAdapter {
 
 private actor MockTelegramBotClient: TelegramBotClient {
     private var updates: [[TelegramUpdate]]
-    private(set) var sentMessages: [(Int64, String)] = []
+    private(set) var sentMessages: [(Int64, String, String?)] = []
+    private(set) var chatActions: [(Int64, String)] = []
 
     init(updates: [[TelegramUpdate]] = []) {
         self.updates = updates
@@ -163,7 +280,11 @@ private actor MockTelegramBotClient: TelegramBotClient {
         return updates.removeFirst()
     }
 
-    func sendMessage(token: String, chatID: Int64, text: String) async throws {
-        sentMessages.append((chatID, text))
+    func sendMessage(token: String, chatID: Int64, text: String, parseMode: String?) async throws {
+        sentMessages.append((chatID, text, parseMode))
+    }
+
+    func sendChatAction(token: String, chatID: Int64, action: String) async throws {
+        chatActions.append((chatID, action))
     }
 }

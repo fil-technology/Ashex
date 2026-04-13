@@ -98,10 +98,24 @@ public actor DaemonSupervisor {
             "conversation_id": .string(mapping.externalConversationID),
         ])
 
+        let intent = ConnectorMessageIntentClassifier.classify(event.text)
+        await logger.log(.info, subsystem: "daemon.intent", message: "Resolved connector message intent", metadata: [
+            "intent": .string(intent.rawValue),
+            "conversation_id": .string(event.conversation.externalConversationID),
+        ])
+
+        try await registry.beginActivity(.typing, for: event.conversation, connectorID: event.connectorID)
+        defer {
+            Task {
+                await registry.endActivity(.typing, for: event.conversation, connectorID: event.connectorID)
+            }
+        }
+
         let result = try await dispatcher.dispatch(
             prompt: event.text,
             threadID: mapping.threadID,
-            maxIterations: config.maxIterations
+            maxIterations: config.maxIterations,
+            mode: intent == .directChat ? .directChat : .agent
         )
 
         await logger.log(.info, subsystem: "daemon.outbound", message: "Sending reply", metadata: [

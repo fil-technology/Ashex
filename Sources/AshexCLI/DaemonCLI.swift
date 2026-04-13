@@ -29,6 +29,9 @@ enum DaemonCLICommand: Equatable {
 }
 
 enum DaemonCLI {
+    static let telegramSecretNamespace = "connector.credentials"
+    static let telegramSecretKey = "telegram_bot_token"
+
     static func handle(arguments: [String]) async throws -> Bool {
         guard let command = DaemonCLICommand.parse(arguments: arguments) else {
             return false
@@ -121,7 +124,7 @@ enum DaemonCLI {
         try handle.seekToEnd()
 
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
+        process.executableURL = try ExecutableLocator.currentExecutableURL()
         process.arguments = ["daemon", "run"] + extraArguments
         process.currentDirectoryURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         process.standardOutput = handle
@@ -176,7 +179,18 @@ enum DaemonCLI {
 
     private static func resolvedTelegramToken(from config: TelegramConfig) -> String? {
         let envToken = ProcessInfo.processInfo.environment["ASHEX_TELEGRAM_BOT_TOKEN"]
-        return envToken?.isEmpty == false ? envToken : config.botToken
+        if envToken?.isEmpty == false {
+            return envToken
+        }
+        if let configToken = config.botToken, !configToken.isEmpty {
+            return configToken
+        }
+        let secretStore = KeychainSecretStore()
+        if let stored = try? secretStore.readSecret(namespace: telegramSecretNamespace, key: telegramSecretKey),
+           !stored.isEmpty {
+            return stored
+        }
+        return nil
     }
 
     private static func daemonLogLevel(from level: LoggingLevel) -> DaemonLogLevel {
@@ -186,63 +200,6 @@ enum DaemonCLI {
         case .warning: return .warning
         case .error: return .error
         }
-    }
-}
-
-private struct DaemonProcessState: Codable {
-    let pid: Int32
-    let startedAt: Date
-    let logPath: String
-}
-
-private struct DaemonProcessStatus {
-    let pid: Int32
-    let startedAt: Date
-    let logPath: String
-    let isRunning: Bool
-}
-
-private final class DaemonProcessStateStore {
-    let storageRoot: URL
-
-    init(storageRoot: URL) {
-        self.storageRoot = storageRoot
-    }
-
-    var stateFileURL: URL {
-        storageRoot.appendingPathComponent("daemon", isDirectory: true).appendingPathComponent("state.json")
-    }
-
-    var logFileURL: URL {
-        storageRoot.appendingPathComponent("daemon", isDirectory: true).appendingPathComponent("daemon.log")
-    }
-
-    func writeCurrentProcess(logPath: String) throws {
-        let state = DaemonProcessState(pid: getpid(), startedAt: Date(), logPath: logPath)
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        let data = try encoder.encode(state)
-        try FileManager.default.createDirectory(at: stateFileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try data.write(to: stateFileURL, options: .atomic)
-    }
-
-    func clearIfOwnedByCurrentProcess() throws {
-        guard let status = try status(), status.pid == getpid() else { return }
-        try? FileManager.default.removeItem(at: stateFileURL)
-    }
-
-    func status() throws -> DaemonProcessStatus? {
-        guard FileManager.default.fileExists(atPath: stateFileURL.path) else { return nil }
-        let data = try Data(contentsOf: stateFileURL)
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        let state = try decoder.decode(DaemonProcessState.self, from: data)
-        let isRunning = kill(state.pid, 0) == 0
-        if !isRunning {
-            try? FileManager.default.removeItem(at: stateFileURL)
-            return DaemonProcessStatus(pid: state.pid, startedAt: state.startedAt, logPath: state.logPath, isRunning: false)
-        }
-        return DaemonProcessStatus(pid: state.pid, startedAt: state.startedAt, logPath: state.logPath, isRunning: true)
     }
 }
 

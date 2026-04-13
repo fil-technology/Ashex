@@ -62,6 +62,15 @@ public struct OutboundConnectorMessage: Sendable, Codable {
     }
 }
 
+public enum ConnectorActivity: String, Sendable, Codable {
+    case typing
+}
+
+public protocol ConnectorActivityControlling: Sendable {
+    func beginActivity(_ activity: ConnectorActivity, for conversation: ConnectorConversationReference) async throws
+    func endActivity(_ activity: ConnectorActivity, for conversation: ConnectorConversationReference) async
+}
+
 public protocol Connector: Sendable {
     var id: String { get }
     var kind: String { get }
@@ -94,5 +103,25 @@ public actor ConnectorRegistry {
             throw AshexError.model("No connector registered with id \(message.connectorID)")
         }
         try await connector.send(message)
+    }
+
+    public func beginActivity(_ activity: ConnectorActivity, for conversation: ConnectorConversationReference, connectorID: String) async throws {
+        guard let connector = connectors[connectorID] else {
+            throw AshexError.model("No connector registered with id \(connectorID)")
+        }
+        guard let activityConnector = connector as? any ConnectorActivityControlling else {
+            return
+        }
+        try await activityConnector.beginActivity(activity, for: conversation)
+    }
+
+    public func endActivity(_ activity: ConnectorActivity, for conversation: ConnectorConversationReference, connectorID: String) async {
+        guard let connector = connectors[connectorID] else {
+            return
+        }
+        guard let activityConnector = connector as? any ConnectorActivityControlling else {
+            return
+        }
+        await activityConnector.endActivity(activity, for: conversation)
     }
 }

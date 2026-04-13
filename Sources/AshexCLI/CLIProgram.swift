@@ -42,6 +42,9 @@ struct AshexCLI {
         if message.contains("anthropic_api_key") {
             return "Action: set ANTHROPIC_API_KEY, or run `swift run ashex --provider mock` to open the TUI without a remote provider."
         }
+        if message.contains("dflash") {
+            return "Action: start `dflash-serve`, choose `dflash` in Provider Settings, or run `swift run ashex --provider mock` until the local DFlash server is available."
+        }
         if message.contains("could not connect to the server") || message.contains("failed to connect") || message.contains("connection") {
             return "Action: start Ollama with `ollama serve`, switch to `mock` in Provider Settings after launch, or run `swift run ashex --provider mock`."
         }
@@ -243,6 +246,16 @@ struct CLIConfiguration {
             return AnthropicMessagesModelAdapter(
                 configuration: .init(apiKey: apiKey, model: model)
             )
+        case "dflash":
+            try Self.validateDFlashSupport()
+            return DFlashServerModelAdapter(
+                configuration: .init(
+                    model: model,
+                    baseURL: Self.dflashBaseURL(config: userConfig.dflash),
+                    requestTimeoutSeconds: userConfig.dflash.requestTimeoutSeconds,
+                    draftModel: userConfig.dflash.draftModel
+                )
+            )
         case "ollama":
             return OllamaChatModelAdapter(
                 configuration: .init(
@@ -251,7 +264,7 @@ struct CLIConfiguration {
                 )
             )
         default:
-            throw AshexError.model("Unsupported provider '\(provider)'. Supported: mock, openai, ollama")
+            throw AshexError.model("Unsupported provider '\(provider)'. Supported: mock, openai, anthropic, ollama, dflash")
         }
     }
 
@@ -348,6 +361,8 @@ struct CLIConfiguration {
             return ProcessInfo.processInfo.environment["OPENAI_MODEL"] ?? "gpt-5.4-mini"
         case "anthropic":
             return ProcessInfo.processInfo.environment["ANTHROPIC_MODEL"] ?? "claude-sonnet-4-20250514"
+        case "dflash":
+            return ProcessInfo.processInfo.environment["DFLASH_MODEL"] ?? "Qwen/Qwen3.5-4B"
         case "ollama":
             return ProcessInfo.processInfo.environment["OLLAMA_MODEL"] ?? "llama3.2"
         default:
@@ -361,6 +376,8 @@ struct CLIConfiguration {
             return ProcessInfo.processInfo.environment["OPENAI_MODEL"]
         case "anthropic":
             return ProcessInfo.processInfo.environment["ANTHROPIC_MODEL"]
+        case "dflash":
+            return ProcessInfo.processInfo.environment["DFLASH_MODEL"]
         case "ollama":
             return ProcessInfo.processInfo.environment["OLLAMA_MODEL"]
         default:
@@ -454,5 +471,17 @@ struct CLIConfiguration {
 
     static func ollamaBaseURL() -> URL {
         URL(string: ProcessInfo.processInfo.environment["OLLAMA_BASE_URL"] ?? "http://localhost:11434/api/chat")!
+    }
+
+    static func dflashBaseURL(config: DFlashConfig) -> URL {
+        URL(string: ProcessInfo.processInfo.environment["DFLASH_BASE_URL"] ?? config.baseURL)!
+    }
+
+    static func validateDFlashSupport() throws {
+#if arch(arm64)
+        return
+#else
+        throw AshexError.model("DFlash is currently supported only on Apple Silicon builds of Ashex.")
+#endif
     }
 }

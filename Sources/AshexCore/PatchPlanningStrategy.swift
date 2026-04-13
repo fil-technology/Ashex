@@ -45,7 +45,10 @@ enum PatchPlanningStrategy {
             objectives.append("Keep repository mutations deliberate and verify the resulting repo state.")
         case .shell:
             objectives.append("Use shell changes only when they directly support the requested workspace outcome.")
-        case .analysis, .general:
+        case .analysis:
+            objectives.append("Prefer targeted inspection of the most informative files before answering.")
+            objectives.append("Summarize the workspace clearly once enough evidence is gathered.")
+        case .general:
             objectives.append("Prefer a small, coherent set of file changes backed by prior inspection.")
         }
 

@@ -8,6 +8,8 @@ final class TUIApp {
         case prompt
         case model
         case apiKey
+        case telegramToken
+        case telegramAllowedChats
         case workspacePath
         case terminalCommand
     }
@@ -45,6 +47,13 @@ final class TUIApp {
         case provider = "Provider"
         case model = "Model"
         case apiKey = "API Key"
+        case telegramEnabled = "Telegram Enabled"
+        case telegramToken = "Telegram Token"
+        case telegramAllowedChats = "Telegram Chats"
+        case telegramPolicy = "Telegram Safety"
+        case telegramTest = "Telegram Test"
+        case daemonToggle = "Daemon"
+        case daemonStatus = "Daemon Status"
         case refresh = "Refresh Status"
         case back = "Back"
     }
@@ -76,7 +85,7 @@ final class TUIApp {
         .init(title: "Terminal", subtitle: "Toggle the side shell pane for quick workspace commands", action: .terminal),
         .init(title: "Workspaces", subtitle: "Switch between recent project roots and inspect their latest history", action: .workspaces),
         .init(title: "History", subtitle: "Browse persisted threads and run transcripts", action: .history),
-        .init(title: "Provider Settings", subtitle: "Switch backend and edit the active model", action: .settings),
+        .init(title: "Assistant Setup", subtitle: "Configure provider, Telegram, and daemon controls", action: .settings),
         .init(title: "Help", subtitle: "Show keyboard shortcuts and behavior", action: .help),
         .init(title: "Quit", subtitle: "Exit Ashex", action: .quit),
     ]
@@ -87,6 +96,8 @@ final class TUIApp {
     private var promptText = ""
     private var modelInput = ""
     private var apiKeyInput = ""
+    private var telegramTokenInput = ""
+    private var telegramAllowedChatsInput = ""
     private var workspacePathInput = ""
     private var terminalCommandInput = ""
     private var inputMode: InputMode = .prompt
@@ -108,6 +119,7 @@ final class TUIApp {
     private var terminalScrollOffset = 0
     private var showToolDetails = false
     private var providerStatus = ProviderStatusSnapshot.idle
+    private var daemonStatus: DaemonProcessStatus?
     private var shouldQuit = false
     private var pendingApproval: PendingApproval?
     private var sessionWorkspaceRoot: URL
@@ -189,6 +201,7 @@ final class TUIApp {
         Task { [weak self] in
             await self?.refreshProviderStatus()
         }
+        refreshDaemonStatus()
     }
 
     private static func recoveryHint(for provider: String) -> String {
@@ -197,6 +210,8 @@ final class TUIApp {
             return "Set OPENAI_API_KEY, then open Provider Settings and refresh or keep using mock."
         case "anthropic":
             return "Add ANTHROPIC_API_KEY in Provider Settings or the environment, then refresh or keep using mock."
+        case "dflash":
+            return "Start `dflash-serve`, then open Provider Settings and refresh or keep using mock."
         case "ollama":
             return "Start Ollama with `ollama serve`, then open Provider Settings and refresh or switch to mock."
         default:
@@ -496,6 +511,12 @@ final class TUIApp {
         case .apiKey:
             commitAPIKeyInput()
             return
+        case .telegramToken:
+            commitTelegramTokenInput()
+            return
+        case .telegramAllowedChats:
+            commitTelegramAllowedChatsInput()
+            return
         case .workspacePath:
             commitWorkspacePathInput()
             return
@@ -534,6 +555,16 @@ final class TUIApp {
             apiKeyInput.removeLast()
             focus = .input
             statusLine = "Editing API key"
+        case .telegramToken:
+            guard !telegramTokenInput.isEmpty else { return }
+            telegramTokenInput.removeLast()
+            focus = .input
+            statusLine = "Editing Telegram token"
+        case .telegramAllowedChats:
+            guard !telegramAllowedChatsInput.isEmpty else { return }
+            telegramAllowedChatsInput.removeLast()
+            focus = .input
+            statusLine = "Editing allowed Telegram chats"
         case .workspacePath:
             guard !workspacePathInput.isEmpty else { return }
             workspacePathInput.removeLast()
@@ -567,6 +598,14 @@ final class TUIApp {
                 apiKeyInput = ""
                 statusLine = "Cleared API key input"
                 return
+            case .telegramToken where !telegramTokenInput.isEmpty:
+                telegramTokenInput = ""
+                statusLine = "Cleared Telegram token input"
+                return
+            case .telegramAllowedChats where !telegramAllowedChatsInput.isEmpty:
+                telegramAllowedChatsInput = ""
+                statusLine = "Cleared allowed chats input"
+                return
             case .workspacePath where !workspacePathInput.isEmpty:
                 workspacePathInput = ""
                 statusLine = "Cleared workspace input"
@@ -581,6 +620,16 @@ final class TUIApp {
                 statusLine = "Back to settings"
                 return
             case .apiKey:
+                inputMode = .prompt
+                focus = showSettings ? .settings : .launcher
+                statusLine = "Back to settings"
+                return
+            case .telegramToken:
+                inputMode = .prompt
+                focus = showSettings ? .settings : .launcher
+                statusLine = "Back to settings"
+                return
+            case .telegramAllowedChats:
                 inputMode = .prompt
                 focus = showSettings ? .settings : .launcher
                 statusLine = "Back to settings"
@@ -679,6 +728,12 @@ final class TUIApp {
         case .apiKey:
             apiKeyInput.append(character)
             statusLine = "Editing API key"
+        case .telegramToken:
+            telegramTokenInput.append(character)
+            statusLine = "Editing Telegram token"
+        case .telegramAllowedChats:
+            telegramAllowedChatsInput.append(character)
+            statusLine = "Editing allowed Telegram chats"
         case .workspacePath:
             workspacePathInput.append(character)
             statusLine = "Editing workspace"
@@ -762,7 +817,8 @@ final class TUIApp {
             showCommands = false
             showHelp = false
             focus = .settings
-            statusLine = "Provider settings"
+            refreshDaemonStatus()
+            statusLine = "Assistant setup"
         case .help:
             showHelp = true
             showHistory = false
@@ -795,10 +851,46 @@ final class TUIApp {
             apiKeyInput = ""
             focus = .input
             statusLine = "Enter API key and press Enter to save"
+        case .telegramEnabled:
+            sessionUserConfig.telegram.enabled.toggle()
+            persistUserConfig()
+            refreshDaemonStatus()
+            statusLine = sessionUserConfig.telegram.enabled ? "Telegram connector enabled" : "Telegram connector disabled"
+        case .telegramToken:
+            inputMode = .telegramToken
+            telegramTokenInput = ""
+            focus = .input
+            statusLine = "Paste the Telegram bot token and press Enter to save"
+        case .telegramAllowedChats:
+            inputMode = .telegramAllowedChats
+            telegramAllowedChatsInput = sessionUserConfig.telegram.allowedChatIDs.joined(separator: ",")
+            focus = .input
+            statusLine = "Enter comma-separated Telegram chat IDs and press Enter"
+        case .telegramPolicy:
+            sessionUserConfig.telegram.executionPolicy = sessionUserConfig.telegram.executionPolicy == .assistantOnly
+                ? .approvalRequired
+                : .assistantOnly
+            persistUserConfig()
+            statusLine = "Telegram safety mode: \(sessionUserConfig.telegram.executionPolicy.rawValue)"
+        case .telegramTest:
+            statusLine = "Testing Telegram connection"
+            Task { [weak self] in
+                await self?.runTelegramConnectivityTest()
+            }
+        case .daemonToggle:
+            Task { [weak self] in
+                await self?.toggleDaemonFromSettings()
+            }
+        case .daemonStatus:
+            refreshDaemonStatus()
+            statusLine = daemonStatus?.isRunning == true ? "Daemon is running" : "Daemon is stopped"
         case .refresh:
             statusLine = "Refreshing provider status"
             Task { [weak self] in
                 await self?.refreshProviderStatus()
+                await MainActor.run {
+                    self?.refreshDaemonStatus()
+                }
             }
         case .back:
             showSettings = false
@@ -809,7 +901,7 @@ final class TUIApp {
     }
 
     private func cycleProvider() {
-        let providers = ["mock", "ollama", "openai", "anthropic"]
+        let providers = ["mock", "ollama", "dflash", "openai", "anthropic"]
         let currentIndex = providers.firstIndex(of: sessionProvider) ?? 0
         let nextProvider = providers[(currentIndex + 1) % providers.count]
 
@@ -822,6 +914,44 @@ final class TUIApp {
         Task { [weak self] in
             await self?.refreshProviderStatus()
         }
+    }
+
+    private func commitTelegramTokenInput() {
+        let trimmed = telegramTokenInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            statusLine = "Telegram token is empty"
+            return
+        }
+
+        do {
+            let normalized = trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+            try secretStore.writeSecret(
+                namespace: DaemonCLI.telegramSecretNamespace,
+                key: DaemonCLI.telegramSecretKey,
+                value: normalized
+            )
+            sessionUserConfig.telegram.botToken = nil
+            sessionUserConfig.telegram.enabled = true
+            persistUserConfig()
+            telegramTokenInput = ""
+            inputMode = .prompt
+            focus = .settings
+            statusLine = "Telegram token saved in Keychain"
+        } catch {
+            statusLine = "Failed to save Telegram token"
+        }
+    }
+
+    private func commitTelegramAllowedChatsInput() {
+        let values = telegramAllowedChatsInput
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        sessionUserConfig.telegram.allowedChatIDs = values
+        persistUserConfig()
+        inputMode = .prompt
+        focus = .settings
+        statusLine = values.isEmpty ? "Telegram chat allowlist cleared" : "Saved \(values.count) allowed chat ID(s)"
     }
 
     private func toggleTerminalPane() {
@@ -892,6 +1022,7 @@ final class TUIApp {
             try? RecentWorkspaceStore.record(workspaceURL: proposed)
             loadRecentWorkspaces()
             loadHistory()
+            refreshDaemonStatus()
             statusLine = "Workspace updated"
             Task { [weak self] in
                 await self?.refreshProviderStatus()
@@ -1480,27 +1611,46 @@ final class TUIApp {
     private func renderLines(for payload: RuntimeEventPayload) -> [String] {
         switch payload {
         case .runStarted(_, let runID):
-            return ["[run] started \(runID.uuidString)"]
+            return ["[run] Started run \(runID.uuidString)"]
         case .runStateChanged(_, let state, let reason):
-            return ["[state] \(state.rawValue)\(reason.map { " - \($0)" } ?? "")"]
+            switch state {
+            case .pending, .running:
+                return []
+            case .completed:
+                return ["[run] Agent completed the run"]
+            case .failed:
+                return ["[error] Run failed\(reason.map { ": \($0)" } ?? "")"]
+            case .interrupted:
+                return ["[run] Run interrupted\(reason.map { ": \($0)" } ?? "")"]
+            case .cancelled:
+                return ["[run] Run cancelled\(reason.map { ": \($0)" } ?? "")"]
+            }
         case .workflowPhaseChanged(_, let phase, let title):
-            return ["[phase] \(phase) - \(title)"]
+            return ["[agent] \(friendlyPhaseTitle(phase: phase, title: title))"]
         case .contextPrepared(_, let retainedMessages, let droppedMessages, let clippedMessages, let estimatedTokens, let estimatedContextWindow):
-            return ["[context] retained \(retainedMessages), dropped \(droppedMessages), clipped \(clippedMessages), tok~ \(estimatedTokens), ctx~ \(estimatedTokens)/\(estimatedContextWindow)"]
+            var details = ["using \(retainedMessages) message\(retainedMessages == 1 ? "" : "s")", "~\(estimatedTokens) tokens"]
+            if droppedMessages > 0 {
+                details.append("dropped \(droppedMessages)")
+            }
+            if clippedMessages > 0 {
+                details.append("clipped \(clippedMessages)")
+            }
+            details.append("window \(estimatedContextWindow)")
+            return ["[context] Prepared context: " + details.joined(separator: " • ")]
         case .contextCompacted(_, let droppedMessages, let summary):
-            var lines = ["[context] compacted \(droppedMessages) earlier messages"]
+            var lines = ["[context] Compacted \(droppedMessages) earlier message\(droppedMessages == 1 ? "" : "s")"]
             if showToolDetails {
                 lines.append(contentsOf: summary.split(separator: "\n", omittingEmptySubsequences: false).map(String.init))
             }
             return lines
         case .taskPlanCreated(_, let steps):
-            var lines = ["[plan] created \(steps.count) steps"]
+            var lines = ["[plan] Plan created with \(steps.count) step\(steps.count == 1 ? "" : "s")"]
             lines.append(contentsOf: steps.enumerated().map { "[plan] \($0.offset + 1). \($0.element)" })
             return lines
         case .taskStepStarted(_, let index, let total, let title):
-            return ["[plan] step \(index)/\(total) started - \(title)"]
+            return ["[plan] Step \(index) of \(total): \(title)"]
         case .taskStepFinished(_, let index, let total, let title, let outcome):
-            return ["[plan] step \(index)/\(total) \(outcome) - \(title)"]
+            return ["[plan] Step \(index) of \(total) \(friendlyOutcome(outcome)): \(title)"]
         case .subagentAssigned(_, let title, let role, let goal):
             return ["[subagent] assigned \(role) - \(title)"] + goal.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         case .subagentStarted(_, let title, let maxIterations):
@@ -1514,21 +1664,30 @@ final class TUIApp {
         case .subagentFinished(_, let title, let summary):
             return ["[subagent] finished - \(title)"] + summary.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         case .changedFilesTracked(_, let paths):
-            return ["[change] " + paths.joined(separator: ", ")]
+            return ["[change] Tracking changes in " + paths.joined(separator: ", ")]
         case .patchPlanUpdated(_, let paths, let objectives):
-            var lines = ["[patch-plan] " + (paths.isEmpty ? "forming" : paths.joined(separator: ", "))]
+            var lines = ["[plan] " + (paths.isEmpty ? "Preparing a small change set" : "Planned files: " + paths.joined(separator: ", "))]
             if !objectives.isEmpty {
-                lines.append("[patch-plan] goals " + objectives.joined(separator: " | "))
+                lines.append("[plan] Goals: " + objectives.joined(separator: " | "))
             }
             return lines
         case .status(_, let message):
-            return ["[status] \(message)"]
+            return summarizeStatusMessage(message)
         case .messageAppended(_, _, let role):
-            return ["[message] appended \(role.rawValue)"]
+            switch role {
+            case .user:
+                return []
+            case .assistant:
+                return ["[agent] Drafted a response"]
+            case .tool:
+                return []
+            case .system:
+                return ["[agent] Updated internal working notes"]
+            }
         case .approvalRequested(_, let toolName, let summary, let reason, let risk):
-            return ["[approval] request \(toolName) \(summary) (\(risk.rawValue)) - \(reason)"]
+            return ["[approval] \(summary) for \(toolName) (\(risk.rawValue))", reason]
         case .approvalResolved(_, let toolName, let allowed, let reason):
-            return ["[approval] \(toolName) \(allowed ? "approved" : "denied") - \(reason)"]
+            return ["[approval] \(toolName) \(allowed ? "approved" : "denied"): \(reason)"]
         case .toolCallStarted(_, _, let toolName, let arguments):
             var lines = [summarizeToolStart(toolName: toolName, arguments: arguments)]
             if showToolDetails {
@@ -1553,7 +1712,7 @@ final class TUIApp {
                 }
                 return lines
             }
-            return ["[tool] \(success ? "completed" : "failed") \(normalizedSummary)"]
+            return ["[\(success ? "done" : "error")] \(normalizedSummary)"]
         case .finalAnswer(_, _, let text):
             let normalizedText = normalizeStoredTranscriptText(text)
             if let structured = formattedStructuredLines(from: normalizedText) {
@@ -1563,8 +1722,92 @@ final class TUIApp {
         case .error(_, let message):
             return ["[error] \(normalizeStoredTranscriptText(message))"]
         case .runFinished(_, let state):
-            return ["[run] finished \(state.rawValue)"]
+            return ["[run] Finished with state: \(state.rawValue)"]
         }
+    }
+
+    private func friendlyPhaseTitle(phase: String, title: String) -> String {
+        switch phase.lowercased() {
+        case "exploration":
+            return "Inspecting the workspace — \(title)"
+        case "mutation":
+            return "Making changes — \(title)"
+        case "validation":
+            return "Validating the result — \(title)"
+        default:
+            return "\(title)"
+        }
+    }
+
+    private func friendlyOutcome(_ outcome: String) -> String {
+        switch outcome.lowercased() {
+        case "completed":
+            return "completed"
+        case "skipped":
+            return "skipped"
+        case "failed":
+            return "failed"
+        default:
+            return outcome
+        }
+    }
+
+    private func summarizeStatusMessage(_ message: String) -> [String] {
+        if let iteration = parseIterationNumber(from: message),
+           message.localizedCaseInsensitiveContains("requesting next model action") {
+            return ["[agent] Thinking about the next step (iteration \(iteration))"]
+        }
+
+        if let remainder = message.split(separator: ":", maxSplits: 1).dropFirst().first,
+           message.hasPrefix("Exploration plan:") {
+            return ["[agent] Exploration guidance: \(remainder.trimmingCharacters(in: .whitespaces))"]
+        }
+
+        if message.hasPrefix("Launching ") && message.contains("subagents") {
+            return ["[agent] \(message)"]
+        }
+
+        if message.hasPrefix("Automatic validation:") {
+            return ["[agent] \(message)"]
+        }
+
+        if message.localizedCaseInsensitiveContains("validation gate blocked") {
+            return ["[agent] Needs stronger verification before finishing"]
+        }
+
+        if message.localizedCaseInsensitiveContains("repeated identical read-only tool call") {
+            return ["[agent] Reused a previous read result instead of repeating the same tool call"]
+        }
+
+        if message.localizedCaseInsensitiveContains("repeated unproductive retries") {
+            return ["[agent] Stopped repeated retries and is moving on with a recoverable summary"]
+        }
+
+        if message.localizedCaseInsensitiveContains("no longer making useful progress") {
+            return ["[agent] Tool activity stopped making progress, so the step is being wrapped up safely"]
+        }
+
+        if message.localizedCaseInsensitiveContains("inspect-before-mutate policy blocked") {
+            return ["[agent] Write action blocked until relevant files are inspected first"]
+        }
+
+        if message.localizedCaseInsensitiveContains("repairing malformed tool request") {
+            return ["[agent] Correcting a malformed tool request and retrying"]
+        }
+
+        if message.localizedCaseInsensitiveContains("invalid tool action") {
+            return ["[agent] The model requested an invalid tool call and is being asked to correct it"]
+        }
+
+        return ["[agent] \(message)"]
+    }
+
+    private func parseIterationNumber(from message: String) -> Int? {
+        guard let range = message.range(of: #"Iteration\s+(\d+)"#, options: .regularExpression) else {
+            return nil
+        }
+        let match = String(message[range])
+        return Int(match.replacingOccurrences(of: "Iteration", with: "").trimmingCharacters(in: .whitespaces))
     }
 
     private func normalizeStoredTranscriptText(_ text: String) -> String {
@@ -1692,7 +1935,7 @@ final class TUIApp {
             rightTitle = "History"
             rightLines = renderHistoryLines(width: rightWidth - 4)
         } else if showSettings {
-            rightTitle = "Provider Settings"
+            rightTitle = "Assistant Setup"
             rightLines = renderSettingsLines(width: rightWidth - 4)
         } else if showCommands {
             rightTitle = "Commands"
@@ -1771,6 +2014,10 @@ final class TUIApp {
         let viewport = Array(expanded[startIndex..<endIndex])
 
         var output = [transcriptHeader(width: width, totalLines: expanded.count, visibleLines: bodyLimit), ""]
+        if let progressLine = transcriptProgressLine(width: width) {
+            output.append(progressLine)
+            output.append("")
+        }
         output.append(contentsOf: viewport)
         return output
     }
@@ -1819,7 +2066,7 @@ final class TUIApp {
             "\(TerminalUIStyle.slate)Backspace\(TerminalUIStyle.reset) Delete text in the input bar",
             "",
             "\(TerminalUIStyle.ink)Provider Controls\(TerminalUIStyle.reset)",
-            "\(TerminalUIStyle.slate)Provider Settings\(TerminalUIStyle.reset) Switch backend and model without restarting",
+            "\(TerminalUIStyle.slate)Assistant Setup\(TerminalUIStyle.reset) Configure provider, Telegram, and daemon controls",
             "\(TerminalUIStyle.slate)Refresh Status\(TerminalUIStyle.reset) Re-check environment and local models",
             "",
             "\(TerminalUIStyle.ink)Workspace Controls\(TerminalUIStyle.reset)",
@@ -1973,6 +2220,22 @@ final class TUIApp {
                 value = sessionModel
             case .apiKey:
                 value = apiKeyStatusLabel(for: sessionProvider)
+            case .telegramEnabled:
+                value = sessionUserConfig.telegram.enabled ? "Enabled" : "Disabled"
+            case .telegramToken:
+                value = telegramTokenStatusLabel()
+            case .telegramAllowedChats:
+                value = sessionUserConfig.telegram.allowedChatIDs.isEmpty
+                    ? "All private chats allowed"
+                    : sessionUserConfig.telegram.allowedChatIDs.joined(separator: ", ")
+            case .telegramPolicy:
+                value = sessionUserConfig.telegram.executionPolicy.rawValue
+            case .telegramTest:
+                value = "Verify bot token with Telegram getMe"
+            case .daemonToggle:
+                value = daemonStatus?.isRunning == true ? "Stop the background daemon" : "Start the background daemon"
+            case .daemonStatus:
+                value = daemonStatusSummary
             case .refresh:
                 value = providerStatus.headline
             case .back:
@@ -1987,9 +2250,19 @@ final class TUIApp {
         }
 
         lines.append("")
+        lines.append("\(TerminalUIStyle.ink)Onboarding\(TerminalUIStyle.reset)")
+        lines.append(contentsOf: renderOnboardingChecklist(width: width))
+
+        lines.append("")
         lines.append("\(TerminalUIStyle.ink)Status\(TerminalUIStyle.reset)")
         for detail in providerStatus.details.prefix(4) {
             lines.append("\(TerminalUIStyle.slate)\(TerminalUIStyle.truncateVisible(detail, limit: width))\(TerminalUIStyle.reset)")
+        }
+
+        lines.append("")
+        lines.append("\(TerminalUIStyle.ink)Daemon\(TerminalUIStyle.reset)")
+        for detail in renderDaemonDetailLines(width: width) {
+            lines.append(detail)
         }
 
         if !providerStatus.availableModels.isEmpty {
@@ -2024,6 +2297,12 @@ final class TUIApp {
         } else if inputMode == .apiKey {
             lines.append("")
             lines.append("\(TerminalUIStyle.amber)API key edit mode is active in the input bar below.\(TerminalUIStyle.reset)")
+        } else if inputMode == .telegramToken {
+            lines.append("")
+            lines.append("\(TerminalUIStyle.amber)Telegram token edit mode is active in the input bar below.\(TerminalUIStyle.reset)")
+        } else if inputMode == .telegramAllowedChats {
+            lines.append("")
+            lines.append("\(TerminalUIStyle.amber)Telegram allowlist edit mode is active in the input bar below.\(TerminalUIStyle.reset)")
         }
 
         return lines
@@ -2049,6 +2328,71 @@ final class TUIApp {
         }
 
         return "Missing"
+    }
+
+    private func telegramTokenStatusLabel() -> String {
+        if let envValue = ProcessInfo.processInfo.environment["ASHEX_TELEGRAM_BOT_TOKEN"], !envValue.isEmpty {
+            return "Loaded from environment (\(maskSecret(envValue)))"
+        }
+
+        if let configToken = sessionUserConfig.telegram.botToken, !configToken.isEmpty {
+            return "Saved in config (\(maskSecret(configToken)))"
+        }
+
+        do {
+            if let stored = try secretStore.readSecret(
+                namespace: DaemonCLI.telegramSecretNamespace,
+                key: DaemonCLI.telegramSecretKey
+            ), !stored.isEmpty {
+                return "Saved in Keychain (\(maskSecret(stored)))"
+            }
+        } catch {
+            return "Lookup failed"
+        }
+
+        return "Missing"
+    }
+
+    private var daemonStatusSummary: String {
+        if let daemonStatus, daemonStatus.isRunning {
+            return "Running (pid \(daemonStatus.pid))"
+        }
+        return "Stopped"
+    }
+
+    private func renderOnboardingChecklist(width: Int) -> [String] {
+        let items = onboardingChecklistItems()
+        return items.map { item in
+            let prefix = item.isDone ? "\(TerminalUIStyle.green)[done]\(TerminalUIStyle.reset)" : "\(TerminalUIStyle.amber)[todo]\(TerminalUIStyle.reset)"
+            return "\(prefix) \(TerminalUIStyle.truncateVisible(item.text, limit: max(width - 8, 10)))"
+        }
+    }
+
+    private func renderDaemonDetailLines(width: Int) -> [String] {
+        var lines: [String] = []
+        if let daemonStatus, daemonStatus.isRunning {
+            lines.append("\(TerminalUIStyle.green)Running with pid \(daemonStatus.pid)\(TerminalUIStyle.reset)")
+            lines.append("\(TerminalUIStyle.slate)\(TerminalUIStyle.truncateVisible("Started " + Self.timeString(daemonStatus.startedAt), limit: width))\(TerminalUIStyle.reset)")
+            lines.append("\(TerminalUIStyle.slate)\(TerminalUIStyle.truncateVisible("Log: " + daemonStatus.logPath, limit: width))\(TerminalUIStyle.reset)")
+        } else {
+            lines.append("\(TerminalUIStyle.slate)Daemon is currently stopped.\(TerminalUIStyle.reset)")
+            lines.append("\(TerminalUIStyle.slate)Use the Daemon action above after the onboarding checklist is complete.\(TerminalUIStyle.reset)")
+        }
+        return lines
+    }
+
+    private func onboardingChecklistItems() -> [(text: String, isDone: Bool)] {
+        let providerReady = queuedPromptBlockedReason() == nil || sessionProvider == "mock"
+        let telegramEnabled = sessionUserConfig.telegram.enabled
+        let tokenReady = telegramTokenStatusLabel() != "Missing"
+        let daemonRunning = daemonStatus?.isRunning == true
+        return [
+            ("Choose a provider and working model for daemon runs.", providerReady),
+            ("Save the Telegram bot token.", tokenReady),
+            ("Enable Telegram and choose a safety mode.", telegramEnabled),
+            ("Optionally lock the connector to specific private chat IDs.", !sessionUserConfig.telegram.allowedChatIDs.isEmpty),
+            ("Start the daemon and confirm it stays running.", daemonRunning),
+        ]
     }
 
     private func normalizeAPIKeyInput(_ input: String, for provider: String) -> String {
@@ -2253,6 +2597,8 @@ final class TUIApp {
         case .prompt: actualLabelText = "Input"
         case .model: actualLabelText = "Model"
         case .apiKey: actualLabelText = "API Key"
+        case .telegramToken: actualLabelText = "Telegram"
+        case .telegramAllowedChats: actualLabelText = "Chats"
         case .workspacePath: actualLabelText = "Workspace"
         case .terminalCommand: actualLabelText = "Terminal"
         }
@@ -2262,6 +2608,8 @@ final class TUIApp {
         case .prompt: currentText = promptText
         case .model: currentText = modelInput
         case .apiKey: currentText = String(repeating: "•", count: apiKeyInput.count)
+        case .telegramToken: currentText = String(repeating: "•", count: telegramTokenInput.count)
+        case .telegramAllowedChats: currentText = telegramAllowedChatsInput
         case .workspacePath: currentText = workspacePathInput
         case .terminalCommand: currentText = terminalCommandInput
         }
@@ -2269,6 +2617,10 @@ final class TUIApp {
             ? "Type a model name, then press Enter to apply…"
             : inputMode == .apiKey
                 ? "Paste an API key, then press Enter to save…"
+                : inputMode == .telegramToken
+                    ? "Paste a Telegram bot token, then press Enter to save…"
+                : inputMode == .telegramAllowedChats
+                    ? "Type comma-separated Telegram chat IDs, then press Enter to save…"
                 : inputMode == .workspacePath
                     ? "Type a project directory path, then press Enter to switch…"
                 : inputMode == .terminalCommand
@@ -2332,6 +2684,16 @@ final class TUIApp {
             colored = "\(TerminalUIStyle.red)\(line)\(TerminalUIStyle.reset)"
         } else if line.hasPrefix("[plan]") {
             colored = "\(TerminalUIStyle.cyan)\(line)\(TerminalUIStyle.reset)"
+        } else if line.hasPrefix("[agent]") {
+            colored = "\(TerminalUIStyle.amber)\(line)\(TerminalUIStyle.reset)"
+        } else if line.hasPrefix("[action]") {
+            colored = "\(TerminalUIStyle.violet)\(line)\(TerminalUIStyle.reset)"
+        } else if line.hasPrefix("[done]") {
+            colored = "\(TerminalUIStyle.green)\(line)\(TerminalUIStyle.reset)"
+        } else if line.hasPrefix("[context]") {
+            colored = "\(TerminalUIStyle.slate)\(line)\(TerminalUIStyle.reset)"
+        } else if line.hasPrefix("[change]") {
+            colored = "\(TerminalUIStyle.cyan)\(line)\(TerminalUIStyle.reset)"
         } else if line.hasPrefix("[approval]") {
             colored = "\(TerminalUIStyle.amber)\(line)\(TerminalUIStyle.reset)"
         } else if line.hasPrefix("[tool]") {
@@ -2369,6 +2731,16 @@ final class TUIApp {
         } else if line.hasPrefix("[error]") {
             baseColor = TerminalUIStyle.red
         } else if line.hasPrefix("[plan]") {
+            baseColor = TerminalUIStyle.cyan
+        } else if line.hasPrefix("[agent]") {
+            baseColor = TerminalUIStyle.amber
+        } else if line.hasPrefix("[action]") {
+            baseColor = TerminalUIStyle.violet
+        } else if line.hasPrefix("[done]") {
+            baseColor = TerminalUIStyle.green
+        } else if line.hasPrefix("[context]") {
+            baseColor = TerminalUIStyle.slate
+        } else if line.hasPrefix("[change]") {
             baseColor = TerminalUIStyle.cyan
         } else if line.hasPrefix("[approval]") {
             baseColor = TerminalUIStyle.amber
@@ -2570,6 +2942,12 @@ final class TUIApp {
         return expanded
     }
 
+    private func transcriptProgressLine(width: Int) -> String? {
+        guard !runFinished else { return nil }
+        let progress = TerminalUIStyle.truncateVisible(displayStatusLine, limit: width)
+        return "\(TerminalUIStyle.amber)\(progress)\(TerminalUIStyle.reset)"
+    }
+
     private func composeTranscriptLines(width: Int) -> [String] {
         var lines: [String] = [
             "\(TerminalUIStyle.ink)Start a new conversation\(TerminalUIStyle.reset)",
@@ -2740,56 +3118,92 @@ final class TUIApp {
             let path = arguments["path"]?.stringValue ?? "."
             switch operation {
             case "list_directory":
-                return "[tool] exploring \(path)"
+                return "[action] Exploring directory \(path)"
             case "read_text_file":
-                return "[tool] reading \(path)"
+                return "[action] Reading \(path)"
             case "write_text_file":
-                return "[tool] editing \(path)"
+                return "[action] Writing \(path)"
             case "replace_in_file":
-                return "[tool] replacing text in \(path)"
+                return "[action] Replacing text in \(path)"
             case "apply_patch":
-                return "[tool] patching \(path)"
+                return "[action] Applying patch to \(path)"
             case "create_directory":
-                return "[tool] creating directory \(path)"
+                return "[action] Creating directory \(path)"
             case "delete_path":
-                return "[tool] deleting \(path)"
+                return "[action] Deleting \(path)"
             case "move_path":
                 let sourcePath = arguments["source_path"]?.stringValue ?? path
                 let destinationPath = arguments["destination_path"]?.stringValue ?? "."
-                return "[tool] moving \(sourcePath) → \(destinationPath)"
+                return "[action] Moving \(sourcePath) → \(destinationPath)"
             case "copy_path":
                 let sourcePath = arguments["source_path"]?.stringValue ?? path
                 let destinationPath = arguments["destination_path"]?.stringValue ?? "."
-                return "[tool] copying \(sourcePath) → \(destinationPath)"
+                return "[action] Copying \(sourcePath) → \(destinationPath)"
             case "file_info":
-                return "[tool] inspecting \(path)"
+                return "[action] Inspecting \(path)"
             case "find_files":
                 let query = arguments["query"]?.stringValue ?? ""
-                return "[tool] finding files in \(path) matching \(query)"
+                return "[action] Finding files in \(path) matching \"\(query)\""
             case "search_text":
                 let query = arguments["query"]?.stringValue ?? ""
-                return "[tool] searching text in \(path) for \(query)"
+                return "[action] Searching text in \(path) for \"\(query)\""
             default:
-                return "[tool] filesystem \(operation)"
+                return "[action] Filesystem: \(operation)"
             }
         }
 
         if toolName == "git" {
             let operation = arguments["operation"]?.stringValue ?? "status"
-            return "[tool] git \(operation)"
+            switch operation {
+            case "status":
+                return "[action] Checking git status"
+            case "current_branch":
+                return "[action] Checking current git branch"
+            case "diff_unstaged":
+                return "[action] Inspecting unstaged git changes"
+            case "diff_staged":
+                return "[action] Inspecting staged git changes"
+            case "log":
+                return "[action] Reading recent git history"
+            case "show_commit":
+                let commit = arguments["commit"]?.stringValue ?? "HEAD"
+                return "[action] Inspecting commit \(commit)"
+            default:
+                return "[action] Git: \(operation)"
+            }
+        }
+
+        if toolName == "build" {
+            let operation = arguments["operation"]?.stringValue ?? "build"
+            switch operation {
+            case "swift_build":
+                return "[action] Running swift build"
+            case "swift_test":
+                return "[action] Running swift test"
+            case "xcodebuild_list":
+                return "[action] Listing Xcode schemes and targets"
+            case "xcodebuild_build":
+                let scheme = arguments["scheme"]?.stringValue
+                return "[action] Running xcodebuild build" + (scheme.map { " for \($0)" } ?? "")
+            case "xcodebuild_test":
+                let scheme = arguments["scheme"]?.stringValue
+                return "[action] Running xcodebuild test" + (scheme.map { " for \($0)" } ?? "")
+            default:
+                return "[action] Build: \(operation)"
+            }
         }
 
         if toolName == "shell" {
             let command = arguments["command"]?.stringValue ?? "<unknown>"
-            return "[tool] executing shell \(command)"
+            return "[action] Running shell command: \(command)"
         }
 
-        return "[tool] \(toolName) started"
+        return "[action] Starting \(toolName)"
     }
 
     private func summarizeStructuredCompletion(success: Bool, value: JSONValue) -> String {
         guard case .object(let object) = value else {
-            return "[tool] \(success ? "completed" : "failed")"
+            return "[\(success ? "done" : "error")] Tool \(success ? "completed" : "failed")"
         }
 
         if let operation = object["operation"]?.stringValue {
@@ -2797,42 +3211,42 @@ final class TUIApp {
             case "list_directory":
                 let path = object["path"]?.stringValue ?? "."
                 let childCount = (object["children"]?.arrayValue?.count) ?? (object["entries"]?.arrayValue?.count) ?? 0
-                return "[tool] explored \(path) (\(childCount) entries)"
+                return "[done] Explored \(path) (\(childCount) entries)"
             case "write_text_file":
                 let path = object["path"]?.stringValue ?? "<unknown>"
                 let bytesWritten = object["bytes_written"]?.intValue ?? 0
-                return "[tool] edited \(path) (\(bytesWritten) chars)"
+                return "[done] Wrote \(path) (\(bytesWritten) chars)"
             case "replace_in_file":
                 let path = object["path"]?.stringValue ?? "<unknown>"
-                return "[tool] replaced text in \(path)"
+                return "[done] Updated \(path)"
             case "apply_patch":
                 let path = object["path"]?.stringValue ?? "<unknown>"
                 let editCount = object["edit_count"]?.intValue ?? object["applied_edits"]?.arrayValue?.count ?? 0
-                return "[tool] patched \(path) (\(editCount) edits)"
+                return "[done] Patched \(path) (\(editCount) edit\(editCount == 1 ? "" : "s"))"
             case "delete_path":
                 let path = object["path"]?.stringValue ?? "<unknown>"
-                return "[tool] deleted \(path)"
+                return "[done] Deleted \(path)"
             case "move_path":
                 let sourcePath = object["source_path"]?.stringValue ?? "<unknown>"
                 let destinationPath = object["destination_path"]?.stringValue ?? "<unknown>"
-                return "[tool] moved \(sourcePath) → \(destinationPath)"
+                return "[done] Moved \(sourcePath) → \(destinationPath)"
             case "copy_path":
                 let sourcePath = object["source_path"]?.stringValue ?? "<unknown>"
                 let destinationPath = object["destination_path"]?.stringValue ?? "<unknown>"
-                return "[tool] copied \(sourcePath) → \(destinationPath)"
+                return "[done] Copied \(sourcePath) → \(destinationPath)"
             case "file_info":
                 let path = object["path"]?.stringValue ?? "<unknown>"
-                return "[tool] inspected \(path)"
+                return "[done] Inspected \(path)"
             case "find_files":
                 let path = object["path"]?.stringValue ?? "."
                 let count = object["matches"]?.arrayValue?.count ?? 0
-                return "[tool] found \(count) matching paths in \(path)"
+                return "[done] Found \(count) matching path\(count == 1 ? "" : "s") in \(path)"
             case "search_text":
                 let path = object["path"]?.stringValue ?? "."
                 let count = object["matches"]?.arrayValue?.count ?? 0
-                return "[tool] found \(count) text matches in \(path)"
+                return "[done] Found \(count) text match\(count == 1 ? "" : "es") in \(path)"
             case "status", "current_branch", "diff_unstaged", "diff_staged", "log", "show_commit":
-                return "[tool] git \(operation)"
+                return "[done] Git \(operation) finished"
             default:
                 break
             }
@@ -2840,10 +3254,10 @@ final class TUIApp {
 
         if let command = object["command"]?.stringValue,
            let exitCode = object["exit_code"]?.intValue {
-            return "[tool] shell finished exit \(exitCode) for \(command)"
+            return "[done] Shell command finished with exit \(exitCode): \(command)"
         }
 
-        return "[tool] \(success ? "completed" : "failed")"
+        return "[\(success ? "done" : "error")] Tool \(success ? "completed" : "failed")"
     }
 
     private func renderDirectoryTree(from value: JSONValue) -> [String]? {
@@ -3232,6 +3646,130 @@ final class TUIApp {
         }
     }
 
+    private func persistUserConfig() {
+        do {
+            try UserConfigStore.write(sessionUserConfig, to: sessionUserConfigFile)
+        } catch {
+            statusLine = "Failed to save ashex.config.json"
+        }
+    }
+
+    private func refreshDaemonStatus() {
+        let store = DaemonProcessStateStore(storageRoot: sessionStorageRoot)
+        daemonStatus = try? store.status()
+    }
+
+    private func currentCLIArgumentsForBackgroundTasks() -> [String] {
+        [
+            "--workspace", sessionWorkspaceRoot.path,
+            "--storage", sessionStorageRoot.path,
+            "--provider", sessionProvider,
+            "--model", sessionModel,
+            "--approval-mode", configuration.approvalMode.rawValue,
+        ]
+    }
+
+    private func startDaemonFromTUI() throws {
+        let stateStore = DaemonProcessStateStore(storageRoot: sessionStorageRoot)
+        if let status = try stateStore.status(), status.isRunning {
+            daemonStatus = status
+            statusLine = "Daemon is already running"
+            return
+        }
+
+        let logURL = stateStore.logFileURL
+        try FileManager.default.createDirectory(at: logURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if !FileManager.default.fileExists(atPath: logURL.path) {
+            FileManager.default.createFile(atPath: logURL.path, contents: Data())
+        }
+        let handle = try FileHandle(forWritingTo: logURL)
+        try handle.seekToEnd()
+
+        let process = Process()
+        process.executableURL = try ExecutableLocator.currentExecutableURL()
+        process.arguments = ["daemon", "start"] + currentCLIArgumentsForBackgroundTasks()
+        process.currentDirectoryURL = sessionWorkspaceRoot
+        process.standardOutput = handle
+        process.standardError = handle
+        try process.run()
+
+        statusLine = "Starting daemon in background"
+        Thread.sleep(forTimeInterval: 0.4)
+        daemonStatus = try stateStore.status()
+    }
+
+    private func stopDaemonFromTUI() throws {
+        let stateStore = DaemonProcessStateStore(storageRoot: sessionStorageRoot)
+        guard let status = try stateStore.status(), status.isRunning else {
+            daemonStatus = nil
+            statusLine = "Daemon is already stopped"
+            return
+        }
+
+        guard kill(status.pid, SIGTERM) == 0 else {
+            throw AshexError.shell("Failed to stop daemon pid \(status.pid)")
+        }
+
+        statusLine = "Stopping daemon"
+        Thread.sleep(forTimeInterval: 0.2)
+        daemonStatus = try stateStore.status()
+    }
+
+    private func toggleDaemonFromSettings() async {
+        do {
+            refreshDaemonStatus()
+            if daemonStatus?.isRunning == true {
+                try stopDaemonFromTUI()
+            } else {
+                try startDaemonFromTUI()
+            }
+            refreshDaemonStatus()
+            if daemonStatus?.isRunning == true {
+                statusLine = "Daemon is running"
+            } else {
+                statusLine = "Daemon is stopped"
+            }
+            render()
+        } catch {
+            statusLine = error.localizedDescription
+            render()
+        }
+    }
+
+    private func runTelegramConnectivityTest() async {
+        guard sessionUserConfig.telegram.enabled else {
+            statusLine = "Enable Telegram first"
+            render()
+            return
+        }
+        guard let token = resolvedTelegramToken(), !token.isEmpty else {
+            statusLine = "Telegram token is missing"
+            render()
+            return
+        }
+
+        do {
+            let identity = try await URLSessionTelegramBotClient().getMe(token: token)
+            statusLine = "Telegram connected as @\(identity.username ?? "<unknown>")"
+        } catch {
+            statusLine = "Telegram test failed: \(error.localizedDescription)"
+        }
+        render()
+    }
+
+    private func resolvedTelegramToken() -> String? {
+        if let envToken = ProcessInfo.processInfo.environment["ASHEX_TELEGRAM_BOT_TOKEN"], !envToken.isEmpty {
+            return envToken
+        }
+        if let configToken = sessionUserConfig.telegram.botToken, !configToken.isEmpty {
+            return configToken
+        }
+        return try? secretStore.readSecret(
+            namespace: DaemonCLI.telegramSecretNamespace,
+            key: DaemonCLI.telegramSecretKey
+        )
+    }
+
     private func refreshHistoryPreview() {
         guard let thread = selectedHistoryThread,
               let runID = historyRuns[thread.id]?.first?.id ?? thread.latestRunID else {
@@ -3535,17 +4073,25 @@ final class TUIApp {
 
     private func refreshProviderStatus() async {
         let apiKey = try? configuration.resolvedAPIKey(for: sessionProvider)
-        let snapshot = await ProviderInspector.inspect(provider: sessionProvider, model: sessionModel, apiKey: apiKey ?? nil)
+        let snapshot = await ProviderInspector.inspect(
+            provider: sessionProvider,
+            model: sessionModel,
+            apiKey: apiKey ?? nil,
+            dflashConfig: sessionUserConfig.dflash
+        )
         providerStatus = snapshot
         if let providerStartupIssue {
             statusLine = "Provider needs attention"
-            runLines = [
-                "[startup] Provider '\(sessionProvider)' is unavailable",
-                providerStartupIssue,
-                Self.recoveryHint(for: sessionProvider)
-            ]
-            runFinished = true
-            transcriptScrollOffset = 0
+            let shouldReplaceTranscript = runLines.isEmpty || runLines.first?.hasPrefix("[startup]") == true
+            if shouldReplaceTranscript {
+                runLines = [
+                    "[provider] Provider '\(sessionProvider)' needs attention",
+                    providerStartupIssue,
+                    Self.recoveryHint(for: sessionProvider)
+                ]
+                runFinished = true
+                transcriptScrollOffset = 0
+            }
             self.providerStartupIssue = nil
             render()
             return
@@ -3561,7 +4107,11 @@ final class TUIApp {
         guard sessionProvider == "ollama" else { return }
         if ProcessInfo.processInfo.environment["ASHEX_ALLOW_LARGE_MODELS"] == "1" { return }
 
-        let snapshot = await ProviderInspector.inspect(provider: sessionProvider, model: sessionModel)
+        let snapshot = await ProviderInspector.inspect(
+            provider: sessionProvider,
+            model: sessionModel,
+            dflashConfig: sessionUserConfig.dflash
+        )
         providerStatus = snapshot
         if let assessment = snapshot.guardrailAssessment, assessment.severity == .blocked {
             let details = ([assessment.headline] + assessment.details).joined(separator: " ")
@@ -3828,7 +4378,12 @@ private enum TerminalUIStyle {
 }
 
 private enum ProviderInspector {
-    static func inspect(provider: String, model: String, apiKey: String? = nil) async -> TUIApp.ProviderStatusSnapshot {
+    static func inspect(
+        provider: String,
+        model: String,
+        apiKey: String? = nil,
+        dflashConfig: DFlashConfig = .default
+    ) async -> TUIApp.ProviderStatusSnapshot {
         switch provider {
         case "mock":
             return .init(
@@ -3974,6 +4529,34 @@ private enum ProviderInspector {
                     guardrailAssessment: nil
                 )
             }
+        case "dflash":
+            do {
+                try CLIConfiguration.validateDFlashSupport()
+                let baseURL = CLIConfiguration.dflashBaseURL(config: dflashConfig)
+                let models = try await DFlashModelsClient.fetchModels(baseURL: baseURL)
+                let selectedAvailable = models.contains(model)
+                return .init(
+                    headline: selectedAvailable ? "DFlash server looks ready" : "DFlash server is reachable",
+                    details: [
+                        "Connected to \(baseURL.absoluteString).",
+                        selectedAvailable
+                            ? "The selected model is \(model)."
+                            : "The current model \(model) was not returned by the DFlash models API."
+                    ],
+                    availableModels: models.sorted(),
+                    guardrailAssessment: nil
+                )
+            } catch {
+                return .init(
+                    headline: "DFlash connection failed",
+                    details: [
+                        error.localizedDescription,
+                        "Start `dflash-serve` and refresh status again."
+                    ],
+                    availableModels: [],
+                    guardrailAssessment: nil
+                )
+            }
         default:
             return .init(
                 headline: "Unknown provider",
@@ -3982,6 +4565,31 @@ private enum ProviderInspector {
                 guardrailAssessment: nil
             )
         }
+    }
+}
+
+private enum DFlashModelsClient {
+    private struct Envelope: Decodable {
+        let data: [Model]
+    }
+
+    private struct Model: Decodable {
+        let id: String
+    }
+
+    static func fetchModels(baseURL: URL, session: URLSession = .shared) async throws -> [String] {
+        let requestURL = baseURL.appending(path: "v1/models")
+        var request = URLRequest(url: requestURL)
+        request.httpMethod = "GET"
+
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw AshexError.model("DFlash model list did not return an HTTP response")
+        }
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            throw AshexError.model("DFlash model list request failed with status \(httpResponse.statusCode)")
+        }
+        return try JSONDecoder().decode(Envelope.self, from: data).data.map(\.id)
     }
 }
 

@@ -80,3 +80,8 @@ public struct TelegramSendMessageResponse: Codable, Sendable {
     public let ok: Bool
     public let result: TelegramMessage
 }
+
+public struct TelegramBoolResponse: Codable, Sendable {
+    public let ok: Bool
+    public let result: Bool
+}

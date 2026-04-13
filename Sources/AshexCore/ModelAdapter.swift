@@ -78,6 +78,10 @@ public protocol ModelAdapter: Sendable {
     func nextAction(for context: ModelContext) async throws -> ModelAction
 }
 
+public protocol DirectChatModelAdapter: ModelAdapter {
+    func directReply(history: [MessageRecord], systemPrompt: String) async throws -> String
+}
+
 private enum ModelPromptRenderer {
     static func responseSchema(for tools: [ToolSchema]) -> JSONObject {
         let argumentNames = Set(defaultArgumentSchemas.keys)
@@ -260,6 +264,12 @@ public struct OpenAIResponsesModelAdapter: ModelAdapter {
         self.decoder = JSONDecoder()
     }
 
+    fileprivate static func directChatTranscript(from history: [MessageRecord]) -> String {
+        history.suffix(12).map { message in
+            "\(message.role.rawValue): \(message.content)"
+        }.joined(separator: "\n")
+    }
+
     public func nextAction(for context: ModelContext) async throws -> ModelAction {
         let assembly = PromptBuilder.build(for: context, provider: "openai", model: configuration.model)
         let responseSchema = ModelPromptRenderer.responseSchema(for: context.availableTools)
@@ -301,6 +311,56 @@ public struct OpenAIResponsesModelAdapter: ModelAdapter {
     }
 }
 
+extension OpenAIResponsesModelAdapter: DirectChatModelAdapter {
+    public func directReply(history: [MessageRecord], systemPrompt: String) async throws -> String {
+        let transcript = Self.directChatTranscript(from: history)
+        let requestBody = OpenAIResponsesRequest(
+            model: configuration.model,
+            input: "\(systemPrompt)\n\nConversation:\n\(transcript)\n\nReply naturally to the latest user message. Do not call tools or emit JSON.",
+            store: false,
+            text: .init(format: .init(
+                type: "json_schema",
+                name: "direct_chat",
+                strict: true,
+                schema: [
+                    "type": .string("object"),
+                    "properties": .object([
+                        "reply": .object([
+                            "type": .string("string")
+                        ])
+                    ]),
+                    "required": .array([.string("reply")]),
+                    "additionalProperties": .bool(false),
+                ]
+            ))
+        )
+
+        var request = URLRequest(url: configuration.baseURL)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(configuration.apiKey)", forHTTPHeaderField: "Authorization")
+        request.httpBody = try encoder.encode(requestBody)
+
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw AshexError.model("OpenAI request did not return an HTTP response")
+        }
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            let apiError = try? decoder.decode(OpenAIErrorEnvelope.self, from: data)
+            throw AshexError.model(apiError?.error.message ?? "OpenAI request failed with status \(httpResponse.statusCode)")
+        }
+        guard
+            let outputText = try decoder.decode(OpenAIResponseEnvelope.self, from: data).outputText,
+            let payload = try JSONSerialization.jsonObject(with: Data(outputText.utf8)) as? [String: Any],
+            let reply = payload["reply"] as? String,
+            !reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            throw AshexError.model("OpenAI direct chat did not return a reply")
+        }
+        return reply
+    }
+}
+
 public struct OllamaModelConfiguration: Sendable {
     public let model: String
     public let baseURL: URL
@@ -330,6 +390,98 @@ public struct AnthropicModelConfiguration: Sendable {
     }
 }
 
+public struct DFlashServerModelConfiguration: Sendable {
+    public let model: String
+    public let baseURL: URL
+    public let requestTimeoutSeconds: Int
+    public let draftModel: String?
+
+    public init(
+        model: String,
+        baseURL: URL = URL(string: "http://127.0.0.1:8000")!,
+        requestTimeoutSeconds: Int = 120,
+        draftModel: String? = nil
+    ) {
+        self.model = model
+        self.baseURL = baseURL
+        self.requestTimeoutSeconds = requestTimeoutSeconds
+        self.draftModel = draftModel
+    }
+
+    var chatCompletionsURL: URL {
+        baseURL.appending(path: "v1/chat/completions")
+    }
+}
+
+public struct DFlashServerModelAdapter: ModelAdapter {
+    public let name: String
+    public let providerID = "dflash"
+    public var modelID: String { configuration.model }
+
+    private let configuration: DFlashServerModelConfiguration
+    private let session: URLSession
+    private let encoder: JSONEncoder
+    private let decoder: JSONDecoder
+
+    public init(
+        configuration: DFlashServerModelConfiguration,
+        session: URLSession = .shared
+    ) {
+        self.configuration = configuration
+        self.session = session
+        self.name = "dflash-server:\(configuration.model)"
+        self.encoder = JSONEncoder()
+        self.decoder = JSONDecoder()
+    }
+
+    fileprivate static func directChatMessages(from history: [MessageRecord], systemPrompt: String) -> [DFlashChatCompletionsRequest.Message] {
+        let conversation = history.suffix(12).map { message in
+            DFlashChatCompletionsRequest.Message(
+                role: message.role == .assistant ? "assistant" : "user",
+                content: message.content
+            )
+        }
+        return [.init(role: "system", content: systemPrompt)] + conversation
+    }
+
+    public func nextAction(for context: ModelContext) async throws -> ModelAction {
+        throw AshexError.model("DFlash currently supports direct chat only in Ashex. Use Ollama, OpenAI, or Anthropic for tool-driven agent runs.")
+    }
+}
+
+extension DFlashServerModelAdapter: DirectChatModelAdapter {
+    public func directReply(history: [MessageRecord], systemPrompt: String) async throws -> String {
+        var request = URLRequest(url: configuration.chatCompletionsURL)
+        request.httpMethod = "POST"
+        request.timeoutInterval = TimeInterval(configuration.requestTimeoutSeconds)
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try encoder.encode(DFlashChatCompletionsRequest(
+            model: configuration.model,
+            messages: Self.directChatMessages(from: history, systemPrompt: systemPrompt),
+            temperature: 0.2,
+            stream: false
+        ))
+
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw AshexError.model("DFlash request did not return an HTTP response")
+        }
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            let apiError = try? decoder.decode(DFlashErrorEnvelope.self, from: data)
+            throw AshexError.model(apiError?.error.message ?? "DFlash request failed with status \(httpResponse.statusCode)")
+        }
+
+        let envelope = try decoder.decode(DFlashChatCompletionsResponseEnvelope.self, from: data)
+        guard
+            let reply = envelope.choices.first?.message.content?.trimmingCharacters(in: .whitespacesAndNewlines),
+            !reply.isEmpty
+        else {
+            throw AshexError.model("DFlash direct chat did not return a reply")
+        }
+        return reply
+    }
+}
+
 public struct OllamaChatModelAdapter: ModelAdapter {
     public let name: String
     public let providerID = "ollama"
@@ -349,6 +501,16 @@ public struct OllamaChatModelAdapter: ModelAdapter {
         self.name = "ollama-chat:\(configuration.model)"
         self.encoder = JSONEncoder()
         self.decoder = JSONDecoder()
+    }
+
+    fileprivate static func directChatMessages(from history: [MessageRecord], systemPrompt: String) -> [OllamaChatRequest.Message] {
+        let conversation = history.suffix(12).map { message in
+            OllamaChatRequest.Message(
+                role: message.role == .assistant ? "assistant" : "user",
+                content: message.content
+            )
+        }
+        return [.init(role: "system", content: systemPrompt)] + conversation
     }
 
     public func nextAction(for context: ModelContext) async throws -> ModelAction {
@@ -393,6 +555,53 @@ public struct OllamaChatModelAdapter: ModelAdapter {
     }
 }
 
+extension OllamaChatModelAdapter: DirectChatModelAdapter {
+    public func directReply(history: [MessageRecord], systemPrompt: String) async throws -> String {
+        let requestBody = OllamaChatRequest(
+            model: configuration.model,
+            messages: Self.directChatMessages(from: history, systemPrompt: systemPrompt),
+            format: [
+                "type": .string("object"),
+                "properties": .object([
+                    "reply": .object([
+                        "type": .string("string")
+                    ])
+                ]),
+                "required": .array([.string("reply")]),
+                "additionalProperties": .bool(false),
+            ],
+            options: [
+                "temperature": .number(0.2),
+            ],
+            stream: false
+        )
+
+        var request = URLRequest(url: configuration.baseURL)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try encoder.encode(requestBody)
+
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw AshexError.model("Ollama request did not return an HTTP response")
+        }
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            let apiError = try? decoder.decode(OllamaErrorEnvelope.self, from: data)
+            throw AshexError.model(apiError?.error ?? "Ollama request failed with status \(httpResponse.statusCode)")
+        }
+        let envelope = try decoder.decode(OllamaChatResponseEnvelope.self, from: data)
+        let content = envelope.message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard
+            let payload = try JSONSerialization.jsonObject(with: Data(content.utf8)) as? [String: Any],
+            let reply = payload["reply"] as? String,
+            !reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            throw AshexError.model("Ollama direct chat did not return a reply")
+        }
+        return reply
+    }
+}
+
 public struct AnthropicMessagesModelAdapter: ModelAdapter {
     public let name: String
     public let providerID = "anthropic"
@@ -412,6 +621,15 @@ public struct AnthropicMessagesModelAdapter: ModelAdapter {
         self.name = "anthropic-messages:\(configuration.model)"
         self.encoder = JSONEncoder()
         self.decoder = JSONDecoder()
+    }
+
+    fileprivate static func directChatAnthropicMessages(from history: [MessageRecord]) -> [AnthropicMessagesRequest.Message] {
+        history.suffix(12).map { message in
+            AnthropicMessagesRequest.Message(
+                role: message.role == .assistant ? "assistant" : "user",
+                content: message.content
+            )
+        }
     }
 
     public func nextAction(for context: ModelContext) async throws -> ModelAction {
@@ -454,6 +672,47 @@ public struct AnthropicMessagesModelAdapter: ModelAdapter {
 
         let parsed = try decoder.decode(ModelActionEnvelope.self, from: Data(content.utf8))
         return try parsed.toModelAction()
+    }
+}
+
+extension AnthropicMessagesModelAdapter: DirectChatModelAdapter {
+    public func directReply(history: [MessageRecord], systemPrompt: String) async throws -> String {
+        let requestBody = AnthropicMessagesRequest(
+            model: configuration.model,
+            maxTokens: 600,
+            system: systemPrompt + "\n\nReply naturally to the latest user message. Do not call tools. Return only a JSON object with a single `reply` string field.",
+            messages: Self.directChatAnthropicMessages(from: history)
+        )
+
+        var request = URLRequest(url: configuration.baseURL)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(configuration.apiKey, forHTTPHeaderField: "x-api-key")
+        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+        request.httpBody = try encoder.encode(requestBody)
+
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw AshexError.model("Anthropic request did not return an HTTP response")
+        }
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            let apiError = try? decoder.decode(AnthropicErrorEnvelope.self, from: data)
+            throw AshexError.model(apiError?.error.message ?? "Anthropic request failed with status \(httpResponse.statusCode)")
+        }
+        let envelope = try decoder.decode(AnthropicMessagesResponseEnvelope.self, from: data)
+        let content = envelope.content
+            .filter { $0.type == "text" }
+            .compactMap(\.text)
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard
+            let payload = try JSONSerialization.jsonObject(with: Data(content.utf8)) as? [String: Any],
+            let reply = payload["reply"] as? String,
+            !reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            throw AshexError.model("Anthropic direct chat did not return a reply")
+        }
+        return reply
     }
 }
 
@@ -577,6 +836,15 @@ public struct MockModelAdapter: ModelAdapter {
     }
 }
 
+extension MockModelAdapter: DirectChatModelAdapter {
+    public func directReply(history: [MessageRecord], systemPrompt: String) async throws -> String {
+        guard let lastUserMessage = history.last(where: { $0.role == .user })?.content else {
+            return "Hello. How can I help?"
+        }
+        return "I'm doing well and ready to help. You said: \(lastUserMessage)"
+    }
+}
+
 private struct OpenAIResponsesRequest: Encodable {
     let model: String
     let input: String
@@ -627,6 +895,18 @@ private struct AnthropicMessagesRequest: Encodable {
     }
 }
 
+private struct DFlashChatCompletionsRequest: Encodable {
+    let model: String
+    let messages: [Message]
+    let temperature: Double?
+    let stream: Bool
+
+    struct Message: Encodable {
+        let role: String
+        let content: String
+    }
+}
+
 private struct OpenAIResponseEnvelope: Decodable {
     let output: [OutputItem]
 
@@ -667,6 +947,18 @@ private struct AnthropicMessagesResponseEnvelope: Decodable {
     }
 }
 
+private struct DFlashChatCompletionsResponseEnvelope: Decodable {
+    let choices: [Choice]
+
+    struct Choice: Decodable {
+        let message: Message
+    }
+
+    struct Message: Decodable {
+        let content: String?
+    }
+}
+
 private struct OpenAIErrorEnvelope: Decodable {
     let error: APIError
 
@@ -680,6 +972,14 @@ private struct OllamaErrorEnvelope: Decodable {
 }
 
 private struct AnthropicErrorEnvelope: Decodable {
+    let error: APIError
+
+    struct APIError: Decodable {
+        let message: String
+    }
+}
+
+private struct DFlashErrorEnvelope: Decodable {
     let error: APIError
 
     struct APIError: Decodable {
