@@ -5,15 +5,19 @@ Ashex is a minimal local agent runtime foundation for macOS, built as a small Sw
 ## What this MVP includes
 
 - A real single-agent loop with max-iteration and cancellation guards
+- A connector-ready daemon path for long-running background operation
+- Telegram Bot API polling as the first reusable messaging connector
 - Multiple local coding tools behind a typed runtime:
   - `filesystem`
-  - `git`
+- `git`
+  - inspect and mutate repository state through typed git operations
   - `build`
   - `shell`
   - `toolpack` scaffold support for installable tool manifests
 - Live streaming runtime events for CLI or future UI consumers
 - SQLite persistence for threads, messages, runs, tool calls, and append-only events
 - Generic SQLite-backed persisted settings for session defaults and future runtime preferences
+- Persistent connector conversation mappings and Telegram update checkpoints stored in the existing SQLite settings table
 - Restart normalization that marks previously running work as `interrupted`
 - A replaceable model boundary with `mock`, OpenAI, Anthropic, and local Ollama-backed adapters
 - A terminal TUI with provider switching, workspace switching, local history browsing, side terminal, and guarded approvals
@@ -68,8 +72,11 @@ You can also install somewhere else:
 TUI highlights:
 
 - Switch between `mock`, `ollama`, `openai`, and `anthropic` without restarting
+- Use `Assistant Setup` in the launcher to configure provider, Telegram, and daemon controls
 - Edit the active model name from the TUI
 - Save provider API keys from the TUI settings screen
+- Save the Telegram bot token from the TUI into macOS Keychain
+- Enable Telegram, set safety mode, edit allowed chat IDs, test connectivity, and start/stop the daemon from the TUI
 - Store provider API keys in macOS Keychain instead of SQLite settings
 - Persist provider/model defaults across launches
 - Switch the active workspace live from the TUI or with `:workspace /path`
@@ -104,6 +111,34 @@ CLI options:
 - `--model MODEL`: model name for provider-backed mode
 - `--approval-mode trusted|guarded`: execution policy, default `trusted`
 
+Daemon and Telegram commands:
+
+- `daemon run`: start Ash in the foreground as a long-running process
+- `daemon start`: launch the daemon in the background and write logs under `STORAGE/daemon/daemon.log`
+- `daemon stop`: send `SIGTERM` to the tracked daemon process
+- `daemon status`: show PID and log path when the daemon is running
+- `telegram test`: verify the configured Telegram bot token with `getMe`
+
+Example:
+
+```bash
+export ASHEX_TELEGRAM_BOT_TOKEN=123456:bot-token
+swift run ashex telegram test
+swift run ashex daemon run --provider openai --model gpt-5.4-mini
+```
+
+TUI onboarding path:
+
+1. Launch `swift run ashex`
+2. Open `Assistant Setup` from the launcher
+3. Choose the provider and model you want for daemon runs
+4. Save the provider API key if needed
+5. Enable Telegram, save the Telegram bot token, and optionally add allowed private chat IDs
+6. Use `Telegram Test` to verify the bot token
+7. Use `Daemon` to start the background process
+
+After that, the bot should keep running until you stop the daemon from the same settings screen or by CLI.
+
 Provider environment variables:
 
 - `OPENAI_API_KEY`: required for `--provider openai`
@@ -112,6 +147,7 @@ Provider environment variables:
 - `OLLAMA_MODEL`: optional default model for `ollama`
 - `OLLAMA_BASE_URL`: optional Ollama chat endpoint, default `http://localhost:11434/api/chat`
 - `ASHEX_ALLOW_LARGE_MODELS=1`: optional override if you intentionally want to bypass local-model memory guardrails
+- `ASHEX_TELEGRAM_BOT_TOKEN`: optional Telegram bot token override for daemon mode
 
 Shell policy config in `ashex.config.json`:
 
@@ -123,6 +159,34 @@ Shell policy config in `ashex.config.json`:
 - `denyList`: explicit command prefixes that are blocked
 - `rules`: explicit per-prefix actions with `allow`, `prompt`, or `deny`
 - `requireApprovalForUnknownCommands`: when enabled, commands outside the configured allow list or outside the built-in recognized safe list require approval in guarded mode
+
+Daemon and Telegram config in `ashex.config.json`:
+
+- `daemon.enabled`: reserved toggle for daemon-oriented deployments
+- `logging.level`: `debug`, `info`, `warning`, or `error`
+- `telegram.enabled`: enables the Telegram connector for daemon runs
+- `telegram.botToken`: optional bot token if you do not want to use `ASHEX_TELEGRAM_BOT_TOKEN`
+- `telegram.pollingTimeoutSeconds`: long-poll timeout for `getUpdates`
+- `telegram.allowedChatIDs`: optional allowlist of Telegram private chat IDs
+- `telegram.allowedUserIDs`: optional allowlist of Telegram user IDs
+- `telegram.responseMode`: currently `final_message`
+- `telegram.executionPolicy`: `assistant_only` or `approval_required`
+
+Recommended safe starting config:
+
+```json
+{
+  "telegram": {
+    "enabled": true,
+    "executionPolicy": "assistant_only",
+    "pollingTimeoutSeconds": 20,
+    "allowedChatIDs": ["123456789"]
+  },
+  "logging": {
+    "level": "info"
+  }
+}
+```
 
 Config precedence:
 
@@ -152,6 +216,12 @@ In guarded mode:
 - read-only sandbox mode blocks filesystem mutations and mutating shell commands before approval logic even runs
 - workspace-write sandbox mode protects sensitive paths like `.git`, `.ashex`, `.codex`, and `ashex.config.json` by default
 - network policy is enforced as a first-class rule for shell execution, including the side terminal pane
+
+For Telegram daemon mode:
+
+- `assistant_only` denies all approval-gated tool actions, which keeps Telegram as a read-only assistant entrypoint
+- `approval_required` keeps the policy boundary explicit, but still blocks the action because remote approval collection is not implemented in this MVP
+- the connector never silently escalates to trusted execution
 
 TUI controls:
 
@@ -186,7 +256,61 @@ Ashex now has two tool layers:
   - `git`
   - `build`
   - `shell`
-  - `toolpack`
+- `toolpack`
+
+The built-in `git` tool supports both read-only and mutating operations including:
+
+- `status`
+- `current_branch`
+- `diff_unstaged`
+- `diff_staged`
+- `log`
+- `show_commit`
+- `init`
+- `add`
+- `add_all`
+- `commit`
+- `create_branch`
+- `switch_branch`
+- `switch_new_branch`
+- `restore_worktree`
+- `restore_staged`
+- `reset_mixed`
+- `reset_hard`
+- `clean_force`
+- `tag`
+- `merge`
+- `rebase`
+- `pull`
+- `push`
+
+For a disposable real-model end-to-end test, you can also use:
+
+```bash
+export OPENAI_API_KEY=your_key_here
+./scripts/smoke_real_model_project_flow.sh /tmp/ashex-smoke DemoApp openai gpt-5.4
+```
+
+## Daemon Architecture
+
+The daemon path is additive and keeps the core runtime intact:
+
+- `AgentRuntime` can now run against an existing persisted thread, which allows external connectors to resume conversations instead of always starting from scratch
+- `ConnectorRegistry` and `Connector` provide a connector-agnostic lifecycle and outbound messaging boundary
+- `ConversationRouter` and `ConnectorConversationMappingStore` map external conversations such as Telegram chat IDs to internal Ash thread IDs using the existing SQLite settings store
+- `RunDispatcher` submits inbound connector prompts through the normal runtime event stream and captures the final answer
+- `DaemonSupervisor` handles commands such as `/start`, `/help`, and `/reset`, then routes normal text into the runtime
+- `TelegramConnector` uses Bot API polling, persists processed `update_id` values, ignores unsupported updates cleanly, and sends final text responses back in chunks
+
+Current MVP limitations:
+
+- Telegram private chats only
+- text messages only
+- final-message replies only
+- no webhook deployment
+- no remote approval UI for `approval_required`
+
+Implementation notes and next-step recommendations live in [DAEMON_TELEGRAM_MVP.md](/Users/sviatoslavfil/Development/Fil.Technology/Codex-based/Agents/Eshex/Source/DAEMON_TELEGRAM_MVP.md).
 - installable tool packs:
   - bundled now: `swiftpm`, `ios_xcode`, `python`
   - custom packs loaded from:

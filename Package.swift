@@ -16,13 +16,20 @@ let package = Package(
             targets: ["AshexCLI"]
         ),
     ],
+    dependencies: [
+        .package(url: "https://github.com/swiftlang/swift-syntax.git", from: "603.0.0"),
+    ],
     targets: [
         .systemLibrary(
             name: "CSQLite"
         ),
         .target(
             name: "AshexCore",
-            dependencies: ["CSQLite"],
+            dependencies: [
+                "CSQLite",
+                .product(name: "SwiftParser", package: "swift-syntax"),
+                .product(name: "SwiftSyntax", package: "swift-syntax"),
+            ],
             resources: [
                 .process("Resources"),
             ]

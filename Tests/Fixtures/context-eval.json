@@ -1,0 +1,23 @@
+[
+  {
+    "query": "context planning brief ranked retrieval",
+    "expectedFiles": [
+      "Sources/AshexCore/ContextPlanning.swift",
+      "Sources/AshexCore/AgentRuntime.swift"
+    ]
+  },
+  {
+    "query": "typed git commit add branch push operations",
+    "expectedFiles": [
+      "Sources/AshexCore/GitTool.swift",
+      "Sources/AshexCore/ToolExecutor.swift"
+    ]
+  },
+  {
+    "query": "prompt tool contract git operations schema",
+    "expectedFiles": [
+      "Sources/AshexCore/Prompting.swift",
+      "Sources/AshexCore/ModelAdapter.swift"
+    ]
+  }
+]

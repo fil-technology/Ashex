@@ -165,6 +165,21 @@ public final class SQLitePersistenceStore: PersistenceStore, @unchecked Sendable
         }
     }
 
+    public func fetchThread(threadID: UUID) throws -> ThreadRecord? {
+        try queue.sync {
+            let sql = "SELECT created_at FROM threads WHERE id = ? LIMIT 1"
+            var statement: OpaquePointer?
+            defer { sqlite3_finalize(statement) }
+            try prepare(sql, statement: &statement)
+            bindText(threadID.uuidString, to: statement, index: 1)
+            guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+            return ThreadRecord(
+                id: threadID,
+                createdAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 0))
+            )
+        }
+    }
+
     public func createRun(threadID: UUID, state: RunState, now: Date) throws -> RunRecord {
         try queue.sync {
             let run = RunRecord(id: UUID(), threadID: threadID, state: state, createdAt: now, updatedAt: now)

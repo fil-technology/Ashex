@@ -47,6 +47,7 @@ private final class RecordingExecutionRuntime: ExecutionRuntime, @unchecked Send
     #expect(TaskPlanner.classify(prompt: "refactor the runtime to simplify compaction") == .refactor)
     #expect(TaskPlanner.classify(prompt: "update README and docs for installation") == .docs)
     #expect(TaskPlanner.classify(prompt: "show git diff and branch status") == .git)
+    #expect(TaskPlanner.classify(prompt: "what is this project about?") == .analysis)
 }
 
 @Test func taskPlannerUsesTaskAwareDefaultSteps() {
@@ -58,6 +59,13 @@ private final class RecordingExecutionRuntime: ExecutionRuntime, @unchecked Send
     #expect(plan?.steps.first?.phase == .exploration)
     #expect(plan?.steps.first?.title.contains("locate the files") == true)
     #expect(plan?.steps.last?.phase == .validation)
+}
+
+@Test func taskPlannerUsesExplorationFallbackForShortAnalysisPrompts() {
+    let step = TaskPlanner.defaultSingleStep(for: "what is this project about?", taskKind: .analysis)
+
+    #expect(step.phase == .exploration)
+    #expect(step.title.contains("summarize"))
 }
 
 @Test func explorationStrategyBuildsCodingFocusedSequence() {
