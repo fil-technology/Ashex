@@ -7,9 +7,11 @@ Ashex is a minimal local agent runtime foundation for macOS, built as a small Sw
 - A real single-agent loop with max-iteration and cancellation guards
 - A connector-ready daemon path for long-running background operation
 - Telegram Bot API polling as the first reusable messaging connector
+- Telegram typing indicators and HTML-formatted replies for connector output
+- Telegram-triggered tool execution when the connector is set to `trusted_full_access`
 - Multiple local coding tools behind a typed runtime:
   - `filesystem`
-- `git`
+  - `git`
   - inspect and mutate repository state through typed git operations
   - `build`
   - `shell`
@@ -19,7 +21,7 @@ Ashex is a minimal local agent runtime foundation for macOS, built as a small Sw
 - Generic SQLite-backed persisted settings for session defaults and future runtime preferences
 - Persistent connector conversation mappings and Telegram update checkpoints stored in the existing SQLite settings table
 - Restart normalization that marks previously running work as `interrupted`
-- A replaceable model boundary with `mock`, OpenAI, Anthropic, and local Ollama-backed adapters
+- A replaceable model boundary with `mock`, OpenAI, Anthropic, local Ollama-backed, and experimental DFlash-backed adapters
 - A terminal TUI with provider switching, workspace switching, local history browsing, side terminal, and guarded approvals
 - Bundled installable tool packs for `swiftpm`, `ios_xcode`, and `python`
 
@@ -71,12 +73,14 @@ You can also install somewhere else:
 
 TUI highlights:
 
-- Switch between `mock`, `ollama`, `openai`, and `anthropic` without restarting
+- Switch between `mock`, `ollama`, `dflash`, `openai`, and `anthropic` without restarting
 - Use `Assistant Setup` in the launcher to configure provider, Telegram, and daemon controls
+- Treat `Assistant Setup` like a short onboarding flow: provider first, then Telegram token, then daemon start
 - Edit the active model name from the TUI
 - Save provider API keys from the TUI settings screen
 - Save the Telegram bot token from the TUI into macOS Keychain
 - Enable Telegram, set safety mode, edit allowed chat IDs, test connectivity, and start/stop the daemon from the TUI
+- Choose DFlash in Provider Settings when you want Apple-Silicon-local direct chat through `dflash-serve`
 - Store provider API keys in macOS Keychain instead of SQLite settings
 - Persist provider/model defaults across launches
 - Switch the active workspace live from the TUI or with `:workspace /path`
@@ -102,12 +106,22 @@ ollama pull llama3.2
 swift run ashex --provider ollama --model llama3.2 "list the files in this workspace"
 ```
 
+Experimental DFlash-backed mode:
+
+```bash
+dflash-serve --model Qwen/Qwen3.5-4B --port 8000
+export DFLASH_BASE_URL=http://127.0.0.1:8000
+swift run ashex --provider dflash --model Qwen/Qwen3.5-4B "say hello"
+```
+
+DFlash is direct-chat only for now, so tool-calling stays on the other providers.
+
 CLI options:
 
 - `--workspace PATH`: workspace root enforced by `WorkspaceGuard`
 - `--storage PATH`: persistence directory, default `WORKSPACE/.ashex`
 - `--max-iterations N`: loop limit, default `8`
-- `--provider mock|openai|anthropic|ollama`: model adapter selection
+- `--provider mock|openai|anthropic|ollama|dflash`: model adapter selection
 - `--model MODEL`: model name for provider-backed mode
 - `--approval-mode trusted|guarded`: execution policy, default `trusted`
 
@@ -146,6 +160,8 @@ Provider environment variables:
 - `OPENAI_MODEL`: optional default model for `openai`
 - `OLLAMA_MODEL`: optional default model for `ollama`
 - `OLLAMA_BASE_URL`: optional Ollama chat endpoint, default `http://localhost:11434/api/chat`
+- `DFLASH_MODEL`: optional default model for `dflash`
+- `DFLASH_BASE_URL`: optional DFlash server endpoint, default `http://127.0.0.1:8000`
 - `ASHEX_ALLOW_LARGE_MODELS=1`: optional override if you intentionally want to bypass local-model memory guardrails
 - `ASHEX_TELEGRAM_BOT_TOKEN`: optional Telegram bot token override for daemon mode
 
@@ -170,7 +186,12 @@ Daemon and Telegram config in `ashex.config.json`:
 - `telegram.allowedChatIDs`: optional allowlist of Telegram private chat IDs
 - `telegram.allowedUserIDs`: optional allowlist of Telegram user IDs
 - `telegram.responseMode`: currently `final_message`
-- `telegram.executionPolicy`: `assistant_only` or `approval_required`
+- `telegram.executionPolicy`: `assistant_only`, `approval_required`, or `trusted_full_access`
+- `dflash.enabled`: optional toggle for the experimental DFlash provider
+- `dflash.baseURL`: local `dflash-serve` endpoint, default `http://127.0.0.1:8000`
+- `dflash.model`: default model for the DFlash provider
+- `dflash.draftModel`: optional draft model override for `dflash-serve`
+- `dflash.requestTimeoutSeconds`: request timeout for the DFlash server client
 
 Recommended safe starting config:
 
@@ -219,9 +240,16 @@ In guarded mode:
 
 For Telegram daemon mode:
 
-- `assistant_only` denies all approval-gated tool actions, which keeps Telegram as a read-only assistant entrypoint
+- `assistant_only` denies all approval-gated tool actions, which keeps Telegram as a read-only assistant entrypoint for normal chat
 - `approval_required` keeps the policy boundary explicit, but still blocks the action because remote approval collection is not implemented in this MVP
+- `trusted_full_access` allows Telegram to use the existing runtime tool path, while the sandbox and shell/network policies still apply
+- direct-chat prompts such as "How are you?" are routed normally and show a typing indicator while the model runs
+- project or workspace prompts, or explicit command-style prompts like `shell: ...`, go through the normal runtime intent classifier and can execute tools in trusted mode
 - the connector never silently escalates to trusted execution
+
+Telegram replies use Telegram HTML parse mode, so bold text and code blocks render, but raw Markdown is not passed through unchanged.
+
+For owner-controlled bots, `trusted_full_access` is the mode that enables Telegram-triggered tool use. For shared or public bots, stay on `assistant_only`.
 
 TUI controls:
 

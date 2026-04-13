@@ -121,6 +121,7 @@ import Testing
     #expect(ConnectorMessageIntentClassifier.classify("How are you?") == .directChat)
     #expect(ConnectorMessageIntentClassifier.classify("Tell me a joke") == .directChat)
     #expect(ConnectorMessageIntentClassifier.classify("Summarize this repository") == .workspaceTask)
+    #expect(ConnectorMessageIntentClassifier.classify("Can you use curl to fetch https://example.com?") == .workspaceTask)
 }
 
 @Test func runDispatcherDirectChatModeAvoidsToolLoopForCasualMessage() async throws {

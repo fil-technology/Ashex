@@ -17,13 +17,17 @@
   - `/reset`
   - persisted `update_id` deduplication
   - outbound chunking for long text replies
+  - typing indicators while replies are generated
+  - HTML-formatted Telegram output for bold text and code blocks
+- Direct-chat routing for casual prompts such as "How are you?"
+- Telegram-triggered tool execution when `telegram.executionPolicy` is set to `trusted_full_access`
 - CLI commands for:
   - `ash daemon run`
   - `ash daemon start`
   - `ash daemon stop`
   - `ash daemon status`
   - `ash telegram test`
-- Config additions for daemon, Telegram, and logging settings
+- Config additions for daemon, Telegram, DFlash, and logging settings
 
 ## Architecture Decisions
 
@@ -34,8 +38,10 @@
   - the runtime remains the execution engine
   - connectors only normalize inbound events and deliver outbound text
 - Explicit safety boundary for remote entrypoints:
-  - `assistant_only` denies approval-gated tool actions
+  - `assistant_only` denies approval-gated tool actions and keeps Telegram in read-only assistant mode for normal chat
   - `approval_required` is represented explicitly but still blocks execution until a future approval transport exists
+  - `trusted_full_access` uses the existing runtime tool path while still honoring sandbox and shell/network policies
+  - direct-chat prompts are handled normally, and explicit command-style prompts can opt into tool execution in trusted mode
 - Foreground-first daemon design:
   - `daemon run` is the primary robust flow
   - background start and stop are thin wrappers around the same process path

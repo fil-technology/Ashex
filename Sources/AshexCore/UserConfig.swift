@@ -123,6 +123,7 @@ public struct DaemonConfig: Codable, Sendable {
 public enum ConnectorExecutionPolicyMode: String, Codable, Sendable, CaseIterable {
     case assistantOnly = "assistant_only"
     case approvalRequired = "approval_required"
+    case trustedFullAccess = "trusted_full_access"
 }
 
 public enum LoggingLevel: String, Codable, Sendable, CaseIterable {

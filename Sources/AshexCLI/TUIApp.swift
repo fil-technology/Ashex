@@ -867,9 +867,15 @@ final class TUIApp {
             focus = .input
             statusLine = "Enter comma-separated Telegram chat IDs and press Enter"
         case .telegramPolicy:
-            sessionUserConfig.telegram.executionPolicy = sessionUserConfig.telegram.executionPolicy == .assistantOnly
-                ? .approvalRequired
-                : .assistantOnly
+            let allModes = ConnectorExecutionPolicyMode.allCases
+            if let currentIndex = allModes.firstIndex(of: sessionUserConfig.telegram.executionPolicy) {
+                let nextIndex = allModes.index(after: currentIndex)
+                sessionUserConfig.telegram.executionPolicy = nextIndex == allModes.endIndex
+                    ? allModes[allModes.startIndex]
+                    : allModes[nextIndex]
+            } else {
+                sessionUserConfig.telegram.executionPolicy = .assistantOnly
+            }
             persistUserConfig()
             statusLine = "Telegram safety mode: \(sessionUserConfig.telegram.executionPolicy.rawValue)"
         case .telegramTest:

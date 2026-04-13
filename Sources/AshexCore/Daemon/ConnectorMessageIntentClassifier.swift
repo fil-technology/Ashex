@@ -14,7 +14,8 @@ public enum ConnectorMessageIntentClassifier {
             "repo", "repository", "codebase", "project", "workspace", "file", "files", "directory",
             "folder", "readme", "package.swift", "source", "sources", "test", "tests", "build",
             "compile", "run the tests", "fix", "implement", "refactor", "search", "inspect", "read ",
-            "open ", "list ", "find ", "grep", "git ", "branch", "commit", "diff", "daemon", "telegram"
+            "open ", "list ", "find ", "grep", "git ", "branch", "commit", "diff", "daemon", "telegram",
+            "curl", "http", "https://", "fetch ", "call this api", "request to"
         ]
         if workspaceSignals.contains(where: lowered.contains) {
             return .workspaceTask

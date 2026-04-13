@@ -1,5 +1,7 @@
 # DFlash Provider Integration Plan
 
+Status: phase 1 is now implemented in Ashex as an experimental Apple-Silicon-local direct-chat provider. This document now describes the follow-up work for streaming and structured agent mode.
+
 ## Goal
 
 Add an experimental DFlash-backed local provider to Ashex for Apple Silicon, using the current provider and daemon architecture without rewriting the runtime.
@@ -22,7 +24,7 @@ Compared with lower-level DFlash ports, `bstnxbt/dflash-mlx` appears more practi
 
 That makes it a better candidate for an additive provider integration.
 
-## What We Should Add First
+## What Was Added First
 
 The safest MVP is:
 
@@ -32,7 +34,7 @@ The safest MVP is:
 4. Support direct chat first
 5. Keep full tool-calling agent mode on existing providers until structured-output reliability is proven
 
-This should be framed as:
+This is framed as:
 
 - fast local chat backend
 - good fit for Telegram and daemon chat
@@ -196,6 +198,8 @@ DFlash is especially attractive for Telegram because:
 - direct chat is already split from tool-driven workspace tasks in `DaemonSupervisor`
 - casual Telegram prompts now route into `RunRequest.Mode.directChat`
 - DFlash can slot into that path without weakening sandbox or approval semantics
+- Telegram typing indicators cover long generations cleanly
+- Telegram tool-calling can now be enabled separately through connector policy, while DFlash itself remains direct-chat only until a structured agent path is proven reliable
 
 This means we can eventually support:
 
@@ -213,6 +217,7 @@ In the TUI setup flow, DFlash can be presented as:
 - requires Apple Silicon
 - requires `pip install dflash-mlx`
 - requires local `dflash-serve`
+- is already exposed in the TUI onboarding flow and CLI provider list
 
 The setup helper should verify:
 

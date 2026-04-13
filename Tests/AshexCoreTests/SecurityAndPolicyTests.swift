@@ -102,6 +102,40 @@ import Testing
     }
 }
 
+@Test func connectorApprovalPolicyHonorsTrustedFullAccessMode() async {
+    let request = ApprovalRequest(
+        runID: UUID(),
+        toolName: "shell",
+        arguments: ["command": .string("curl https://example.com")],
+        summary: "Shell command",
+        reason: "curl https://example.com",
+        risk: .medium
+    )
+    let policy = ConnectorApprovalPolicy(policyMode: .trustedFullAccess, connectorName: "telegram")
+    let decision = await policy.evaluate(request)
+
+    #expect(policy.mode == .trusted)
+    #expect(decision.allowed)
+    #expect(decision.reason.contains("trusted_full_access"))
+}
+
+@Test func connectorApprovalPolicyStillBlocksAssistantOnlyMode() async {
+    let request = ApprovalRequest(
+        runID: UUID(),
+        toolName: "shell",
+        arguments: ["command": .string("curl https://example.com")],
+        summary: "Shell command",
+        reason: "curl https://example.com",
+        risk: .medium
+    )
+    let policy = ConnectorApprovalPolicy(policyMode: .assistantOnly, connectorName: "telegram")
+    let decision = await policy.evaluate(request)
+
+    #expect(policy.mode == .guarded)
+    #expect(!decision.allowed)
+    #expect(decision.reason.contains("assistant_only"))
+}
+
 @Test func workspaceGuardBlocksMutationsInReadOnlyMode() throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
