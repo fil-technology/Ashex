@@ -201,14 +201,7 @@ public actor DaemonSupervisor {
             } catch is CancellationError {
                 try? await self.send(text: "Stopped the current run.", for: event)
             } catch {
-                let message = error.localizedDescription
-                if message.localizedCaseInsensitiveContains("cancel") {
-                    try? await self.send(text: "Stopped the current run.", for: event)
-                } else if message.localizedCaseInsensitiveContains("approval denied") {
-                    try? await self.send(text: "The pending tool request was denied.", for: event)
-                } else {
-                    try? await self.send(text: "Run failed: \(message)", for: event)
-                }
+                try? await self.send(text: DaemonTelegramFailureFormatter.message(for: error), for: event)
             }
 
             await self.registry.endActivity(.typing, for: event.conversation, connectorID: event.connectorID)
@@ -346,5 +339,102 @@ public actor DaemonSupervisor {
 
     private func clearActiveTask(for conversation: ConnectorConversationReference) {
         activeTasks[conversation] = nil
+    }
+}
+
+enum DaemonTelegramFailureFormatter {
+    static func message(for error: Error) -> String {
+        if isCancellation(error) {
+            return "Stopped the current run."
+        }
+
+        let description = normalizedDescription(for: error)
+        if isApprovalDenied(description) {
+            return "The pending tool request was denied."
+        }
+
+        if isTimeout(error, description: description) {
+            if isToolTimeout(description) {
+                return """
+                Run failed: a tool run timed out.
+
+                Try the request again with a narrower scope, or raise that tool's timeout if the command is expected to run longer.
+                Details: \(description)
+                """
+            }
+
+            if isConnectorTimeout(description) {
+                return """
+                Run failed: the Telegram connector timed out while talking to an external service.
+
+                The daemon is still running. Try the request again in a moment.
+                Details: \(description)
+                """
+            }
+
+            return """
+            Run failed: the model or provider request timed out.
+
+            If you're using Ollama, try a smaller prompt or raise `ollama.requestTimeoutSeconds`.
+            Details: \(description)
+            """
+        }
+
+        return "Run failed: \(description)"
+    }
+
+    private static func normalizedDescription(for error: Error) -> String {
+        let description = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        return description.isEmpty ? "Unknown error" : description
+    }
+
+    private static func isCancellation(_ error: Error) -> Bool {
+        if error is CancellationError {
+            return true
+        }
+        if let ashexError = error as? AshexError, case .cancelled = ashexError {
+            return true
+        }
+        return normalizedDescription(for: error).localizedCaseInsensitiveContains("cancel")
+    }
+
+    private static func isApprovalDenied(_ description: String) -> Bool {
+        description.localizedCaseInsensitiveContains("approval denied")
+    }
+
+    private static func isTimeout(_ error: Error, description: String) -> Bool {
+        let nsError = error as NSError
+        if nsError.domain == NSURLErrorDomain, nsError.code == NSURLErrorTimedOut {
+            return true
+        }
+
+        let lowered = description.lowercased()
+        return lowered.contains("timed out") || lowered.contains("timeout")
+    }
+
+    private static func isToolTimeout(_ description: String) -> Bool {
+        let lowered = description.lowercased()
+        let markers = [
+            "command timed out",
+            "git command timed out",
+            "build command timed out",
+            "installable tool",
+            "tool error: command timed out",
+        ]
+        return markers.contains(where: lowered.contains)
+    }
+
+    private static func isConnectorTimeout(_ description: String) -> Bool {
+        let lowered = description.lowercased()
+        let markers = [
+            "telegram",
+            "getupdates",
+            "sendmessage",
+            "chat action",
+            "connector",
+            "polling",
+            "bot api",
+        ]
+        return markers.contains(where: lowered.contains)
     }
 }

@@ -294,6 +294,28 @@ import Testing
     #expect(await runStore.status(for: conversation) == nil)
 }
 
+@Test func daemonTelegramFailureFormatterExplainsModelTimeouts() {
+    let error = NSError(domain: NSURLErrorDomain, code: NSURLErrorTimedOut)
+    let message = DaemonTelegramFailureFormatter.message(for: error)
+
+    #expect(message.contains("model or provider request timed out"))
+    #expect(message.contains("ollama.requestTimeoutSeconds"))
+}
+
+@Test func daemonTelegramFailureFormatterExplainsToolTimeouts() {
+    let message = DaemonTelegramFailureFormatter.message(for: AshexError.shell("Command timed out after 30s"))
+
+    #expect(message.contains("tool run timed out"))
+    #expect(message.contains("Details: Command timed out after 30s"))
+}
+
+@Test func daemonTelegramFailureFormatterExplainsConnectorTimeouts() {
+    let message = DaemonTelegramFailureFormatter.message(for: AshexError.model("Telegram sendMessage timed out"))
+
+    #expect(message.contains("Telegram connector timed out"))
+    #expect(message.contains("daemon is still running"))
+}
+
 private actor Counter {
     private(set) var value = 0
 
