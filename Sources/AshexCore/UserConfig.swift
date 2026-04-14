@@ -7,6 +7,7 @@ public struct AshexUserConfig: Codable, Sendable {
     public var shell: ShellCommandPolicyConfig
     public var daemon: DaemonConfig
     public var telegram: TelegramConfig
+    public var ollama: OllamaConfig
     public var dflash: DFlashConfig
     public var logging: LoggingConfig
 
@@ -17,6 +18,7 @@ public struct AshexUserConfig: Codable, Sendable {
         shell: ShellCommandPolicyConfig = .default,
         daemon: DaemonConfig = .default,
         telegram: TelegramConfig = .default,
+        ollama: OllamaConfig = .default,
         dflash: DFlashConfig = .default,
         logging: LoggingConfig = .default
     ) {
@@ -26,6 +28,7 @@ public struct AshexUserConfig: Codable, Sendable {
         self.shell = shell
         self.daemon = daemon
         self.telegram = telegram
+        self.ollama = ollama
         self.dflash = dflash
         self.logging = logging
     }
@@ -39,6 +42,7 @@ public struct AshexUserConfig: Codable, Sendable {
         case shell
         case daemon
         case telegram
+        case ollama
         case dflash
         case logging
     }
@@ -51,8 +55,28 @@ public struct AshexUserConfig: Codable, Sendable {
         shell = try container.decodeIfPresent(ShellCommandPolicyConfig.self, forKey: .shell) ?? .default
         daemon = try container.decodeIfPresent(DaemonConfig.self, forKey: .daemon) ?? .default
         telegram = try container.decodeIfPresent(TelegramConfig.self, forKey: .telegram) ?? .default
+        ollama = try container.decodeIfPresent(OllamaConfig.self, forKey: .ollama) ?? .default
         dflash = try container.decodeIfPresent(DFlashConfig.self, forKey: .dflash) ?? .default
         logging = try container.decodeIfPresent(LoggingConfig.self, forKey: .logging) ?? .default
+    }
+}
+
+public struct OllamaConfig: Codable, Sendable {
+    public var requestTimeoutSeconds: Int
+
+    public init(requestTimeoutSeconds: Int = 180) {
+        self.requestTimeoutSeconds = requestTimeoutSeconds
+    }
+
+    public static let `default` = OllamaConfig()
+
+    private enum CodingKeys: String, CodingKey {
+        case requestTimeoutSeconds
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        requestTimeoutSeconds = max(15, try container.decodeIfPresent(Int.self, forKey: .requestTimeoutSeconds) ?? Self.default.requestTimeoutSeconds)
     }
 }
 

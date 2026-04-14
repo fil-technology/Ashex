@@ -364,13 +364,16 @@ extension OpenAIResponsesModelAdapter: DirectChatModelAdapter {
 public struct OllamaModelConfiguration: Sendable {
     public let model: String
     public let baseURL: URL
+    public let requestTimeoutSeconds: Int
 
     public init(
         model: String = "llama3.2",
-        baseURL: URL = URL(string: "http://localhost:11434/api/chat")!
+        baseURL: URL = URL(string: "http://localhost:11434/api/chat")!,
+        requestTimeoutSeconds: Int = 180
     ) {
         self.model = model
         self.baseURL = baseURL
+        self.requestTimeoutSeconds = requestTimeoutSeconds
     }
 }
 
@@ -551,6 +554,7 @@ public struct OllamaChatModelAdapter: ModelAdapter {
 
         var request = URLRequest(url: configuration.baseURL)
         request.httpMethod = "POST"
+        request.timeoutInterval = TimeInterval(configuration.requestTimeoutSeconds)
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try encoder.encode(requestBody)
 
@@ -639,6 +643,7 @@ extension OllamaChatModelAdapter: DirectChatModelAdapter {
 
         var request = URLRequest(url: configuration.baseURL)
         request.httpMethod = "POST"
+        request.timeoutInterval = TimeInterval(configuration.requestTimeoutSeconds)
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try encoder.encode(requestBody)
 

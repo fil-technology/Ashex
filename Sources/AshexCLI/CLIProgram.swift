@@ -260,7 +260,8 @@ struct CLIConfiguration {
             return OllamaChatModelAdapter(
                 configuration: .init(
                     model: model,
-                    baseURL: URL(string: ProcessInfo.processInfo.environment["OLLAMA_BASE_URL"] ?? "http://localhost:11434/api/chat")!
+                    baseURL: URL(string: ProcessInfo.processInfo.environment["OLLAMA_BASE_URL"] ?? "http://localhost:11434/api/chat")!,
+                    requestTimeoutSeconds: Self.ollamaRequestTimeoutSeconds(config: userConfig.ollama)
                 )
             )
         default:
@@ -383,6 +384,15 @@ struct CLIConfiguration {
         default:
             return nil
         }
+    }
+
+    static func ollamaRequestTimeoutSeconds(config: OllamaConfig) -> Int {
+        if let raw = ProcessInfo.processInfo.environment["OLLAMA_REQUEST_TIMEOUT_SECONDS"],
+           let parsed = Int(raw),
+           parsed >= 15 {
+            return parsed
+        }
+        return config.requestTimeoutSeconds
     }
 
     func resolvedAPIKey(for provider: String) throws -> String? {

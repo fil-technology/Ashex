@@ -120,8 +120,11 @@ import Testing
 @Test func connectorMessageIntentClassifierUsesDirectChatForCasualQuestions() {
     #expect(ConnectorMessageIntentClassifier.classify("How are you?") == .directChat)
     #expect(ConnectorMessageIntentClassifier.classify("Tell me a joke") == .directChat)
-    #expect(ConnectorMessageIntentClassifier.classify("Summarize this repository") == .workspaceTask)
+    #expect(ConnectorMessageIntentClassifier.classify("Summarize this repository") == .directChat)
     #expect(ConnectorMessageIntentClassifier.classify("Can you use curl to fetch https://example.com?") == .workspaceTask)
+    #expect(ConnectorMessageIntentClassifier.classify("Search for the weather in Petah Tikva Israel") == .directChat)
+    #expect(ConnectorMessageIntentClassifier.classify("Give me simple swift hello world app code") == .directChat)
+    #expect(ConnectorMessageIntentClassifier.classify("What this repo is about?") == .directChat)
 }
 
 @Test func runDispatcherDirectChatModeAvoidsToolLoopForCasualMessage() async throws {

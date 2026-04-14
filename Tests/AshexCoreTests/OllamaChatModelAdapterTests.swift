@@ -95,6 +95,28 @@ struct OllamaChatModelAdapterTests {
         let action = try await adapter.nextAction(for: sampleModelContext())
         #expect(action == .finalAnswer("wrapped"))
     }
+
+    @Test func appliesConfiguredRequestTimeoutToOllamaRequests() async throws {
+        let session = makeOllamaStubbedSession(statusCode: 200, body: """
+        {
+          "message": {
+            "content": "{\\"type\\":\\"final_answer\\",\\"final_answer\\":\\"done locally\\",\\"tool_name\\":null,\\"arguments\\":null}"
+          }
+        }
+        """)
+
+        let adapter = OllamaChatModelAdapter(
+            configuration: .init(
+                model: "llama3.2",
+                baseURL: URL(string: "http://localhost:11434/api/chat")!,
+                requestTimeoutSeconds: 321
+            ),
+            session: session
+        )
+
+        _ = try await adapter.nextAction(for: sampleModelContext())
+        #expect(abs(OllamaStubURLProtocol.state.lastRequestTimeout - 321) < 0.001)
+    }
 }
 
 private func sampleModelContext() -> ModelContext {
@@ -139,6 +161,7 @@ private final class OllamaStubURLProtocol: URLProtocol, @unchecked Sendable {
     }
 
     override func startLoading() {
+        Self.state.record(timeoutInterval: request.timeoutInterval)
         let current = Self.state.snapshot()
         let response = HTTPURLResponse(
             url: request.url ?? URL(string: "http://localhost:11434/api/chat")!,
@@ -159,11 +182,13 @@ private final class OllamaStubResponseState: @unchecked Sendable {
     private let lock = NSLock()
     private var responses: [(statusCode: Int, body: String)] = [(200, "")]
     private(set) var requestCount = 0
+    private(set) var lastRequestTimeout: TimeInterval = 0
 
     func setResponses(_ responses: [(Int, String)]) {
         lock.lock()
         self.responses = responses.map { (statusCode: $0.0, body: $0.1) }
         self.requestCount = 0
+        self.lastRequestTimeout = 0
         lock.unlock()
     }
 
@@ -174,5 +199,11 @@ private final class OllamaStubResponseState: @unchecked Sendable {
         let response = responses[index]
         requestCount += 1
         return response
+    }
+
+    func record(timeoutInterval: TimeInterval) {
+        lock.lock()
+        lastRequestTimeout = timeoutInterval
+        lock.unlock()
     }
 }

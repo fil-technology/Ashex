@@ -160,6 +160,7 @@ Provider environment variables:
 - `OPENAI_MODEL`: optional default model for `openai`
 - `OLLAMA_MODEL`: optional default model for `ollama`
 - `OLLAMA_BASE_URL`: optional Ollama chat endpoint, default `http://localhost:11434/api/chat`
+- `OLLAMA_REQUEST_TIMEOUT_SECONDS`: optional Ollama request timeout override for slower agent-mode calls
 - `DFLASH_MODEL`: optional default model for `dflash`
 - `DFLASH_BASE_URL`: optional DFlash server endpoint, default `http://127.0.0.1:8000`
 - `ASHEX_ALLOW_LARGE_MODELS=1`: optional override if you intentionally want to bypass local-model memory guardrails
@@ -187,6 +188,7 @@ Daemon and Telegram config in `ashex.config.json`:
 - `telegram.allowedUserIDs`: optional allowlist of Telegram user IDs
 - `telegram.responseMode`: currently `final_message`
 - `telegram.executionPolicy`: `assistant_only`, `approval_required`, or `trusted_full_access`
+- `ollama.requestTimeoutSeconds`: request timeout for Ollama chat and agent-mode requests, default `180`
 - `dflash.enabled`: optional toggle for the experimental DFlash provider
 - `dflash.baseURL`: local `dflash-serve` endpoint, default `http://127.0.0.1:8000`
 - `dflash.model`: default model for the DFlash provider
@@ -244,6 +246,7 @@ For Telegram daemon mode:
 - `approval_required` now opens a remote approval inbox inside the Telegram chat and waits for `/approve` or `/deny`
 - `trusted_full_access` allows Telegram to use the existing runtime tool path, while the sandbox and shell/network policies still apply
 - direct-chat prompts such as "How are you?" are routed normally and show a typing indicator while the model runs
+- Telegram now prefers direct-chat routing for general requests like summaries, explanations, code snippets, weather/news lookups, and similar conversational asks
 - project or workspace prompts, or explicit command-style prompts like `shell: ...`, go through the normal runtime intent classifier and can execute tools in trusted mode
 - `/status`, `/pending`, `/approve`, `/deny [reason]`, and `/stop` are available in Telegram while a run is active
 - the connector never silently escalates to trusted execution
