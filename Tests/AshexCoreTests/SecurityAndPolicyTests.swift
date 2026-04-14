@@ -7,9 +7,11 @@ import Testing
     try store.writeSecret(namespace: "provider.credentials", key: "openai_api_key", value: "sk-test-123")
 
     #expect(try store.readSecret(namespace: "provider.credentials", key: "openai_api_key") == "sk-test-123")
+    #expect(try store.containsSecret(namespace: "provider.credentials", key: "openai_api_key") == true)
 
     try store.deleteSecret(namespace: "provider.credentials", key: "openai_api_key")
     #expect(try store.readSecret(namespace: "provider.credentials", key: "openai_api_key") == nil)
+    #expect(try store.containsSecret(namespace: "provider.credentials", key: "openai_api_key") == false)
 }
 
 @Test func shellCommandPolicyRequiresApprovalForUnknownCommandsWhenConfigured() {
@@ -303,6 +305,7 @@ import Testing
         retainedMessageCount: 6,
         estimatedTokenCount: 300,
         estimatedContextWindow: 8000,
+        estimatedSavedTokenCount: 180,
         summary: "Compacted earlier reads",
         now: now
     )
@@ -317,6 +320,96 @@ import Testing
     #expect(snapshot.workspaceSnapshot?.workspaceRootPath == "/tmp/project")
     #expect(snapshot.workingMemory?.currentTask == "Fix app")
     #expect(snapshot.events.count == 1)
+}
+
+@Test func sessionInspectorAggregatesSavedTokensAcrossRunScopes() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let store = SQLitePersistenceStore(databaseURL: root.appendingPathComponent("ashex.sqlite"))
+    try store.initialize()
+    let calendar = Calendar(identifier: .gregorian)
+    let now = Date(timeIntervalSince1970: 1_710_000_000)
+    let today = now.addingTimeInterval(-3_600)
+    let yesterday = now.addingTimeInterval(-90_000)
+
+    let sessionThread = try store.createThread(now: yesterday)
+    let otherThread = try store.createThread(now: yesterday)
+    let sessionRunA = try store.createRun(threadID: sessionThread.id, state: .completed, now: yesterday)
+    let sessionRunB = try store.createRun(threadID: sessionThread.id, state: .completed, now: today)
+    let otherRun = try store.createRun(threadID: otherThread.id, state: .completed, now: today)
+    try store.transitionRun(runID: sessionRunA.id, to: .completed, reason: nil, now: yesterday)
+    try store.transitionRun(runID: sessionRunB.id, to: .completed, reason: nil, now: today)
+    try store.transitionRun(runID: otherRun.id, to: .completed, reason: nil, now: today)
+
+    _ = try store.recordContextCompaction(
+        runID: sessionRunA.id,
+        droppedMessageCount: 2,
+        retainedMessageCount: 4,
+        estimatedTokenCount: 200,
+        estimatedContextWindow: 8000,
+        estimatedSavedTokenCount: 150,
+        summary: "Older session compaction",
+        now: yesterday
+    )
+    _ = try store.recordContextCompaction(
+        runID: sessionRunB.id,
+        droppedMessageCount: 3,
+        retainedMessageCount: 5,
+        estimatedTokenCount: 220,
+        estimatedContextWindow: 8000,
+        estimatedSavedTokenCount: 250,
+        summary: "Current session compaction",
+        now: today
+    )
+    _ = try store.recordContextCompaction(
+        runID: otherRun.id,
+        droppedMessageCount: 1,
+        retainedMessageCount: 6,
+        estimatedTokenCount: 120,
+        estimatedContextWindow: 8000,
+        estimatedSavedTokenCount: 90,
+        summary: "Other thread compaction",
+        now: today
+    )
+
+    let inspector = SessionInspector(persistence: store)
+    let savings = try #require(try inspector.loadTokenSavings(runID: sessionRunB.id, now: now, calendar: calendar))
+    #expect(savings.currentRun.savedTokenCount == 250)
+    #expect(savings.today.savedTokenCount == 340)
+    #expect(savings.session.savedTokenCount == 400)
+    #expect(savings.total.savedTokenCount == 490)
+}
+
+@Test func cronScheduleComputesNextRunInRequestedTimezone() throws {
+    let schedule = CronSchedule(expression: "0 9 * * 1-5", timeZoneIdentifier: "Asia/Jerusalem")
+    let formatter = ISO8601DateFormatter()
+    let base = try #require(formatter.date(from: "2026-04-14T05:30:00Z"))
+    let next = try schedule.nextRunDate(after: base)
+    let calendar = Calendar(identifier: .gregorian)
+    let components = calendar.dateComponents(in: try #require(schedule.timeZone), from: next)
+
+    #expect(components.hour == 9)
+    #expect(components.minute == 0)
+    #expect((components.weekday ?? 0) != 7)
+}
+
+@Test func cronJobStoreRoundTripsPersistedJobs() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let store = SQLitePersistenceStore(databaseURL: root.appendingPathComponent("ashex.sqlite"))
+    try store.initialize()
+    let jobStore = CronJobStore(persistence: store)
+    let createdAt = Date(timeIntervalSince1970: 1_710_000_000)
+    let nextRunAt = createdAt.addingTimeInterval(3_600)
+    let job = CronJobRecord(
+        id: "daily-summary",
+        prompt: "Summarize inbox",
+        schedule: .init(expression: "0 9 * * *", timeZoneIdentifier: "Asia/Jerusalem"),
+        createdAt: createdAt,
+        nextRunAt: nextRunAt
+    )
+
+    try jobStore.save(job, now: createdAt)
+    let loaded = try #require(try jobStore.job(id: "daily-summary"))
+    #expect(loaded == job)
 }
 
 @Test func recentWorkspaceStoreRecordsMostRecentWorkspaceFirst() throws {

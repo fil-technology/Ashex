@@ -57,6 +57,37 @@ struct OpenAIResponsesModelAdapterTests {
         ]))
         #expect(action == expected)
     }
+
+    @Test func directReplyFallsBackToPlainTextOutput() async throws {
+        let session = makeStubbedSession(statusCode: 200, body: """
+        {
+          "output": [
+            {
+              "content": [
+                {
+                  "type": "output_text",
+                  "text": "I'm doing well. How can I help?"
+                }
+              ]
+            }
+          ]
+        }
+        """)
+
+        let adapter = OpenAIResponsesModelAdapter(
+            configuration: .init(apiKey: "test-key", model: "gpt-5.4-mini", baseURL: URL(string: "https://example.com/v1/responses")!),
+            session: session
+        )
+
+        let reply = try await adapter.directReply(
+            history: [
+                .init(id: UUID(), threadID: UUID(), runID: UUID(), role: .user, content: "How are you?", createdAt: Date())
+            ],
+            systemPrompt: "You are helpful."
+        )
+
+        #expect(reply == "I'm doing well. How can I help?")
+    }
 }
 
 private func sampleContext() -> ModelContext {

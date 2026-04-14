@@ -23,6 +23,9 @@ public enum ConnectorCommand: String, Sendable, Codable {
     case pending
     case approve
     case deny
+    case stats
+    case statsOn = "statson"
+    case statsOff = "statsoff"
 }
 
 public struct InboundConnectorEvent: Sendable, Codable {

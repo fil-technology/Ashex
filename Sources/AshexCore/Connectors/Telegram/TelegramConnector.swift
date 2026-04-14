@@ -214,6 +214,15 @@ public actor TelegramConnector: Connector, ConnectorActivityControlling {
     private static func command(from text: String) -> ConnectorCommand? {
         guard text.hasPrefix("/") else { return nil }
         let raw = text.dropFirst().split(separator: " ").first?.split(separator: "@").first.map(String.init)?.lowercased()
+        if raw == "tokenstats" {
+            return .stats
+        }
+        if raw == "statson" {
+            return .statsOn
+        }
+        if raw == "statsoff" {
+            return .statsOff
+        }
         return raw.flatMap(ConnectorCommand.init(rawValue:))
     }
 

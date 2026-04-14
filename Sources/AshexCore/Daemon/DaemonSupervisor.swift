@@ -3,10 +3,14 @@ import Foundation
 public struct DaemonSupervisorConfig: Sendable {
     public let maxIterations: Int
     public let connectorLabel: String
+    public let provider: String
+    public let model: String
 
-    public init(maxIterations: Int = 8, connectorLabel: String = "connector") {
+    public init(maxIterations: Int = 8, connectorLabel: String = "connector", provider: String = "mock", model: String = "mock") {
         self.maxIterations = maxIterations
         self.connectorLabel = connectorLabel
+        self.provider = provider
+        self.model = model
     }
 }
 
@@ -92,11 +96,23 @@ public actor DaemonSupervisor {
             /pending - show the current pending approval request
             /approve - allow the pending tool request in this chat
             /deny [reason] - deny the pending tool request
+            /stats [on|off] - show or toggle token/savings stats for this chat
+            /statson - enable token/savings stats for this chat
+            /statsoff - disable token/savings stats for this chat
             /stop - stop the current reply or pending run
             """, for: event)
             return
         case .status:
             try await send(text: await statusMessage(for: event.conversation), for: event)
+            return
+        case .stats:
+            try await handleStatsCommand(for: event)
+            return
+        case .statsOn:
+            try await handleStatsCommand(for: event, forcedState: true)
+            return
+        case .statsOff:
+            try await handleStatsCommand(for: event, forcedState: false)
             return
         case .pending:
             try await send(text: await pendingApprovalMessage(for: event.conversation), for: event)
@@ -197,7 +213,8 @@ public actor DaemonSupervisor {
                     "conversation_id": .string(event.conversation.externalConversationID),
                     "run_id": .string(result.runID?.uuidString ?? ""),
                 ])
-                try await self.send(text: result.finalText, for: event)
+                let replyText = try await self.decorateReplyIfNeeded(result.finalText, runID: result.runID, conversation: event.conversation)
+                try await self.send(text: replyText, for: event)
             } catch is CancellationError {
                 try? await self.send(text: "Stopped the current run.", for: event)
             } catch {
@@ -313,10 +330,12 @@ public actor DaemonSupervisor {
         let stateLine = status.awaitingApproval
             ? "Ash is waiting for approval on run \(status.runID?.uuidString ?? "<pending>")"
             : "Ash is running \(status.runID?.uuidString ?? "<starting>")"
+        let statsState = statsEnabled(for: conversation) ? "enabled" : "disabled"
         return """
         \(stateLine)
         Thread: \(status.threadID.uuidString)
         Prompt: \(status.prompt)
+        Stats: \(statsState)
 
         Use `/stop` to cancel the run\(status.awaitingApproval ? ", `/approve`, or `/deny`." : ".")
         """
@@ -339,6 +358,80 @@ public actor DaemonSupervisor {
 
     private func clearActiveTask(for conversation: ConnectorConversationReference) {
         activeTasks[conversation] = nil
+    }
+
+    private func handleStatsCommand(for event: InboundConnectorEvent, forcedState: Bool? = nil) async throws {
+        let desiredState: Bool?
+        if let forcedState {
+            desiredState = forcedState
+        } else {
+            let lowered = event.text.lowercased()
+            if lowered.contains(" on") || lowered.contains(" enable") {
+                desiredState = true
+            } else if lowered.contains(" off") || lowered.contains(" disable") {
+                desiredState = false
+            } else {
+                desiredState = nil
+            }
+        }
+
+        if let desiredState {
+            try persistence.upsertSetting(
+                namespace: statsNamespace(for: event.conversation),
+                key: "enabled",
+                value: .bool(desiredState),
+                now: Date()
+            )
+        }
+
+        let enabled = statsEnabled(for: event.conversation)
+        let stateLabel = enabled ? "enabled" : "disabled"
+        try await send(
+            text: "Token stats are \(stateLabel) for this chat. Use `/stats on` or `/stats off` any time.",
+            for: event
+        )
+    }
+
+    private func decorateReplyIfNeeded(
+        _ reply: String,
+        runID: UUID?,
+        conversation: ConnectorConversationReference
+    ) async throws -> String {
+        guard statsEnabled(for: conversation), let runID else {
+            return reply
+        }
+        let inspector = SessionInspector(persistence: persistence)
+        guard let savings = try inspector.loadTokenSavings(runID: runID) else {
+            return reply
+        }
+        let statsBlock = "\n\nSaved: run \(formatTokenCount(savings.currentRun.savedTokenCount))/\(formatSavedMoney(savings.currentRun.savedTokenCount)) • today \(formatTokenCount(savings.today.savedTokenCount)) • session \(formatTokenCount(savings.session.savedTokenCount)) • total \(formatTokenCount(savings.total.savedTokenCount))"
+        return reply + statsBlock
+    }
+
+    private func statsEnabled(for conversation: ConnectorConversationReference) -> Bool {
+        let setting = try? persistence.fetchSetting(namespace: statsNamespace(for: conversation), key: "enabled")
+        return setting?.value.boolValue ?? true
+    }
+
+    private func statsNamespace(for conversation: ConnectorConversationReference) -> String {
+        "connectors.telegram.stats.\(conversation.connectorID).\(conversation.externalConversationID)"
+    }
+
+    private func formatTokenCount(_ count: Int) -> String {
+        let value = Double(max(count, 0))
+        switch value {
+        case 1_000_000...:
+            return String(format: "%.1fM", value / 1_000_000)
+        case 1_000...:
+            return String(format: "%.1fk", value / 1_000)
+        default:
+            return String(Int(value))
+        }
+    }
+
+    private func formatSavedMoney(_ savedTokens: Int) -> String {
+        let dollars = TokenSavingsEstimator.estimatedSavedMoneyUSD(for: savedTokens, provider: config.provider, model: config.model)
+        return TokenSavingsEstimator.formatUSD(dollars)
     }
 }
 

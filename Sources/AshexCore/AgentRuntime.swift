@@ -683,6 +683,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                         retainedMessageCount: preparedContext.retainedMessages.count,
                         estimatedTokenCount: preparedContext.estimatedTokenCount,
                         estimatedContextWindow: preparedContext.estimatedContextWindow,
+                        estimatedSavedTokenCount: compaction.estimatedSavedTokenCount,
                         summary: compaction.summary,
                         now: clock()
                     )

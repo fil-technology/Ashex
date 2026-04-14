@@ -132,6 +132,9 @@ Daemon and Telegram commands:
 - `daemon stop`: send `SIGTERM` to the tracked daemon process
 - `daemon status`: show PID and log path when the daemon is running
 - `telegram test`: verify the configured Telegram bot token with `getMe`
+- `cron list`: list persisted cron jobs
+- `cron add --id ID --expr "MIN HOUR DAY MONTH WEEKDAY" --tz "Area/City" --prompt "..."`: add a timezone-aware recurring cron job
+- `cron remove --id ID`: remove a persisted cron job
 
 Example:
 
@@ -139,6 +142,7 @@ Example:
 export ASHEX_TELEGRAM_BOT_TOKEN=123456:bot-token
 swift run ashex telegram test
 swift run ashex daemon run --provider openai --model gpt-5.4-mini
+swift run ashex cron add --id morning-brief --expr "0 7 * * 1-5" --tz "Asia/Jerusalem" --prompt "Summarize overnight repo updates and list urgent follow-ups."
 ```
 
 TUI onboarding path:
@@ -153,6 +157,7 @@ TUI onboarding path:
 8. Use `Daemon` to start the background process
 
 After that, the bot should keep running until you stop the daemon from the same settings screen or by CLI.
+The daemon can also run with cron jobs only, even if Telegram is disabled, as long as at least one enabled cron job exists.
 
 Provider environment variables:
 

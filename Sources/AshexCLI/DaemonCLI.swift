@@ -8,6 +8,9 @@ enum DaemonCLICommand: Equatable {
     case daemonStop([String])
     case daemonStatus([String])
     case telegramTest([String])
+    case cronList([String])
+    case cronAdd([String])
+    case cronRemove([String])
 
     static func parse(arguments: [String]) -> DaemonCLICommand? {
         guard arguments.count >= 2 else { return nil }
@@ -22,6 +25,12 @@ enum DaemonCLICommand: Equatable {
             return .daemonStatus(Array(arguments.dropFirst(3)))
         case ("telegram", "test"):
             return .telegramTest(Array(arguments.dropFirst(3)))
+        case ("cron", "list"):
+            return .cronList(Array(arguments.dropFirst(3)))
+        case ("cron", "add"):
+            return .cronAdd(Array(arguments.dropFirst(3)))
+        case ("cron", "remove"):
+            return .cronRemove(Array(arguments.dropFirst(3)))
         default:
             return nil
         }
@@ -48,6 +57,12 @@ enum DaemonCLI {
             try status(extraArguments: extraArguments)
         case .telegramTest(let extraArguments):
             try await telegramTest(extraArguments: extraArguments)
+        case .cronList(let extraArguments):
+            try cronList(extraArguments: extraArguments)
+        case .cronAdd(let extraArguments):
+            try cronAdd(extraArguments: extraArguments)
+        case .cronRemove(let extraArguments):
+            try cronRemove(extraArguments: extraArguments)
         }
 
         return true
@@ -77,20 +92,37 @@ enum DaemonCLI {
         defer { try? stateStore.clearIfOwnedByCurrentProcess() }
 
         let token = resolvedTelegramToken(from: configuration.userConfig.telegram)
-        guard configuration.userConfig.telegram.enabled, let token, !token.isEmpty else {
-            throw AshexError.model("Telegram daemon mode requires `telegram.enabled` and a bot token in config or ASHEX_TELEGRAM_BOT_TOKEN.")
+        let cronStore = CronJobStore(persistence: persistence)
+        let hasCronJobs = (try? cronStore.listJobs().contains { $0.isEnabled }) ?? false
+        let connectors: [any Connector]
+        if configuration.userConfig.telegram.enabled, let token, !token.isEmpty {
+            connectors = [
+                TelegramConnector(
+                    token: token,
+                    config: configuration.userConfig.telegram,
+                    persistence: persistence,
+                    logger: logger
+                )
+            ]
+        } else {
+            connectors = []
         }
 
-        let connector = TelegramConnector(
-            token: token,
-            config: configuration.userConfig.telegram,
-            persistence: persistence,
-            logger: logger
-        )
-        let registry = ConnectorRegistry(connectors: [connector])
+        guard !connectors.isEmpty || hasCronJobs else {
+            throw AshexError.model("Daemon run requires either Telegram to be enabled with a valid bot token or at least one enabled cron job.")
+        }
+
+        let registry = ConnectorRegistry(connectors: connectors)
         let mappingStore = ConnectorConversationMappingStore(persistence: persistence)
         let router = ConversationRouter(mappingStore: mappingStore)
         let dispatcher = RunDispatcher(runtime: runtime, logger: logger)
+        let cronScheduler = CronScheduler(
+            store: cronStore,
+            dispatcher: dispatcher,
+            persistence: persistence,
+            logger: logger,
+            maxIterations: configuration.maxIterations
+        )
         let supervisor = DaemonSupervisor(
             registry: registry,
             router: router,
@@ -99,7 +131,12 @@ enum DaemonCLI {
             logger: logger,
             runStore: runStore,
             remoteApprovalInbox: remoteApprovalInbox,
-            config: .init(maxIterations: configuration.maxIterations, connectorLabel: "telegram")
+            config: .init(
+                maxIterations: configuration.maxIterations,
+                connectorLabel: "telegram",
+                provider: configuration.provider,
+                model: configuration.model
+            )
         )
 
         await logger.log(.info, subsystem: "daemon", message: "Daemon boot complete", metadata: [
@@ -110,7 +147,9 @@ enum DaemonCLI {
             "background": .bool(launchedInBackground),
         ])
         try await supervisor.start()
+        await cronScheduler.start()
         try await DaemonSignalTrap.waitForTermination()
+        await cronScheduler.stop()
         await supervisor.stop()
     }
 
@@ -182,6 +221,81 @@ enum DaemonCLI {
         print("telegram ok")
         print("bot_id: \(identity.id)")
         print("username: \(identity.username ?? "<none>")")
+    }
+
+    private static func cronList(extraArguments: [String]) throws {
+        let configuration = try CLIConfiguration(arguments: [CommandLine.arguments[0]] + extraArguments)
+        let store = CronJobStore(persistence: try configuration.makePersistenceStore())
+        let jobs = try store.listJobs()
+        if jobs.isEmpty {
+            print("no cron jobs configured")
+            return
+        }
+        let formatter = ISO8601DateFormatter()
+        for job in jobs {
+            print("\(job.id) [\(job.isEnabled ? "enabled" : "disabled")]")
+            print("  schedule: \(job.schedule.expression)")
+            print("  timezone: \(job.schedule.timeZoneIdentifier)")
+            print("  next_run: \(formatter.string(from: job.nextRunAt))")
+            if let lastRunAt = job.lastRunAt {
+                print("  last_run: \(formatter.string(from: lastRunAt))")
+            }
+            print("  prompt: \(job.prompt)")
+        }
+    }
+
+    private static func cronAdd(extraArguments: [String]) throws {
+        let configuration = try CLIConfiguration(arguments: [CommandLine.arguments[0]] + extraArguments)
+        let parsed = try parseCronArguments(extraArguments)
+        let schedule = CronSchedule(
+            expression: parsed.expression,
+            timeZoneIdentifier: parsed.timeZoneIdentifier ?? TimeZone.current.identifier
+        )
+        let nextRunAt = try schedule.nextRunDate(after: Date())
+        let job = CronJobRecord(
+            id: parsed.id,
+            prompt: parsed.prompt,
+            schedule: schedule,
+            createdAt: Date(),
+            nextRunAt: nextRunAt
+        )
+        let store = CronJobStore(persistence: try configuration.makePersistenceStore())
+        try store.save(job)
+        print("cron job saved")
+        print("id: \(job.id)")
+        print("schedule: \(job.schedule.expression)")
+        print("timezone: \(job.schedule.timeZoneIdentifier)")
+        print("next_run: \(ISO8601DateFormatter().string(from: job.nextRunAt))")
+    }
+
+    private static func cronRemove(extraArguments: [String]) throws {
+        let configuration = try CLIConfiguration(arguments: [CommandLine.arguments[0]] + extraArguments)
+        guard let id = optionValue(named: "--id", in: extraArguments) else {
+            throw AshexError.model("cron remove requires --id <job-id>")
+        }
+        let store = CronJobStore(persistence: try configuration.makePersistenceStore())
+        try store.delete(id: id)
+        print("removed cron job \(id)")
+    }
+
+    private static func parseCronArguments(_ arguments: [String]) throws -> (id: String, expression: String, timeZoneIdentifier: String?, prompt: String) {
+        guard let id = optionValue(named: "--id", in: arguments) else {
+            throw AshexError.model("cron add requires --id <job-id>")
+        }
+        guard let expression = optionValue(named: "--expr", in: arguments) ?? optionValue(named: "--schedule", in: arguments) else {
+            throw AshexError.model("cron add requires --expr \"MIN HOUR DAY MONTH WEEKDAY\"")
+        }
+        guard let prompt = optionValue(named: "--prompt", in: arguments) else {
+            throw AshexError.model("cron add requires --prompt \"...\"")
+        }
+        return (id, expression, optionValue(named: "--tz", in: arguments) ?? optionValue(named: "--timezone", in: arguments), prompt)
+    }
+
+    private static func optionValue(named option: String, in arguments: [String]) -> String? {
+        guard let index = arguments.firstIndex(of: option), arguments.indices.contains(index + 1) else {
+            return nil
+        }
+        return arguments[index + 1]
     }
 
     private static func resolvedTelegramToken(from config: TelegramConfig) -> String? {

@@ -113,8 +113,7 @@ private enum ModelPromptRenderer {
                 "arguments": .object([
                     "type": .string("object"),
                     "properties": .object(properties),
-                    "required": .array(argumentNames.map(JSONValue.string)),
-                    "additionalProperties": .bool(false),
+                    "additionalProperties": .bool(true),
                 ]),
             ]),
             "required": .array([
@@ -351,9 +350,7 @@ extension OpenAIResponsesModelAdapter: DirectChatModelAdapter {
         }
         guard
             let outputText = try decoder.decode(OpenAIResponseEnvelope.self, from: data).outputText,
-            let payload = try JSONSerialization.jsonObject(with: Data(outputText.utf8)) as? [String: Any],
-            let reply = payload["reply"] as? String,
-            !reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            let reply = DirectChatReplyParser.parseReply(from: outputText)
         else {
             throw AshexError.model("OpenAI direct chat did not return a reply")
         }
@@ -574,7 +571,7 @@ public struct OllamaChatModelAdapter: ModelAdapter {
             throw AshexError.model("Ollama response did not include structured output content")
         }
 
-        let candidate = Self.extractJSONObjectString(from: content) ?? content
+        let candidate = DirectChatReplyParser.extractJSONObjectString(from: content) ?? content
         do {
             let parsed = try decoder.decode(ModelActionEnvelope.self, from: Data(candidate.utf8))
             return try parsed.toModelAction()
@@ -588,35 +585,6 @@ public struct OllamaChatModelAdapter: ModelAdapter {
         return message.contains("structured output content")
             || message.contains("structured output")
             || message.contains("did not decode")
-    }
-
-    private static func extractJSONObjectString(from content: String) -> String? {
-        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.hasPrefix("{"), trimmed.hasSuffix("}") {
-            return trimmed
-        }
-
-        if let fencedRange = trimmed.range(of: "```") {
-            let afterFence = trimmed[fencedRange.upperBound...]
-            let withoutLanguage = afterFence.hasPrefix("json")
-                ? afterFence.dropFirst(4)
-                : afterFence
-            if let closingFence = withoutLanguage.range(of: "```") {
-                let inner = withoutLanguage[..<closingFence.lowerBound]
-                let candidate = inner.trimmingCharacters(in: .whitespacesAndNewlines)
-                if candidate.hasPrefix("{"), candidate.hasSuffix("}") {
-                    return candidate
-                }
-            }
-        }
-
-        guard let start = trimmed.firstIndex(of: "{"),
-              let end = trimmed.lastIndex(of: "}") ,
-              start < end else {
-            return nil
-        }
-        let candidate = String(trimmed[start...end]).trimmingCharacters(in: .whitespacesAndNewlines)
-        return candidate.hasPrefix("{") && candidate.hasSuffix("}") ? candidate : nil
     }
 }
 
@@ -657,11 +625,7 @@ extension OllamaChatModelAdapter: DirectChatModelAdapter {
         }
         let envelope = try decoder.decode(OllamaChatResponseEnvelope.self, from: data)
         let content = envelope.message.content.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard
-            let payload = try JSONSerialization.jsonObject(with: Data(content.utf8)) as? [String: Any],
-            let reply = payload["reply"] as? String,
-            !reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        else {
+        guard let reply = DirectChatReplyParser.parseReply(from: content) else {
             throw AshexError.model("Ollama direct chat did not return a reply")
         }
         return reply
@@ -771,11 +735,7 @@ extension AnthropicMessagesModelAdapter: DirectChatModelAdapter {
             .compactMap(\.text)
             .joined(separator: "\n")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard
-            let payload = try JSONSerialization.jsonObject(with: Data(content.utf8)) as? [String: Any],
-            let reply = payload["reply"] as? String,
-            !reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        else {
+        guard let reply = DirectChatReplyParser.parseReply(from: content) else {
             throw AshexError.model("Anthropic direct chat did not return a reply")
         }
         return reply
@@ -1084,6 +1044,53 @@ private struct ModelActionEnvelope: Codable {
         default:
             throw AshexError.model("Unsupported model action type: \(type)")
         }
+    }
+}
+
+private enum DirectChatReplyParser {
+    static func parseReply(from content: String) -> String? {
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        if let candidate = extractJSONObjectString(from: trimmed),
+           let payload = try? JSONSerialization.jsonObject(with: Data(candidate.utf8)) as? [String: Any],
+           let reply = payload["reply"] as? String {
+            let normalized = reply.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !normalized.isEmpty {
+                return normalized
+            }
+        }
+
+        return trimmed
+    }
+
+    static func extractJSONObjectString(from content: String) -> String? {
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("{"), trimmed.hasSuffix("}") {
+            return trimmed
+        }
+
+        if let fencedRange = trimmed.range(of: "```") {
+            let afterFence = trimmed[fencedRange.upperBound...]
+            let withoutLanguage = afterFence.hasPrefix("json")
+                ? afterFence.dropFirst(4)
+                : afterFence
+            if let closingFence = withoutLanguage.range(of: "```") {
+                let inner = withoutLanguage[..<closingFence.lowerBound]
+                let candidate = inner.trimmingCharacters(in: .whitespacesAndNewlines)
+                if candidate.hasPrefix("{"), candidate.hasSuffix("}") {
+                    return candidate
+                }
+            }
+        }
+
+        guard let start = trimmed.firstIndex(of: "{"),
+              let end = trimmed.lastIndex(of: "}"),
+              start < end else {
+            return nil
+        }
+        let candidate = String(trimmed[start...end]).trimmingCharacters(in: .whitespacesAndNewlines)
+        return candidate.hasPrefix("{") && candidate.hasSuffix("}") ? candidate : nil
     }
 }
 

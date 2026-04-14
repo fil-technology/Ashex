@@ -202,6 +202,7 @@ public struct ContextCompactionRecord: Codable, Sendable {
     public let retainedMessageCount: Int
     public let estimatedTokenCount: Int
     public let estimatedContextWindow: Int
+    public let estimatedSavedTokenCount: Int
     public let summary: String
     public let createdAt: Date
 
@@ -212,6 +213,7 @@ public struct ContextCompactionRecord: Codable, Sendable {
         retainedMessageCount: Int,
         estimatedTokenCount: Int,
         estimatedContextWindow: Int,
+        estimatedSavedTokenCount: Int,
         summary: String,
         createdAt: Date
     ) {
@@ -221,6 +223,7 @@ public struct ContextCompactionRecord: Codable, Sendable {
         self.retainedMessageCount = retainedMessageCount
         self.estimatedTokenCount = estimatedTokenCount
         self.estimatedContextWindow = estimatedContextWindow
+        self.estimatedSavedTokenCount = estimatedSavedTokenCount
         self.summary = summary
         self.createdAt = createdAt
     }

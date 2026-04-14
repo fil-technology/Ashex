@@ -14,7 +14,7 @@ public protocol PersistenceStore: Sendable {
     func fetchWorkspaceSnapshot(runID: UUID) throws -> WorkspaceSnapshotRecord?
     func upsertWorkingMemory(runID: UUID, currentTask: String, currentPhase: String?, explorationTargets: [String], pendingExplorationTargets: [String], inspectedPaths: [String], changedPaths: [String], recentFindings: [String], completedStepSummaries: [String], unresolvedItems: [String], validationSuggestions: [String], plannedChangeSet: [String], patchObjectives: [String], carryForwardNotes: [String], summary: String, now: Date) throws -> WorkingMemoryRecord
     func fetchWorkingMemory(runID: UUID) throws -> WorkingMemoryRecord?
-    func recordContextCompaction(runID: UUID, droppedMessageCount: Int, retainedMessageCount: Int, estimatedTokenCount: Int, estimatedContextWindow: Int, summary: String, now: Date) throws -> ContextCompactionRecord
+    func recordContextCompaction(runID: UUID, droppedMessageCount: Int, retainedMessageCount: Int, estimatedTokenCount: Int, estimatedContextWindow: Int, estimatedSavedTokenCount: Int, summary: String, now: Date) throws -> ContextCompactionRecord
     func fetchContextCompactions(runID: UUID) throws -> [ContextCompactionRecord]
     func appendMessage(threadID: UUID, runID: UUID?, role: MessageRole, content: String, now: Date) throws -> MessageRecord
     func fetchMessages(threadID: UUID) throws -> [MessageRecord]

@@ -69,6 +69,7 @@ public final class SQLitePersistenceStore: PersistenceStore, @unchecked Sendable
                 retained_message_count INTEGER NOT NULL,
                 estimated_token_count INTEGER NOT NULL,
                 estimated_context_window INTEGER NOT NULL,
+                estimated_saved_token_count INTEGER NOT NULL DEFAULT 0,
                 summary TEXT NOT NULL,
                 created_at REAL NOT NULL
             );
@@ -139,6 +140,7 @@ public final class SQLitePersistenceStore: PersistenceStore, @unchecked Sendable
             try ensureColumnExists(table: "working_memory", column: "planned_change_set_json", definition: "TEXT NOT NULL DEFAULT '[]'")
             try ensureColumnExists(table: "working_memory", column: "patch_objectives_json", definition: "TEXT NOT NULL DEFAULT '[]'")
             try ensureColumnExists(table: "working_memory", column: "carry_forward_notes_json", definition: "TEXT NOT NULL DEFAULT '[]'")
+            try ensureColumnExists(table: "context_compactions", column: "estimated_saved_token_count", definition: "INTEGER NOT NULL DEFAULT 0")
         }
     }
 
@@ -430,6 +432,7 @@ public final class SQLitePersistenceStore: PersistenceStore, @unchecked Sendable
         retainedMessageCount: Int,
         estimatedTokenCount: Int,
         estimatedContextWindow: Int,
+        estimatedSavedTokenCount: Int,
         summary: String,
         now: Date
     ) throws -> ContextCompactionRecord {
@@ -441,14 +444,15 @@ public final class SQLitePersistenceStore: PersistenceStore, @unchecked Sendable
                 retainedMessageCount: retainedMessageCount,
                 estimatedTokenCount: estimatedTokenCount,
                 estimatedContextWindow: estimatedContextWindow,
+                estimatedSavedTokenCount: estimatedSavedTokenCount,
                 summary: summary,
                 createdAt: now
             )
             try exec(
                 """
                 INSERT INTO context_compactions
-                (id, run_id, dropped_message_count, retained_message_count, estimated_token_count, estimated_context_window, summary, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (id, run_id, dropped_message_count, retained_message_count, estimated_token_count, estimated_context_window, estimated_saved_token_count, summary, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 bind: [
                     .text(record.id.uuidString),
@@ -457,6 +461,7 @@ public final class SQLitePersistenceStore: PersistenceStore, @unchecked Sendable
                     .int(Int64(record.retainedMessageCount)),
                     .int(Int64(record.estimatedTokenCount)),
                     .int(Int64(record.estimatedContextWindow)),
+                    .int(Int64(record.estimatedSavedTokenCount)),
                     .text(record.summary),
                     .double(now.timeIntervalSince1970),
                 ]
@@ -468,7 +473,7 @@ public final class SQLitePersistenceStore: PersistenceStore, @unchecked Sendable
     public func fetchContextCompactions(runID: UUID) throws -> [ContextCompactionRecord] {
         try queue.sync {
             let sql = """
-            SELECT id, dropped_message_count, retained_message_count, estimated_token_count, estimated_context_window, summary, created_at
+            SELECT id, dropped_message_count, retained_message_count, estimated_token_count, estimated_context_window, estimated_saved_token_count, summary, created_at
             FROM context_compactions
             WHERE run_id = ?
             ORDER BY created_at ASC
@@ -487,8 +492,9 @@ public final class SQLitePersistenceStore: PersistenceStore, @unchecked Sendable
                     retainedMessageCount: Int(sqlite3_column_int(statement, 2)),
                     estimatedTokenCount: Int(sqlite3_column_int(statement, 3)),
                     estimatedContextWindow: Int(sqlite3_column_int(statement, 4)),
-                    summary: columnText(statement, index: 5),
-                    createdAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 6))
+                    estimatedSavedTokenCount: Int(sqlite3_column_int(statement, 5)),
+                    summary: columnText(statement, index: 6),
+                    createdAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 7))
                 ))
             }
             return records

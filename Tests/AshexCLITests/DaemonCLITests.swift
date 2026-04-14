@@ -13,6 +13,12 @@ import Testing
     #expect(DaemonCLICommand.parse(arguments: ["ashex", "telegram", "test"]) == .telegramTest([]))
 }
 
+@Test func parsesCronCommands() {
+    #expect(DaemonCLICommand.parse(arguments: ["ashex", "cron", "list"]) == .cronList([]))
+    #expect(DaemonCLICommand.parse(arguments: ["ashex", "cron", "add", "--id", "daily"]) == .cronAdd(["--id", "daily"]))
+    #expect(DaemonCLICommand.parse(arguments: ["ashex", "cron", "remove", "--id", "daily"]) == .cronRemove(["--id", "daily"]))
+}
+
 @Test func cliConfigurationUsesDFlashProviderDefaults() throws {
     let workspace = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)

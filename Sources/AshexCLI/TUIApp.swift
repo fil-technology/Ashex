@@ -83,11 +83,11 @@ final class TUIApp {
     private let surface = TerminalSurface()
     private let approvalCoordinator: TUIApprovalCoordinator
     private let menuItems: [MenuItem] = [
-        .init(title: "New Prompt", subtitle: "Write your own instruction", action: .compose),
+        .init(title: "Chat", subtitle: "Talk to Ashex in the active thread or start a new one", action: .compose),
         .init(title: "Commands", subtitle: "See available tools, operations, and config policy", action: .commands),
         .init(title: "Terminal", subtitle: "Toggle the side shell pane for quick workspace commands", action: .terminal),
         .init(title: "Workspaces", subtitle: "Switch between recent project roots and inspect their latest history", action: .workspaces),
-        .init(title: "History", subtitle: "Browse persisted threads and run transcripts", action: .history),
+        .init(title: "Threads", subtitle: "Browse saved threads, switch chats, and load transcripts", action: .history),
         .init(title: "Assistant Setup", subtitle: "Configure provider, Telegram, and daemon controls", action: .settings),
         .init(title: "Help", subtitle: "Show keyboard shortcuts and behavior", action: .help),
         .init(title: "Quit", subtitle: "Exit Ashex", action: .quit),
@@ -121,6 +121,7 @@ final class TUIApp {
     private var workingFrameIndex = 0
     private var transcriptScrollOffset = 0
     private var terminalScrollOffset = 0
+    private var settingsScrollOffset = 0
     private var showToolDetails = false
     private var providerStatus = ProviderStatusSnapshot.idle
     private var daemonStatus: DaemonProcessStatus?
@@ -151,7 +152,9 @@ final class TUIApp {
     private var currentChangedFiles: [String] = []
     private var currentPlannedFiles: [String] = []
     private var currentPatchObjectives: [String] = []
+    private var activeThreadID: UUID?
     private var sessionInspector: SessionInspector
+    private var tokenSavingsSnapshot: TokenSavingsSnapshot?
 
     init(configuration: CLIConfiguration) throws {
         let approvalCoordinator = TUIApprovalCoordinator()
@@ -436,7 +439,7 @@ final class TUIApp {
             workspaceSelection = WorkspaceSelection.clamped(workspaceSelection + 1, recentWorkspaceCount: recentWorkspaces.count)
             refreshWorkspacePreview()
         case .history:
-            historySelection = min(historySelection + 1, max(historyThreads.count - 1, 0))
+            historySelection = min(historySelection + 1, max(historyThreads.count, 0))
             refreshHistoryPreview()
         case .settings:
             settingsSelection = min(settingsSelection + 1, SettingsAction.allCases.count - 1)
@@ -804,7 +807,7 @@ final class TUIApp {
             showCommands = false
             focus = .input
             showHelp = false
-            statusLine = "Write a prompt below and press Enter"
+            statusLine = activeThreadID == nil ? "Start a new chat below" : "Continue the active chat below"
         case .commands:
             showCommands = true
             showHistory = false
@@ -833,7 +836,7 @@ final class TUIApp {
             showHelp = false
             focus = .history
             loadHistory()
-            statusLine = historyThreads.isEmpty ? "No stored history yet" : "History"
+            statusLine = historyThreads.isEmpty ? "No saved threads yet" : "Threads"
         case .settings:
             showSettings = true
             showHistory = false
@@ -841,6 +844,7 @@ final class TUIApp {
             showCommands = false
             showHelp = false
             focus = .settings
+            settingsScrollOffset = 0
             refreshDaemonStatus()
             statusLine = "Assistant setup"
         case .help:
@@ -1545,6 +1549,9 @@ final class TUIApp {
         }
         startWorkingIndicator()
         let queuedPrompt = activeQueuedPrompt
+        let intent = ConnectorMessageIntentClassifier.classify(prompt)
+        let requestedMode: RunRequest.Mode = intent == .directChat ? .directChat : .agent
+        let requestedThreadID = activeThreadID
         runTask = Task { [weak self] in
             guard let self else { return }
 
@@ -1557,6 +1564,8 @@ final class TUIApp {
                 let stream = self.runtime.run(.init(
                     prompt: prompt,
                     maxIterations: self.configuration.maxIterations,
+                    threadID: requestedThreadID,
+                    mode: requestedMode,
                     executionControl: executionControl
                 ))
                 for await event in stream {
@@ -1669,7 +1678,8 @@ final class TUIApp {
 
     private func renderLines(for payload: RuntimeEventPayload) -> [String] {
         switch payload {
-        case .runStarted(_, let runID):
+        case .runStarted(let threadID, let runID):
+            activeThreadID = threadID
             return ["[run] Started run \(runID.uuidString)"]
         case .runStateChanged(_, let state, let reason):
             switch state {
@@ -1923,15 +1933,19 @@ final class TUIApp {
         let title = "\(TerminalUIStyle.bold)\(gradientTitle())\(TerminalUIStyle.reset)"
         let mode = "\(TerminalUIStyle.faint)mode\(TerminalUIStyle.reset) \(TerminalUIStyle.ink)\(screenLabel)\(TerminalUIStyle.reset)"
         let left = "\(title)  \(mode)"
-        let purpose = "\(TerminalUIStyle.faint)local agent for workspace tasks: chat, inspect files, run shell, and keep history\(TerminalUIStyle.reset)"
+        let purpose = "\(TerminalUIStyle.faint)local agent for workspace tasks: chat, inspect files, run shell, and keep threads\(TerminalUIStyle.reset)"
 
         let provider = "\(TerminalUIStyle.faint)provider\(TerminalUIStyle.reset) \(TerminalUIStyle.blue)\(sessionProvider)\(TerminalUIStyle.reset)"
         let model = "\(TerminalUIStyle.faint)model\(TerminalUIStyle.reset) \(TerminalUIStyle.ink)\(sessionModel)\(TerminalUIStyle.reset)"
         let sandbox = "\(TerminalUIStyle.faint)sandbox\(TerminalUIStyle.reset) \(TerminalUIStyle.cyan)\(sessionUserConfig.sandbox.mode.rawValue)\(TerminalUIStyle.reset)"
         let usage = "\(TerminalUIStyle.faint)tok~\(TerminalUIStyle.reset) \(TerminalUIStyle.ink)\(formattedEstimatedTokens)\(TerminalUIStyle.reset)"
         let context = "\(TerminalUIStyle.faint)ctx~\(TerminalUIStyle.reset) \(TerminalUIStyle.ink)\(formattedContextUsage)\(TerminalUIStyle.reset)"
+        let savedToday = "\(TerminalUIStyle.faint)today saved\(TerminalUIStyle.reset) \(TerminalUIStyle.green)\(formattedSavedTokens(tokenSavingsSnapshot?.today.savedTokenCount))\(TerminalUIStyle.reset)"
+        let savedSession = "\(TerminalUIStyle.faint)session saved\(TerminalUIStyle.reset) \(TerminalUIStyle.green)\(formattedSavedTokens(tokenSavingsSnapshot?.session.savedTokenCount))\(TerminalUIStyle.reset)"
+        let savedTotal = "\(TerminalUIStyle.faint)total saved\(TerminalUIStyle.reset) \(TerminalUIStyle.green)\(formattedSavedTokens(tokenSavingsSnapshot?.total.savedTokenCount))\(TerminalUIStyle.reset)"
+        let savedMoney = "\(TerminalUIStyle.faint)saved money\(TerminalUIStyle.reset) \(TerminalUIStyle.green)\(formattedSavedMoney(tokenSavingsSnapshot?.total.savedTokenCount))\(TerminalUIStyle.reset)"
         let status = "\(statusColor)\(displayStatusLine)\(TerminalUIStyle.reset)"
-        let right = "\(provider)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(model)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(sandbox)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(usage)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(context)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(status)"
+        let right = "\(provider)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(model)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(sandbox)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(usage)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(context)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(savedToday)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(savedSession)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(savedTotal)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(savedMoney)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(status)"
 
         let topLine = join(left: left, right: right, width: innerWidth)
         let workspace = "\(TerminalUIStyle.faint)workspace\(TerminalUIStyle.reset) \(TerminalUIStyle.truncateVisible(sessionWorkspaceRoot.path, limit: innerWidth))"
@@ -1991,11 +2005,11 @@ final class TUIApp {
             rightTitle = "Workspaces"
             rightLines = renderWorkspaceLines(width: rightWidth - 4)
         } else if showHistory {
-            rightTitle = "History"
+            rightTitle = "Threads"
             rightLines = renderHistoryLines(width: rightWidth - 4)
         } else if showSettings {
             rightTitle = "Assistant Setup"
-            rightLines = renderSettingsLines(width: rightWidth - 4)
+            rightLines = renderSettingsLines(width: rightWidth - 4, maxBodyHeight: bodyHeight)
         } else if showCommands {
             rightTitle = "Commands"
             rightLines = renderScrollableStaticLines(
@@ -2113,8 +2127,8 @@ final class TUIApp {
     private func renderHelpLines(width: Int) -> [String] {
         [
             "\(TerminalUIStyle.ink)Navigation\(TerminalUIStyle.reset)",
-            "\(TerminalUIStyle.slate)Tab\(TerminalUIStyle.reset) Switch between launcher, transcript, settings/history, and input",
-            "\(TerminalUIStyle.slate)Up/Down or j/k\(TerminalUIStyle.reset) Move through launcher items or scroll the transcript",
+            "\(TerminalUIStyle.slate)Tab\(TerminalUIStyle.reset) Switch between launcher, transcript, threads/settings, and input",
+            "\(TerminalUIStyle.slate)Up/Down or j/k\(TerminalUIStyle.reset) Move through launcher items, threads, or scroll the transcript",
             "\(TerminalUIStyle.slate)Page Up/Down or Shift+j/Shift+k\(TerminalUIStyle.reset) Scroll the transcript faster",
             "\(TerminalUIStyle.slate)Home/End or g/G\(TerminalUIStyle.reset) Jump to the oldest output or back to the live tail",
             "\(TerminalUIStyle.slate)t\(TerminalUIStyle.reset) Toggle the side terminal pane",
@@ -2123,6 +2137,10 @@ final class TUIApp {
             "\(TerminalUIStyle.slate)Enter\(TerminalUIStyle.reset) Open launcher item or submit prompt",
             "\(TerminalUIStyle.slate)Esc or Left\(TerminalUIStyle.reset) Back out, cancel a run, or quit",
             "\(TerminalUIStyle.slate)Backspace\(TerminalUIStyle.reset) Delete text in the input bar",
+            "",
+            "\(TerminalUIStyle.ink)Chat Controls\(TerminalUIStyle.reset)",
+            "\(TerminalUIStyle.slate)Chat\(TerminalUIStyle.reset) Open the active chat composer and continue the selected thread",
+            "\(TerminalUIStyle.slate)Threads\(TerminalUIStyle.reset) Pick a saved thread or choose New Chat to start fresh",
             "",
             "\(TerminalUIStyle.ink)Provider Controls\(TerminalUIStyle.reset)",
             "\(TerminalUIStyle.slate)Assistant Setup\(TerminalUIStyle.reset) Configure provider, Telegram, and daemon controls",
@@ -2259,11 +2277,12 @@ final class TUIApp {
         return lines
     }
 
-    private func renderSettingsLines(width: Int) -> [String] {
+    private func renderSettingsLines(width: Int, maxBodyHeight: Int) -> [String] {
         var lines: [String] = [
             "\(TerminalUIStyle.faint)\(focus == .settings ? "Settings focused" : "Press Tab to focus settings")\(TerminalUIStyle.reset)",
             ""
         ]
+        var selectedLineRange: ClosedRange<Int>?
 
         for (index, action) in SettingsAction.allCases.enumerated() {
             let selected = focus == .settings && index == settingsSelection
@@ -2307,10 +2326,15 @@ final class TUIApp {
                 value = "Return to launcher"
             }
 
+            let entryStart = lines.count
             lines.append("\(marker) \(TerminalUIStyle.bold)\(color)\(action.rawValue)\(TerminalUIStyle.reset)")
             lines.append("   \(TerminalUIStyle.slate)\(TerminalUIStyle.truncateVisible(value, limit: max(width - 3, 10)))\(TerminalUIStyle.reset)")
             if index != SettingsAction.allCases.count - 1 {
                 lines.append("")
+            }
+            let entryEnd = lines.count - 1
+            if selected {
+                selectedLineRange = entryStart...entryEnd
             }
         }
 
@@ -2373,7 +2397,18 @@ final class TUIApp {
             lines.append("\(TerminalUIStyle.amber)Telegram user allowlist edit mode is active in the input bar below.\(TerminalUIStyle.reset)")
         }
 
-        return lines
+        let bodyLimit = max(maxBodyHeight, 1)
+        let maxOffset = max(lines.count - bodyLimit, 0)
+        if let selectedLineRange {
+            if selectedLineRange.lowerBound < settingsScrollOffset {
+                settingsScrollOffset = selectedLineRange.lowerBound
+            } else if selectedLineRange.upperBound >= settingsScrollOffset + bodyLimit {
+                settingsScrollOffset = selectedLineRange.upperBound - bodyLimit + 1
+            }
+        }
+        settingsScrollOffset = min(max(settingsScrollOffset, 0), maxOffset)
+        let endIndex = min(settingsScrollOffset + bodyLimit, lines.count)
+        return Array(lines[settingsScrollOffset..<endIndex])
     }
 
     private func apiKeyStatusLabel(for provider: String) -> String {
@@ -2387,9 +2422,8 @@ final class TUIApp {
         }
 
         do {
-            if let persisted = try secretStore.readSecret(namespace: "provider.credentials", key: CLIConfiguration.apiKeySettingKey(for: provider)),
-               !persisted.isEmpty {
-                return "Saved in Keychain (\(maskSecret(persisted)))"
+            if try secretStore.containsSecret(namespace: "provider.credentials", key: CLIConfiguration.apiKeySettingKey(for: provider)) {
+                return "Saved in Keychain"
             }
         } catch {
             return "Lookup failed"
@@ -2408,11 +2442,11 @@ final class TUIApp {
         }
 
         do {
-            if let stored = try secretStore.readSecret(
+            if try secretStore.containsSecret(
                 namespace: DaemonCLI.telegramSecretNamespace,
                 key: DaemonCLI.telegramSecretKey
-            ), !stored.isEmpty {
-                return "Saved in Keychain (\(maskSecret(stored)))"
+            ) {
+                return "Saved in Keychain"
             }
         } catch {
             return "Lookup failed"
@@ -2499,21 +2533,33 @@ final class TUIApp {
 
     private func renderHistoryLines(width: Int) -> [String] {
         var lines: [String] = [
-            "\(TerminalUIStyle.faint)\(focus == .history ? "History focused" : "Press Tab to focus history")\(TerminalUIStyle.reset)",
+            "\(TerminalUIStyle.faint)\(focus == .history ? "Threads focused" : "Press Tab to focus threads")\(TerminalUIStyle.reset)",
             ""
         ]
 
+        lines.append("\(TerminalUIStyle.ink)Chat Actions\(TerminalUIStyle.reset)")
+        let newChatSelected = focus == .history && historySelection == 0
+        lines.append("\((newChatSelected ? "\(TerminalUIStyle.selection) \(TerminalUIStyle.reset)" : " ")) \(TerminalUIStyle.bold)\((newChatSelected ? TerminalUIStyle.cyan : TerminalUIStyle.ink))New Chat\(TerminalUIStyle.reset)")
+        let newChatSubtitle = activeThreadID == nil
+            ? "Start a fresh conversation in this workspace"
+            : "Clear the active thread and start a fresh conversation"
+        lines.append("   \(TerminalUIStyle.slate)\(TerminalUIStyle.truncateVisible(newChatSubtitle, limit: max(width - 3, 10)))\(TerminalUIStyle.reset)")
+
         if historyThreads.isEmpty {
-            lines.append("\(TerminalUIStyle.slate)No persisted threads yet. Run a prompt to create history.\(TerminalUIStyle.reset)")
+            lines.append("")
+            lines.append("\(TerminalUIStyle.slate)No saved threads yet. Send a message to create your first chat thread.\(TerminalUIStyle.reset)")
             return lines
         }
 
-        lines.append("\(TerminalUIStyle.ink)Threads\(TerminalUIStyle.reset)")
-        for (index, thread) in historyThreads.enumerated().prefix(6) {
+        lines.append("")
+        lines.append("\(TerminalUIStyle.ink)Saved Threads\(TerminalUIStyle.reset)")
+        for (offset, thread) in historyThreads.enumerated().prefix(6) {
+            let index = offset + 1
             let selected = focus == .history && index == historySelection
             let marker = selected ? "\(TerminalUIStyle.selection) \(TerminalUIStyle.reset)" : " "
             let state = thread.latestRunState?.rawValue ?? "no-runs"
-            let title = "Thread \(thread.id.uuidString.prefix(8)) • \(state) • \(thread.messageCount) msg"
+            let isActive = thread.id == activeThreadID
+            let title = "Thread \(thread.id.uuidString.prefix(8))\(isActive ? " • active" : "") • \(state) • \(thread.messageCount) msg"
             lines.append("\(marker) \(TerminalUIStyle.bold)\(selected ? TerminalUIStyle.cyan : TerminalUIStyle.ink)\(TerminalUIStyle.truncateVisible(title, limit: width - 2))\(TerminalUIStyle.reset)")
         }
 
@@ -2538,7 +2584,10 @@ final class TUIApp {
             lines.append("\(TerminalUIStyle.ink)Preview\(TerminalUIStyle.reset)")
             lines.append(contentsOf: historyPreviewLines.prefix(8).map { TerminalUIStyle.truncateVisible($0, limit: width) })
             lines.append("")
-            lines.append("\(TerminalUIStyle.faint)Press Enter to load the selected run into the transcript pane.\(TerminalUIStyle.reset)")
+            let footer = historySelection == 0
+                ? "Press Enter to clear the current thread and start a new chat."
+                : "Press Enter to load this thread and continue chatting in it."
+            lines.append("\(TerminalUIStyle.faint)\(footer)\(TerminalUIStyle.reset)")
         }
 
         return lines
@@ -2662,7 +2711,7 @@ final class TUIApp {
         let innerWidth = max(width - 4, 20)
         let actualLabelText: String
         switch inputMode {
-        case .prompt: actualLabelText = "Input"
+        case .prompt: actualLabelText = "Chat"
         case .model: actualLabelText = "Model"
         case .apiKey: actualLabelText = "API Key"
         case .telegramToken: actualLabelText = "Telegram"
@@ -2697,7 +2746,7 @@ final class TUIApp {
                     ? "Type a project directory path, then press Enter to switch…"
                 : inputMode == .terminalCommand
                     ? "Type a shell command for the side terminal, then press Enter…"
-                : "Type a prompt here, then press Enter to run…"
+                : "Type a message here, then press Enter to send…"
         let prompt = currentText.isEmpty
             ? "\(TerminalUIStyle.faint)\(placeholder)\(TerminalUIStyle.reset)"
             : "\(TerminalUIStyle.ink)\(currentText)\(TerminalUIStyle.reset)"
@@ -2863,18 +2912,18 @@ final class TUIApp {
     private var screenLabel: String {
         if pendingApproval != nil { return "approval" }
         if showWorkspaces { return "workspaces" }
-        if showHistory { return "history" }
+        if showHistory { return "threads" }
         if showSettings { return "settings" }
         if showCommands { return "commands" }
         if showHelp { return "help" }
-        return runFinished ? "workspace" : "live run"
+        return runFinished ? "chat" : "live run"
     }
 
     private var focusLabel: String {
         switch focus {
         case .launcher: return "launcher"
         case .workspaces: return "workspaces"
-        case .history: return "history"
+        case .history: return "threads"
         case .settings: return "settings"
         case .transcript: return "transcript"
         case .terminal: return "terminal"
@@ -2927,6 +2976,20 @@ final class TUIApp {
         let maxTokens = Self.estimatedContextWindow(for: sessionProvider, model: sessionModel)
         let usedTokens = estimatedConversationTokens
         return "\(Self.formatTokenCount(usedTokens))/\(Self.formatTokenCount(maxTokens))"
+    }
+
+    private func formattedSavedTokens(_ value: Int?) -> String {
+        Self.formatTokenCount(max(value ?? 0, 0))
+    }
+
+    private func formattedSavedMoney(_ savedTokens: Int?) -> String {
+        let dollars = estimatedSavedMoneyUSD(for: max(savedTokens ?? 0, 0))
+        return TokenSavingsEstimator.formatUSD(dollars)
+    }
+
+    private func estimatedSavedMoneyUSD(for savedTokens: Int) -> Double {
+        guard savedTokens > 0 else { return 0 }
+        return TokenSavingsEstimator.estimatedSavedMoneyUSD(for: savedTokens, provider: sessionProvider, model: sessionModel)
     }
 
     private func riskColor(for risk: ApprovalRisk) -> String {
@@ -3021,28 +3084,32 @@ final class TUIApp {
     }
 
     private func composeTranscriptLines(width: Int) -> [String] {
+        let threadLabel = activeThreadID.map { "thread \($0.uuidString.prefix(8))" } ?? "new thread"
         var lines: [String] = [
-            "\(TerminalUIStyle.ink)Start a new conversation\(TerminalUIStyle.reset)",
-            "\(TerminalUIStyle.slate)Describe what you want Ashex to build, inspect, edit, or run in this workspace.\(TerminalUIStyle.reset)",
+            "\(TerminalUIStyle.ink)\(activeThreadID == nil ? "Start a new chat" : "Continue chat")\(TerminalUIStyle.reset)",
+            "\(TerminalUIStyle.slate)Send a normal message for chat, or ask for workspace work and Ashex will switch into agent mode automatically.\(TerminalUIStyle.reset)",
             "",
             "\(TerminalUIStyle.faint)workspace\(TerminalUIStyle.reset) \(TerminalUIStyle.truncateVisible(sessionWorkspaceRoot.path, limit: width))",
             "\(TerminalUIStyle.faint)provider\(TerminalUIStyle.reset) \(sessionProvider)  \(TerminalUIStyle.faint)model\(TerminalUIStyle.reset) \(sessionModel)",
+            "\(TerminalUIStyle.faint)active\(TerminalUIStyle.reset) \(threadLabel)",
             ""
         ]
 
         if promptText.isEmpty {
             lines.append("\(TerminalUIStyle.cyan)You\(TerminalUIStyle.reset)")
-            lines.append("\(TerminalUIStyle.faint)Draft is empty. Type below, then press Enter to queue and run it.\(TerminalUIStyle.reset)")
+            lines.append("\(TerminalUIStyle.faint)Draft is empty. Type below, then press Enter to send it.\(TerminalUIStyle.reset)")
             lines.append("")
-            lines.append("\(TerminalUIStyle.ink)Try prompts like:\(TerminalUIStyle.reset)")
-            lines.append("\(TerminalUIStyle.slate)- Create a Swift package for ... in /tmp/demo-project\(TerminalUIStyle.reset)")
+            lines.append("\(TerminalUIStyle.ink)Try messages like:\(TerminalUIStyle.reset)")
+            lines.append("\(TerminalUIStyle.slate)- How are you?\(TerminalUIStyle.reset)")
+            lines.append("\(TerminalUIStyle.slate)- What files are in this project?\(TerminalUIStyle.reset)")
             lines.append("\(TerminalUIStyle.slate)- Review this repository and fix failing tests\(TerminalUIStyle.reset)")
-            lines.append("\(TerminalUIStyle.slate)- Initialize git, commit the current safe changes, and explain what changed\(TerminalUIStyle.reset)")
         } else {
             lines.append("\(TerminalUIStyle.cyan)You\(TerminalUIStyle.reset)")
             lines.append(contentsOf: wrapRunLine(promptText, width: width))
             lines.append("")
-            lines.append("\(TerminalUIStyle.faint)Press Enter to enqueue this prompt. Ashex will open the live transcript as soon as execution starts.\(TerminalUIStyle.reset)")
+            let intent = ConnectorMessageIntentClassifier.classify(promptText)
+            let modeText = intent == .directChat ? "chat reply" : "agent run"
+            lines.append("\(TerminalUIStyle.faint)Press Enter to send this message. Ashex will start a \(modeText) in the active thread.\(TerminalUIStyle.reset)")
         }
 
         return lines
@@ -3629,8 +3696,9 @@ final class TUIApp {
     }
 
     private var selectedHistoryThread: ThreadSummary? {
-        guard historyThreads.indices.contains(historySelection) else { return nil }
-        return historyThreads[historySelection]
+        let index = historySelection - 1
+        guard historyThreads.indices.contains(index) else { return nil }
+        return historyThreads[index]
     }
 
     private var selectedWorkspace: RecentWorkspaceRecord? {
@@ -3700,7 +3768,7 @@ final class TUIApp {
             for thread in historyThreads {
                 historyRuns[thread.id] = try historyStore.fetchRuns(threadID: thread.id)
             }
-            historySelection = min(historySelection, max(historyThreads.count - 1, 0))
+            historySelection = min(historySelection, max(historyThreads.count, 0))
             refreshHistoryPreview()
         } catch {
             historyThreads = []
@@ -3843,6 +3911,15 @@ final class TUIApp {
     }
 
     private func refreshHistoryPreview() {
+        if historySelection == 0 {
+            historyPreviewLines = [
+                activeThreadID == nil ? "No active thread selected." : "Current active thread will be cleared.",
+                "Press Enter to start a fresh chat from the input bar."
+            ]
+            tokenSavingsSnapshot = nil
+            return
+        }
+
         guard let thread = selectedHistoryThread,
               let runID = historyRuns[thread.id]?.first?.id ?? thread.latestRunID else {
             historyPreviewLines = []
@@ -3852,8 +3929,10 @@ final class TUIApp {
         do {
             guard let snapshotBundle = try sessionInspector.loadRunSnapshot(runID: runID, recentEventLimit: 8) else {
                 historyPreviewLines = ["[error] Run not found"]
+                tokenSavingsSnapshot = nil
                 return
             }
+            tokenSavingsSnapshot = try sessionInspector.loadTokenSavings(runID: runID)
             let events = snapshotBundle.events
             let steps = snapshotBundle.steps
             let compactions = snapshotBundle.compactions
@@ -3880,16 +3959,33 @@ final class TUIApp {
                 lines.append("[history] \(compactions.count) compaction record(s)")
                 if let latest = compactions.last {
                     lines.append("[history] latest compaction dropped \(latest.droppedMessageCount) messages")
+                    lines.append("[saved] run \(Self.formatTokenCount(compactions.reduce(0) { $0 + $1.estimatedSavedTokenCount })) • \(formattedSavedMoney(compactions.reduce(0) { $0 + $1.estimatedSavedTokenCount }))")
                 }
+            }
+            if let savings = tokenSavingsSnapshot {
+                lines.append("[saved] today \(Self.formatTokenCount(savings.today.savedTokenCount)) • session \(Self.formatTokenCount(savings.session.savedTokenCount)) • total \(Self.formatTokenCount(savings.total.savedTokenCount))")
             }
             lines.append(contentsOf: events.flatMap { renderLines(for: $0.payload) })
             historyPreviewLines = Array(lines.suffix(8))
         } catch {
             historyPreviewLines = ["[error] \(error.localizedDescription)"]
+            tokenSavingsSnapshot = nil
         }
     }
 
     private func openSelectedHistoryRun() {
+        if historySelection == 0 {
+            activeThreadID = nil
+            runLines = []
+            transcriptScrollOffset = 0
+            runFinished = true
+            showHistory = false
+            focus = .input
+            inputMode = .prompt
+            statusLine = "New chat ready"
+            return
+        }
+
         guard let thread = selectedHistoryThread,
               let runID = historyRuns[thread.id]?.first?.id ?? thread.latestRunID else {
             statusLine = "No stored run to load"
@@ -3898,16 +3994,18 @@ final class TUIApp {
 
         do {
             guard let snapshotBundle = try sessionInspector.loadRunSnapshot(runID: runID) else {
-                statusLine = "Failed to load history"
+                statusLine = "Failed to load thread"
                 runLines = ["[error] Run not found"]
+                tokenSavingsSnapshot = nil
                 return
             }
+            tokenSavingsSnapshot = try sessionInspector.loadTokenSavings(runID: runID)
             let events = snapshotBundle.events
             let steps = snapshotBundle.steps
             let compactions = snapshotBundle.compactions
             let snapshot = snapshotBundle.workspaceSnapshot
             let memory = snapshotBundle.workingMemory
-            runLines = ["History: thread \(thread.id.uuidString.prefix(8))", ""]
+            runLines = ["Chat thread \(thread.id.uuidString.prefix(8))", ""]
             if let snapshot {
                 runLines.append("Workspace snapshot:")
                 runLines.append("  root \(snapshot.workspaceRootPath)")
@@ -3981,9 +4079,17 @@ final class TUIApp {
             if !compactions.isEmpty {
                 runLines.append("Context compactions:")
                 for compaction in compactions {
-                    runLines.append("  - dropped \(compaction.droppedMessageCount), retained \(compaction.retainedMessageCount), tok~ \(compaction.estimatedTokenCount)/\(compaction.estimatedContextWindow)")
+                    runLines.append("  - dropped \(compaction.droppedMessageCount), retained \(compaction.retainedMessageCount), tok~ \(compaction.estimatedTokenCount)/\(compaction.estimatedContextWindow), saved~ \(compaction.estimatedSavedTokenCount)")
                     runLines.append(contentsOf: compaction.summary.split(separator: "\n", omittingEmptySubsequences: false).map { "    " + String($0) })
                 }
+                runLines.append("")
+            }
+            if let savings = tokenSavingsSnapshot {
+                runLines.append("Saved token estimates:")
+                runLines.append("  run \(Self.formatTokenCount(savings.currentRun.savedTokenCount)) • \(formattedSavedMoney(savings.currentRun.savedTokenCount))")
+                runLines.append("  today \(Self.formatTokenCount(savings.today.savedTokenCount)) • \(formattedSavedMoney(savings.today.savedTokenCount))")
+                runLines.append("  this session \(Self.formatTokenCount(savings.session.savedTokenCount)) • \(formattedSavedMoney(savings.session.savedTokenCount))")
+                runLines.append("  total \(Self.formatTokenCount(savings.total.savedTokenCount)) • \(formattedSavedMoney(savings.total.savedTokenCount))")
                 runLines.append("")
             }
             runLines.append(contentsOf: events.flatMap { renderLines(for: $0.payload) })
@@ -3991,14 +4097,16 @@ final class TUIApp {
             currentChangedFiles = memory?.changedPaths ?? []
             currentPlannedFiles = memory?.plannedChangeSet ?? []
             currentPatchObjectives = memory?.patchObjectives ?? []
+            activeThreadID = thread.id
             transcriptScrollOffset = 0
             runFinished = true
             showHistory = false
             focus = .transcript
-            statusLine = "Loaded history transcript"
+            statusLine = "Loaded thread \(thread.id.uuidString.prefix(8))"
         } catch {
-            statusLine = "Failed to load history"
+            statusLine = "Failed to load thread"
             runLines = ["[error] \(error.localizedDescription)"]
+            tokenSavingsSnapshot = nil
         }
     }
 

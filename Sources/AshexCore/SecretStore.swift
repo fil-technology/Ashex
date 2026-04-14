@@ -3,6 +3,7 @@ import Security
 
 public protocol SecretStore: Sendable {
     func readSecret(namespace: String, key: String) throws -> String?
+    func containsSecret(namespace: String, key: String) throws -> Bool
     func writeSecret(namespace: String, key: String, value: String) throws
     func deleteSecret(namespace: String, key: String) throws
 }
@@ -32,6 +33,24 @@ public final class KeychainSecretStore: SecretStore, @unchecked Sendable {
             return nil
         default:
             throw AshexError.persistence("Keychain read failed for \(namespace).\(key) (status \(status))")
+        }
+    }
+
+    public func containsSecret(namespace: String, key: String) throws -> Bool {
+        var query = baseQuery(namespace: namespace, key: key)
+        query[kSecReturnAttributes as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail
+
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        switch status {
+        case errSecSuccess, errSecInteractionNotAllowed:
+            return true
+        case errSecItemNotFound:
+            return false
+        default:
+            throw AshexError.persistence("Keychain lookup failed for \(namespace).\(key) (status \(status))")
         }
     }
 
@@ -85,6 +104,12 @@ public final class InMemorySecretStore: SecretStore, @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return storage[namespacedKey(namespace: namespace, key: key)]
+    }
+
+    public func containsSecret(namespace: String, key: String) throws -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage[namespacedKey(namespace: namespace, key: key)] != nil
     }
 
     public func writeSecret(namespace: String, key: String, value: String) throws {

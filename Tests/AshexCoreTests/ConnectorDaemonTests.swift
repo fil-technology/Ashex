@@ -161,6 +161,8 @@ import Testing
     #expect(ConnectorMessageIntentClassifier.classify("Tell me a joke") == .directChat)
     #expect(ConnectorMessageIntentClassifier.classify("Summarize this repository") == .directChat)
     #expect(ConnectorMessageIntentClassifier.classify("Can you use curl to fetch https://example.com?") == .workspaceTask)
+    #expect(ConnectorMessageIntentClassifier.classify("What are the files in current directory?") == .workspaceTask)
+    #expect(ConnectorMessageIntentClassifier.classify("List files of the project") == .workspaceTask)
     #expect(ConnectorMessageIntentClassifier.classify("Search for the weather in Petah Tikva Israel") == .directChat)
     #expect(ConnectorMessageIntentClassifier.classify("Give me simple swift hello world app code") == .directChat)
     #expect(ConnectorMessageIntentClassifier.classify("What this repo is about?") == .directChat)
@@ -331,6 +333,80 @@ import Testing
     let sentMessages = await connector.recordedMessages()
     #expect(sentMessages.contains { $0.text.contains("Stopping the current run.") })
     #expect(await runStore.status(for: conversation) == nil)
+}
+
+@Test func daemonSupervisorStatsCommandPersistsPerChatToggle() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let persistence = SQLitePersistenceStore(databaseURL: root.appendingPathComponent("ashex.sqlite"))
+    try persistence.initialize()
+
+    let supervisor = DaemonSupervisor(
+        registry: ConnectorRegistry(connectors: [RecordingConnector()]),
+        router: ConversationRouter(mappingStore: ConnectorConversationMappingStore(persistence: persistence)),
+        dispatcher: RunDispatcher(runtime: BlockingRuntime()),
+        persistence: persistence,
+        logger: DaemonLogger(minimumLevel: .error),
+        runStore: DaemonConversationRunStore(),
+        remoteApprovalInbox: RemoteApprovalInbox(persistence: persistence),
+        config: .init(maxIterations: 2, connectorLabel: "telegram")
+    )
+
+    let conversation = ConnectorConversationReference(
+        connectorKind: "telegram",
+        connectorID: "telegram",
+        externalConversationID: "chat-99"
+    )
+
+    try await supervisor.handle(.init(
+        connectorKind: "telegram",
+        connectorID: "telegram",
+        messageID: "2001",
+        conversation: conversation,
+        externalUserID: "44",
+        text: "/stats off",
+        command: .stats
+    ))
+
+    let setting = try persistence.fetchSetting(namespace: "connectors.telegram.stats.telegram.chat-99", key: "enabled")
+    #expect(setting?.value.boolValue == false)
+}
+
+@Test func telegramConnectorNormalizesStatsAliases() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let persistence = SQLitePersistenceStore(databaseURL: root.appendingPathComponent("ashex.sqlite"))
+    try persistence.initialize()
+
+    let connector = TelegramConnector(
+        token: "test-token",
+        config: TelegramConfig(enabled: true),
+        client: MockTelegramBotClient(),
+        persistence: persistence
+    )
+
+    let statsOnEvent = try await connector.normalize(update: TelegramUpdate(
+        updateID: 78,
+        message: TelegramMessage(
+            messageID: 12,
+            from: TelegramUser(id: 22, isBot: false, firstName: "Sam", username: "sam"),
+            chat: TelegramChat(id: 33, type: "private"),
+            date: 0,
+            text: "/statson"
+        )
+    ))
+    let statsOffEvent = try await connector.normalize(update: TelegramUpdate(
+        updateID: 79,
+        message: TelegramMessage(
+            messageID: 13,
+            from: TelegramUser(id: 22, isBot: false, firstName: "Sam", username: "sam"),
+            chat: TelegramChat(id: 33, type: "private"),
+            date: 0,
+            text: "/statsoff"
+        )
+    ))
+
+    #expect(statsOnEvent?.command == .statsOn)
+    #expect(statsOffEvent?.command == .statsOff)
 }
 
 @Test func daemonTelegramFailureFormatterExplainsModelTimeouts() {

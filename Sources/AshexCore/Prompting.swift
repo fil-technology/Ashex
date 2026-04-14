@@ -22,11 +22,13 @@ public struct PreparedModelContext: Sendable {
         public let droppedMessages: [MessageRecord]
         public let summary: String
         public let deduplicatedToolSummaries: Int
+        public let estimatedSavedTokenCount: Int
 
-        public init(droppedMessages: [MessageRecord], summary: String, deduplicatedToolSummaries: Int) {
+        public init(droppedMessages: [MessageRecord], summary: String, deduplicatedToolSummaries: Int, estimatedSavedTokenCount: Int) {
             self.droppedMessages = droppedMessages
             self.summary = summary
             self.deduplicatedToolSummaries = deduplicatedToolSummaries
+            self.estimatedSavedTokenCount = estimatedSavedTokenCount
         }
     }
 
@@ -115,11 +117,16 @@ public enum ContextManager {
             partial + (pair.0.content == pair.1.content ? 0 : 1)
         }
         let compactionSummary = dropped.isEmpty ? nil : buildCompactionSummary(from: dropped)
-        let compaction = compactionSummary.map {
-            PreparedModelContext.Compaction(
+        let compaction: PreparedModelContext.Compaction? = compactionSummary.map {
+            let droppedTokenEstimate = dropped.reduce(into: 0) { partial, message in
+                partial += estimateTokens(in: message.content) + 12
+            }
+            let summaryTokenEstimate = estimateTokens(in: $0.summary) + 24
+            return PreparedModelContext.Compaction(
                 droppedMessages: dropped,
                 summary: $0.summary,
-                deduplicatedToolSummaries: $0.deduplicatedToolSummaries
+                deduplicatedToolSummaries: $0.deduplicatedToolSummaries,
+                estimatedSavedTokenCount: max(droppedTokenEstimate - summaryTokenEstimate, 0)
             )
         }
         let compactionCost = compaction.map { estimateTokens(in: $0.summary) + 24 } ?? 0
@@ -360,7 +367,7 @@ public enum PromptBuilder {
             - If a tool result already contains the needed information, prefer answering directly.
             - Keep final answers concise and useful.
             - Tool arguments must be valid JSON objects.
-            - When returning a tool_call, include every argument key from the schema and use null for unused keys.
+            - When returning a tool_call, include only the argument keys needed for that tool call.
             """,
             kind: .cachedStatic
         )
