@@ -234,11 +234,90 @@ import Testing
     #expect(decoded.result == true)
 }
 
+@Test func daemonSupervisorStopCommandCancelsActiveConversationRun() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let persistence = SQLitePersistenceStore(databaseURL: root.appendingPathComponent("ashex.sqlite"))
+    try persistence.initialize()
+
+    let runtime = BlockingRuntime()
+    let dispatcher = RunDispatcher(runtime: runtime)
+    let connector = RecordingConnector()
+    let registry = ConnectorRegistry(connectors: [connector])
+    let runStore = DaemonConversationRunStore()
+    let approvalInbox = RemoteApprovalInbox(persistence: persistence)
+    let supervisor = DaemonSupervisor(
+        registry: registry,
+        router: ConversationRouter(mappingStore: ConnectorConversationMappingStore(persistence: persistence)),
+        dispatcher: dispatcher,
+        persistence: persistence,
+        logger: DaemonLogger(minimumLevel: .error),
+        runStore: runStore,
+        remoteApprovalInbox: approvalInbox,
+        config: .init(maxIterations: 2, connectorLabel: "telegram")
+    )
+
+    let conversation = ConnectorConversationReference(
+        connectorKind: "telegram",
+        connectorID: "telegram",
+        externalConversationID: "chat-33"
+    )
+    let promptEvent = InboundConnectorEvent(
+        connectorKind: "telegram",
+        connectorID: "telegram",
+        messageID: "1001",
+        conversation: conversation,
+        externalUserID: "44",
+        text: "please keep working",
+        command: nil
+    )
+    try await supervisor.handle(promptEvent)
+    try await Task.sleep(nanoseconds: 100_000_000)
+
+    let stopEvent = InboundConnectorEvent(
+        connectorKind: "telegram",
+        connectorID: "telegram",
+        messageID: "1002",
+        conversation: conversation,
+        externalUserID: "44",
+        text: "/stop",
+        command: .stop
+    )
+    try await supervisor.handle(stopEvent)
+    try await Task.sleep(nanoseconds: 200_000_000)
+
+    let sentMessages = await connector.recordedMessages()
+    #expect(sentMessages.contains { $0.text.contains("Stopping the current run.") })
+    #expect(await runStore.status(for: conversation) == nil)
+}
+
 private actor Counter {
     private(set) var value = 0
 
     func increment() {
         value += 1
+    }
+}
+
+private actor RecordingConnector: Connector, ConnectorActivityControlling {
+    let id = "telegram"
+    let kind = "telegram"
+    private var messages: [OutboundConnectorMessage] = []
+
+    func start(handler: @escaping @Sendable (InboundConnectorEvent) async throws -> Void) async throws {}
+
+    func stop() async {}
+
+    func send(_ message: OutboundConnectorMessage) async throws {
+        messages.append(message)
+    }
+
+    func beginActivity(_ activity: ConnectorActivity, for conversation: ConnectorConversationReference) async throws {}
+
+    func endActivity(_ activity: ConnectorActivity, for conversation: ConnectorConversationReference) async {}
+
+    func recordedMessages() -> [OutboundConnectorMessage] {
+        messages
     }
 }
 
@@ -257,6 +336,29 @@ private actor SequencedDaemonModelAdapter: ModelAdapter {
             throw AshexError.model("No more actions")
         }
         return actions.removeFirst()
+    }
+}
+
+private struct BlockingRuntime: RuntimeStreaming, Sendable {
+    func run(_ request: RunRequest) -> AsyncStream<RuntimeEvent> {
+        AsyncStream { continuation in
+            let threadID = request.threadID ?? UUID()
+            let runID = UUID()
+            continuation.yield(.init(payload: .runStarted(threadID: threadID, runID: runID)))
+            continuation.yield(.init(payload: .runStateChanged(runID: runID, state: .running, reason: nil)))
+            Task {
+                while true {
+                    do {
+                        try await request.cancellationToken?.checkCancellation()
+                    } catch {
+                        continuation.yield(.init(payload: .error(runID: runID, message: "Cancelled")))
+                        continuation.finish()
+                        return
+                    }
+                    try? await Task.sleep(nanoseconds: 25_000_000)
+                }
+            }
+        }
     }
 }
 

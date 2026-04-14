@@ -12,6 +12,7 @@ public enum ApprovalRisk: String, Codable, Sendable {
 }
 
 public struct ApprovalRequest: Sendable {
+    public let id: UUID
     public let runID: UUID
     public let toolName: String
     public let arguments: JSONObject
@@ -19,7 +20,8 @@ public struct ApprovalRequest: Sendable {
     public let reason: String
     public let risk: ApprovalRisk
 
-    public init(runID: UUID, toolName: String, arguments: JSONObject, summary: String, reason: String, risk: ApprovalRisk) {
+    public init(id: UUID = UUID(), runID: UUID, toolName: String, arguments: JSONObject, summary: String, reason: String, risk: ApprovalRisk) {
+        self.id = id
         self.runID = runID
         self.toolName = toolName
         self.arguments = arguments

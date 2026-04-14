@@ -57,13 +57,18 @@ enum DaemonCLI {
         let configuration = try CLIConfiguration(arguments: [CommandLine.arguments[0]] + extraArguments)
         let persistence = try configuration.makePersistenceStore()
         let logger = DaemonLogger(minimumLevel: daemonLogLevel(from: configuration.userConfig.logging.level))
+        let runStore = DaemonConversationRunStore()
+        let remoteApprovalInbox = RemoteApprovalInbox(persistence: persistence)
+        try await remoteApprovalInbox.normalizeInterruptedApprovals()
         let runtime = try configuration.makeRuntime(
             persistence: persistence,
             provider: configuration.provider,
             model: configuration.model,
             approvalPolicy: ConnectorApprovalPolicy(
                 policyMode: configuration.userConfig.telegram.executionPolicy,
-                connectorName: "telegram"
+                connectorName: "telegram",
+                remoteApprovalInbox: remoteApprovalInbox,
+                runStore: runStore
             )
         )
 
@@ -92,6 +97,8 @@ enum DaemonCLI {
             dispatcher: dispatcher,
             persistence: persistence,
             logger: logger,
+            runStore: runStore,
+            remoteApprovalInbox: remoteApprovalInbox,
             config: .init(maxIterations: configuration.maxIterations, connectorLabel: "telegram")
         )
 

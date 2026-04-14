@@ -241,10 +241,11 @@ In guarded mode:
 For Telegram daemon mode:
 
 - `assistant_only` denies all approval-gated tool actions, which keeps Telegram as a read-only assistant entrypoint for normal chat
-- `approval_required` keeps the policy boundary explicit, but still blocks the action because remote approval collection is not implemented in this MVP
+- `approval_required` now opens a remote approval inbox inside the Telegram chat and waits for `/approve` or `/deny`
 - `trusted_full_access` allows Telegram to use the existing runtime tool path, while the sandbox and shell/network policies still apply
 - direct-chat prompts such as "How are you?" are routed normally and show a typing indicator while the model runs
 - project or workspace prompts, or explicit command-style prompts like `shell: ...`, go through the normal runtime intent classifier and can execute tools in trusted mode
+- `/status`, `/pending`, `/approve`, `/deny [reason]`, and `/stop` are available in Telegram while a run is active
 - the connector never silently escalates to trusted execution
 
 Telegram replies use Telegram HTML parse mode, so bold text and code blocks render, but raw Markdown is not passed through unchanged.
@@ -327,7 +328,7 @@ The daemon path is additive and keeps the core runtime intact:
 - `ConnectorRegistry` and `Connector` provide a connector-agnostic lifecycle and outbound messaging boundary
 - `ConversationRouter` and `ConnectorConversationMappingStore` map external conversations such as Telegram chat IDs to internal Ash thread IDs using the existing SQLite settings store
 - `RunDispatcher` submits inbound connector prompts through the normal runtime event stream and captures the final answer
-- `DaemonSupervisor` handles commands such as `/start`, `/help`, and `/reset`, then routes normal text into the runtime
+- `DaemonSupervisor` handles commands such as `/start`, `/help`, `/reset`, `/status`, `/pending`, `/approve`, `/deny`, and `/stop`, then routes normal text into the runtime
 - `TelegramConnector` uses Bot API polling, persists processed `update_id` values, ignores unsupported updates cleanly, and sends final text responses back in chunks
 
 Current MVP limitations:
@@ -336,7 +337,7 @@ Current MVP limitations:
 - text messages only
 - final-message replies only
 - no webhook deployment
-- no remote approval UI for `approval_required`
+- remote approvals currently live inside the same Telegram conversation and are limited to one pending approval per chat
 
 Implementation notes and next-step recommendations live in [DAEMON_TELEGRAM_MVP.md](/Users/sviatoslavfil/Development/Fil.Technology/Codex-based/Agents/Eshex/Source/DAEMON_TELEGRAM_MVP.md).
 - installable tool packs:

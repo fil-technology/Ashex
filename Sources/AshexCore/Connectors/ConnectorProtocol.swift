@@ -17,6 +17,12 @@ public enum ConnectorCommand: String, Sendable, Codable {
     case help
     case reset
     case newConversation = "new"
+    case stop
+    case cancel
+    case status
+    case pending
+    case approve
+    case deny
 }
 
 public struct InboundConnectorEvent: Sendable, Codable {

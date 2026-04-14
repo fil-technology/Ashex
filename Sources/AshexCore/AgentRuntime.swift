@@ -11,13 +11,22 @@ public struct RunRequest: Sendable {
     public let threadID: UUID?
     public let mode: Mode
     public let executionControl: ExecutionControl?
+    public let cancellationToken: CancellationToken?
 
-    public init(prompt: String, maxIterations: Int = 8, threadID: UUID? = nil, mode: Mode = .agent, executionControl: ExecutionControl? = nil) {
+    public init(
+        prompt: String,
+        maxIterations: Int = 8,
+        threadID: UUID? = nil,
+        mode: Mode = .agent,
+        executionControl: ExecutionControl? = nil,
+        cancellationToken: CancellationToken? = nil
+    ) {
         self.prompt = prompt
         self.maxIterations = maxIterations
         self.threadID = threadID
         self.mode = mode
         self.executionControl = executionControl
+        self.cancellationToken = cancellationToken
     }
 }
 
@@ -62,7 +71,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
 
     public func run(_ request: RunRequest) -> AsyncStream<RuntimeEvent> {
         AsyncStream { continuation in
-            let cancellation = CancellationToken()
+            let cancellation = request.cancellationToken ?? CancellationToken()
             let emitter = EventEmitter(persistence: persistence, continuation: continuation)
 
             let task = Task {
@@ -187,6 +196,10 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                     try emitter.emit(.taskStepFinished(runID: run.id, index: index + 1, total: steps.count, title: step.title, outcome: "skipped"), runID: run.id)
                     stepSummaries.append("Skipped: \(step.title)")
                     continue
+                }
+                if let control = request.executionControl,
+                   await control.consumeCancellationRequest() {
+                    await cancellation.cancel()
                 }
 
                 try persistence.transitionRunStep(stepID: stepRecords[index].id, to: .running, summary: nil, now: clock())

@@ -27,13 +27,24 @@ public actor RunDispatcher {
         prompt: String,
         threadID: UUID,
         maxIterations: Int,
-        mode: RunRequest.Mode
+        mode: RunRequest.Mode,
+        cancellationToken: CancellationToken? = nil,
+        onEvent: (@Sendable (RuntimeEvent) async -> Void)? = nil
     ) async throws -> RunDispatchResult {
         var finalAnswer: String?
         var runID: UUID?
         var latestError: String?
 
-        for await event in runtime.run(.init(prompt: prompt, maxIterations: maxIterations, threadID: threadID, mode: mode)) {
+        for await event in runtime.run(.init(
+            prompt: prompt,
+            maxIterations: maxIterations,
+            threadID: threadID,
+            mode: mode,
+            cancellationToken: cancellationToken
+        )) {
+            if let onEvent {
+                await onEvent(event)
+            }
             switch event.payload {
             case .runStarted(_, let startedRunID):
                 runID = startedRunID

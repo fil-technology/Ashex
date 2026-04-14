@@ -40,6 +40,7 @@ public enum TaskKind: String, Codable, Sendable, Equatable {
 
 public actor ExecutionControl {
     private var skipCurrentStepRequested = false
+    private var cancellationRequested = false
 
     public init() {}
 
@@ -51,6 +52,16 @@ public actor ExecutionControl {
         let shouldSkip = skipCurrentStepRequested
         skipCurrentStepRequested = false
         return shouldSkip
+    }
+
+    public func requestCancellation() {
+        cancellationRequested = true
+    }
+
+    public func consumeCancellationRequest() -> Bool {
+        let shouldCancel = cancellationRequested
+        cancellationRequested = false
+        return shouldCancel
     }
 }
 

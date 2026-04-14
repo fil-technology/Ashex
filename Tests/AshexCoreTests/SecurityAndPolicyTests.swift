@@ -136,6 +136,54 @@ import Testing
     #expect(decision.reason.contains("assistant_only"))
 }
 
+@Test func connectorApprovalPolicyWaitsForRemoteInboxDecisionInApprovalRequiredMode() async throws {
+    let databaseURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString)
+        .appendingPathComponent("ashex.sqlite")
+    let persistence = SQLitePersistenceStore(databaseURL: databaseURL)
+    try persistence.initialize()
+
+    let inbox = RemoteApprovalInbox(persistence: persistence)
+    let runStore = DaemonConversationRunStore()
+    let conversation = ConnectorConversationReference(
+        connectorKind: "telegram",
+        connectorID: "telegram",
+        externalConversationID: "chat-1"
+    )
+    let runID = UUID()
+    let token = CancellationToken()
+    _ = await runStore.beginRun(for: conversation, threadID: UUID(), prompt: "run curl", cancellationToken: token)
+    await runStore.bind(runID: runID, to: conversation)
+
+    let request = ApprovalRequest(
+        runID: runID,
+        toolName: "shell",
+        arguments: ["command": .string("curl https://example.com")],
+        summary: "Shell command",
+        reason: "curl https://example.com",
+        risk: .medium
+    )
+    let policy = ConnectorApprovalPolicy(
+        policyMode: .approvalRequired,
+        connectorName: "telegram",
+        remoteApprovalInbox: inbox,
+        runStore: runStore
+    )
+
+    async let decision = policy.evaluate(request)
+    try await Task.sleep(nanoseconds: 50_000_000)
+    let pending = await inbox.pendingApproval(for: conversation)
+    #expect(pending?.status == .pending)
+    #expect(pending?.toolName == "shell")
+
+    _ = await inbox.resolvePendingApproval(for: conversation, allowed: true, reason: "Approved from Telegram")
+    let resolvedDecision = await decision
+
+    #expect(resolvedDecision.allowed)
+    #expect(resolvedDecision.reason.contains("Approved from Telegram"))
+    #expect(await runStore.status(for: conversation)?.awaitingApproval == false)
+}
+
 @Test func workspaceGuardBlocksMutationsInReadOnlyMode() throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
