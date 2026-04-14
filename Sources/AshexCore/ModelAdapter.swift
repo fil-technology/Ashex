@@ -516,13 +516,33 @@ public struct OllamaChatModelAdapter: ModelAdapter {
     public func nextAction(for context: ModelContext) async throws -> ModelAction {
         let assembly = PromptBuilder.build(for: context, provider: "ollama", model: configuration.model)
         let responseSchema = ModelPromptRenderer.responseSchema(for: context.availableTools)
+        let baseMessages: [OllamaChatRequest.Message] = [
+            .init(role: "system", content: assembly.systemPrompt),
+            .init(role: "user", content: assembly.userPrompt),
+        ]
+
+        do {
+            return try await requestStructuredAction(messages: baseMessages, schema: responseSchema)
+        } catch let error as AshexError {
+            guard shouldRetryStructuredOutput(for: error) else { throw error }
+            let repairMessages = baseMessages + [
+                .init(role: "user", content: """
+                Your previous response was empty or did not match the required JSON schema.
+                Reply again with exactly one JSON object matching the requested schema and no surrounding prose or markdown fences.
+                """)
+            ]
+            return try await requestStructuredAction(messages: repairMessages, schema: responseSchema)
+        }
+    }
+
+    private func requestStructuredAction(
+        messages: [OllamaChatRequest.Message],
+        schema: JSONObject
+    ) async throws -> ModelAction {
         let requestBody = OllamaChatRequest(
             model: configuration.model,
-            messages: [
-                .init(role: "system", content: assembly.systemPrompt),
-                .init(role: "user", content: assembly.userPrompt),
-            ],
-            format: responseSchema,
+            messages: messages,
+            format: schema,
             options: [
                 "temperature": .number(0),
             ],
@@ -550,8 +570,49 @@ public struct OllamaChatModelAdapter: ModelAdapter {
             throw AshexError.model("Ollama response did not include structured output content")
         }
 
-        let parsed = try decoder.decode(ModelActionEnvelope.self, from: Data(content.utf8))
-        return try parsed.toModelAction()
+        let candidate = Self.extractJSONObjectString(from: content) ?? content
+        do {
+            let parsed = try decoder.decode(ModelActionEnvelope.self, from: Data(candidate.utf8))
+            return try parsed.toModelAction()
+        } catch {
+            throw AshexError.model("Ollama response did not decode into the expected structured output")
+        }
+    }
+
+    private func shouldRetryStructuredOutput(for error: AshexError) -> Bool {
+        let message = error.localizedDescription.lowercased()
+        return message.contains("structured output content")
+            || message.contains("structured output")
+            || message.contains("did not decode")
+    }
+
+    private static func extractJSONObjectString(from content: String) -> String? {
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("{"), trimmed.hasSuffix("}") {
+            return trimmed
+        }
+
+        if let fencedRange = trimmed.range(of: "```") {
+            let afterFence = trimmed[fencedRange.upperBound...]
+            let withoutLanguage = afterFence.hasPrefix("json")
+                ? afterFence.dropFirst(4)
+                : afterFence
+            if let closingFence = withoutLanguage.range(of: "```") {
+                let inner = withoutLanguage[..<closingFence.lowerBound]
+                let candidate = inner.trimmingCharacters(in: .whitespacesAndNewlines)
+                if candidate.hasPrefix("{"), candidate.hasSuffix("}") {
+                    return candidate
+                }
+            }
+        }
+
+        guard let start = trimmed.firstIndex(of: "{"),
+              let end = trimmed.lastIndex(of: "}") ,
+              start < end else {
+            return nil
+        }
+        let candidate = String(trimmed[start...end]).trimmingCharacters(in: .whitespacesAndNewlines)
+        return candidate.hasPrefix("{") && candidate.hasSuffix("}") ? candidate : nil
     }
 }
 

@@ -43,6 +43,58 @@ struct OllamaChatModelAdapterTests {
         ]))
         #expect(action == expected)
     }
+
+    @Test func retriesWhenStructuredOutputContentIsEmpty() async throws {
+        let session = makeOllamaStubbedSession(responses: [
+            (
+                200,
+                """
+                {
+                  "message": {
+                    "content": ""
+                  }
+                }
+                """
+            ),
+            (
+                200,
+                """
+                {
+                  "message": {
+                    "content": "{\\"type\\":\\"final_answer\\",\\"final_answer\\":\\"recovered\\",\\"tool_name\\":null,\\"arguments\\":null}"
+                  }
+                }
+                """
+            ),
+        ])
+
+        let adapter = OllamaChatModelAdapter(
+            configuration: .init(model: "llama3.2", baseURL: URL(string: "http://localhost:11434/api/chat")!),
+            session: session
+        )
+
+        let action = try await adapter.nextAction(for: sampleModelContext())
+        #expect(action == .finalAnswer("recovered"))
+        #expect(OllamaStubURLProtocol.state.requestCount == 2)
+    }
+
+    @Test func unwrapsFencedStructuredOutputBeforeDecoding() async throws {
+        let session = makeOllamaStubbedSession(statusCode: 200, body: """
+        {
+          "message": {
+            "content": "```json\\n{\\"type\\":\\"final_answer\\",\\"final_answer\\":\\"wrapped\\",\\"tool_name\\":null,\\"arguments\\":null}\\n```"
+          }
+        }
+        """)
+
+        let adapter = OllamaChatModelAdapter(
+            configuration: .init(model: "llama3.2", baseURL: URL(string: "http://localhost:11434/api/chat")!),
+            session: session
+        )
+
+        let action = try await adapter.nextAction(for: sampleModelContext())
+        #expect(action == .finalAnswer("wrapped"))
+    }
 }
 
 private func sampleModelContext() -> ModelContext {
@@ -62,7 +114,14 @@ private func sampleModelContext() -> ModelContext {
 }
 
 private func makeOllamaStubbedSession(statusCode: Int, body: String) -> URLSession {
-    OllamaStubURLProtocol.state.set(statusCode: statusCode, body: body)
+    OllamaStubURLProtocol.state.setResponses([(statusCode, body)])
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [OllamaStubURLProtocol.self]
+    return URLSession(configuration: configuration)
+}
+
+private func makeOllamaStubbedSession(responses: [(Int, String)]) -> URLSession {
+    OllamaStubURLProtocol.state.setResponses(responses)
     let configuration = URLSessionConfiguration.ephemeral
     configuration.protocolClasses = [OllamaStubURLProtocol.self]
     return URLSession(configuration: configuration)
@@ -98,19 +157,22 @@ private final class OllamaStubURLProtocol: URLProtocol, @unchecked Sendable {
 
 private final class OllamaStubResponseState: @unchecked Sendable {
     private let lock = NSLock()
-    private var statusCode = 200
-    private var body = ""
+    private var responses: [(statusCode: Int, body: String)] = [(200, "")]
+    private(set) var requestCount = 0
 
-    func set(statusCode: Int, body: String) {
+    func setResponses(_ responses: [(Int, String)]) {
         lock.lock()
-        self.statusCode = statusCode
-        self.body = body
+        self.responses = responses.map { (statusCode: $0.0, body: $0.1) }
+        self.requestCount = 0
         lock.unlock()
     }
 
     func snapshot() -> (statusCode: Int, body: String) {
         lock.lock()
         defer { lock.unlock() }
-        return (statusCode, body)
+        let index = min(requestCount, max(responses.count - 1, 0))
+        let response = responses[index]
+        requestCount += 1
+        return response
     }
 }
