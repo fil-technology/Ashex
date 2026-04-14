@@ -84,6 +84,45 @@ import Testing
     #expect(event?.externalUserID == "22")
 }
 
+@Test func telegramConnectorRepliesWithOnboardingForUnauthorizedChat() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let persistence = SQLitePersistenceStore(databaseURL: root.appendingPathComponent("ashex.sqlite"))
+    try persistence.initialize()
+
+    let client = MockTelegramBotClient()
+    let connector = TelegramConnector(
+        token: "test-token",
+        config: TelegramConfig(
+            enabled: true,
+            accessMode: .allowlist,
+            allowedChatIDs: ["999"],
+            allowedUserIDs: ["888"]
+        ),
+        client: client,
+        persistence: persistence
+    )
+
+    let event = try await connector.normalize(update: TelegramUpdate(
+        updateID: 77,
+        message: TelegramMessage(
+            messageID: 11,
+            from: TelegramUser(id: 22, isBot: false, firstName: "Sam", username: "sam"),
+            chat: TelegramChat(id: 33, type: "private"),
+            date: 0,
+            text: "/start"
+        )
+    ))
+
+    #expect(event == nil)
+    let sent = await client.sentMessages
+    #expect(sent.count == 1)
+    #expect(sent.first?.0 == 33)
+    #expect(sent.first?.1.contains("This Telegram bot is currently gated.") == true)
+    #expect(sent.first?.1.contains("Telegram Chats") == true)
+    #expect(sent.first?.1.contains("33") == true)
+    #expect(sent.first?.1.contains("22") == true)
+}
+
 @Test func telegramConnectorSkipsDuplicateProcessedUpdates() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     let persistence = SQLitePersistenceStore(databaseURL: root.appendingPathComponent("ashex.sqlite"))

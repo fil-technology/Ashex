@@ -180,6 +180,7 @@ public struct TelegramConfig: Codable, Sendable {
     public var enabled: Bool
     public var botToken: String?
     public var pollingTimeoutSeconds: Int
+    public var accessMode: TelegramAccessMode
     public var allowedChatIDs: [String]
     public var allowedUserIDs: [String]
     public var responseMode: TelegramResponseMode
@@ -189,6 +190,7 @@ public struct TelegramConfig: Codable, Sendable {
         enabled: Bool = false,
         botToken: String? = nil,
         pollingTimeoutSeconds: Int = 20,
+        accessMode: TelegramAccessMode = .open,
         allowedChatIDs: [String] = [],
         allowedUserIDs: [String] = [],
         responseMode: TelegramResponseMode = .finalMessage,
@@ -197,6 +199,7 @@ public struct TelegramConfig: Codable, Sendable {
         self.enabled = enabled
         self.botToken = botToken
         self.pollingTimeoutSeconds = pollingTimeoutSeconds
+        self.accessMode = accessMode
         self.allowedChatIDs = allowedChatIDs
         self.allowedUserIDs = allowedUserIDs
         self.responseMode = responseMode
@@ -209,6 +212,7 @@ public struct TelegramConfig: Codable, Sendable {
         case enabled
         case botToken
         case pollingTimeoutSeconds
+        case accessMode
         case allowedChatIDs
         case allowedUserIDs
         case responseMode
@@ -220,11 +224,17 @@ public struct TelegramConfig: Codable, Sendable {
         enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
         botToken = try container.decodeIfPresent(String.self, forKey: .botToken)
         pollingTimeoutSeconds = max(1, try container.decodeIfPresent(Int.self, forKey: .pollingTimeoutSeconds) ?? 20)
+        accessMode = try container.decodeIfPresent(TelegramAccessMode.self, forKey: .accessMode) ?? .open
         allowedChatIDs = try container.decodeIfPresent([String].self, forKey: .allowedChatIDs) ?? []
         allowedUserIDs = try container.decodeIfPresent([String].self, forKey: .allowedUserIDs) ?? []
         responseMode = try container.decodeIfPresent(TelegramResponseMode.self, forKey: .responseMode) ?? .finalMessage
         executionPolicy = try container.decodeIfPresent(ConnectorExecutionPolicyMode.self, forKey: .executionPolicy) ?? .assistantOnly
     }
+}
+
+public enum TelegramAccessMode: String, Codable, Sendable, CaseIterable {
+    case open
+    case allowlist = "allowlist_only"
 }
 
 public enum TelegramResponseMode: String, Codable, Sendable, CaseIterable {

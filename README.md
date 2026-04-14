@@ -147,9 +147,10 @@ TUI onboarding path:
 2. Open `Assistant Setup` from the launcher
 3. Choose the provider and model you want for daemon runs
 4. Save the provider API key if needed
-5. Enable Telegram, save the Telegram bot token, and optionally add allowed private chat IDs
-6. Use `Telegram Test` to verify the bot token
-7. Use `Daemon` to start the background process
+5. Enable Telegram, choose an access mode, and save the Telegram bot token
+6. If access gating is enabled, save allowed private chat IDs and optional user IDs
+7. Use `Telegram Test` to verify the bot token
+8. Use `Daemon` to start the background process
 
 After that, the bot should keep running until you stop the daemon from the same settings screen or by CLI.
 
@@ -184,6 +185,7 @@ Daemon and Telegram config in `ashex.config.json`:
 - `telegram.enabled`: enables the Telegram connector for daemon runs
 - `telegram.botToken`: optional bot token if you do not want to use `ASHEX_TELEGRAM_BOT_TOKEN`
 - `telegram.pollingTimeoutSeconds`: long-poll timeout for `getUpdates`
+- `telegram.accessMode`: `open` or `allowlist_only`
 - `telegram.allowedChatIDs`: optional allowlist of Telegram private chat IDs
 - `telegram.allowedUserIDs`: optional allowlist of Telegram user IDs
 - `telegram.responseMode`: currently `final_message`
@@ -201,9 +203,11 @@ Recommended safe starting config:
 {
   "telegram": {
     "enabled": true,
+    "accessMode": "allowlist_only",
     "executionPolicy": "assistant_only",
     "pollingTimeoutSeconds": 20,
-    "allowedChatIDs": ["123456789"]
+    "allowedChatIDs": ["123456789"],
+    "allowedUserIDs": ["123456789"]
   },
   "logging": {
     "level": "info"
@@ -245,11 +249,20 @@ For Telegram daemon mode:
 - `assistant_only` denies all approval-gated tool actions, which keeps Telegram as a read-only assistant entrypoint for normal chat
 - `approval_required` now opens a remote approval inbox inside the Telegram chat and waits for `/approve` or `/deny`
 - `trusted_full_access` allows Telegram to use the existing runtime tool path, while the sandbox and shell/network policies still apply
+- `accessMode: open` keeps the bot reachable from any private Telegram chat
+- `accessMode: allowlist_only` rejects unapproved chats and sends an onboarding reply that includes the sender's chat ID and user ID
 - direct-chat prompts such as "How are you?" are routed normally and show a typing indicator while the model runs
 - Telegram now prefers direct-chat routing for general requests like summaries, explanations, code snippets, weather/news lookups, and similar conversational asks
 - project or workspace prompts, or explicit command-style prompts like `shell: ...`, go through the normal runtime intent classifier and can execute tools in trusted mode
 - `/status`, `/pending`, `/approve`, `/deny [reason]`, and `/stop` are available in Telegram while a run is active
 - the connector never silently escalates to trusted execution
+
+When `allowlist_only` is enabled, unauthorized users receive a setup message with:
+
+- their Telegram chat ID
+- their Telegram user ID
+- the exact `Assistant Setup` fields to update in Ashex
+- a reminder to restart the daemon after changing the allowlist
 
 Telegram replies use Telegram HTML parse mode, so bold text and code blocks render, but raw Markdown is not passed through unchanged.
 

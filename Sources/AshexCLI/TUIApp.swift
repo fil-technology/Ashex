@@ -10,6 +10,7 @@ final class TUIApp {
         case apiKey
         case telegramToken
         case telegramAllowedChats
+        case telegramAllowedUsers
         case workspacePath
         case terminalCommand
     }
@@ -49,7 +50,9 @@ final class TUIApp {
         case apiKey = "API Key"
         case telegramEnabled = "Telegram Enabled"
         case telegramToken = "Telegram Token"
+        case telegramAccess = "Telegram Access"
         case telegramAllowedChats = "Telegram Chats"
+        case telegramAllowedUsers = "Telegram Users"
         case telegramPolicy = "Telegram Safety"
         case telegramTest = "Telegram Test"
         case daemonToggle = "Daemon"
@@ -98,6 +101,7 @@ final class TUIApp {
     private var apiKeyInput = ""
     private var telegramTokenInput = ""
     private var telegramAllowedChatsInput = ""
+    private var telegramAllowedUsersInput = ""
     private var workspacePathInput = ""
     private var terminalCommandInput = ""
     private var inputMode: InputMode = .prompt
@@ -514,6 +518,9 @@ final class TUIApp {
         case .telegramToken:
             commitTelegramTokenInput()
             return
+        case .telegramAllowedUsers:
+            commitTelegramAllowedUsersInput()
+            return
         case .telegramAllowedChats:
             commitTelegramAllowedChatsInput()
             return
@@ -565,6 +572,11 @@ final class TUIApp {
             telegramAllowedChatsInput.removeLast()
             focus = .input
             statusLine = "Editing allowed Telegram chats"
+        case .telegramAllowedUsers:
+            guard !telegramAllowedUsersInput.isEmpty else { return }
+            telegramAllowedUsersInput.removeLast()
+            focus = .input
+            statusLine = "Editing allowed Telegram users"
         case .workspacePath:
             guard !workspacePathInput.isEmpty else { return }
             workspacePathInput.removeLast()
@@ -606,6 +618,10 @@ final class TUIApp {
                 telegramAllowedChatsInput = ""
                 statusLine = "Cleared allowed chats input"
                 return
+            case .telegramAllowedUsers where !telegramAllowedUsersInput.isEmpty:
+                telegramAllowedUsersInput = ""
+                statusLine = "Cleared allowed users input"
+                return
             case .workspacePath where !workspacePathInput.isEmpty:
                 workspacePathInput = ""
                 statusLine = "Cleared workspace input"
@@ -630,6 +646,11 @@ final class TUIApp {
                 statusLine = "Back to settings"
                 return
             case .telegramAllowedChats:
+                inputMode = .prompt
+                focus = showSettings ? .settings : .launcher
+                statusLine = "Back to settings"
+                return
+            case .telegramAllowedUsers:
                 inputMode = .prompt
                 focus = showSettings ? .settings : .launcher
                 statusLine = "Back to settings"
@@ -734,6 +755,9 @@ final class TUIApp {
         case .telegramAllowedChats:
             telegramAllowedChatsInput.append(character)
             statusLine = "Editing allowed Telegram chats"
+        case .telegramAllowedUsers:
+            telegramAllowedUsersInput.append(character)
+            statusLine = "Editing allowed Telegram users"
         case .workspacePath:
             workspacePathInput.append(character)
             statusLine = "Editing workspace"
@@ -861,11 +885,28 @@ final class TUIApp {
             telegramTokenInput = ""
             focus = .input
             statusLine = "Paste the Telegram bot token and press Enter to save"
+        case .telegramAccess:
+            let allModes = TelegramAccessMode.allCases
+            if let currentIndex = allModes.firstIndex(of: sessionUserConfig.telegram.accessMode) {
+                let nextIndex = allModes.index(after: currentIndex)
+                sessionUserConfig.telegram.accessMode = nextIndex == allModes.endIndex
+                    ? allModes[allModes.startIndex]
+                    : allModes[nextIndex]
+            } else {
+                sessionUserConfig.telegram.accessMode = .open
+            }
+            persistUserConfig()
+            statusLine = "Telegram access mode: \(sessionUserConfig.telegram.accessMode.rawValue)"
         case .telegramAllowedChats:
             inputMode = .telegramAllowedChats
             telegramAllowedChatsInput = sessionUserConfig.telegram.allowedChatIDs.joined(separator: ",")
             focus = .input
             statusLine = "Enter comma-separated Telegram chat IDs and press Enter"
+        case .telegramAllowedUsers:
+            inputMode = .telegramAllowedUsers
+            telegramAllowedUsersInput = sessionUserConfig.telegram.allowedUserIDs.joined(separator: ",")
+            focus = .input
+            statusLine = "Enter comma-separated Telegram user IDs and press Enter"
         case .telegramPolicy:
             let allModes = ConnectorExecutionPolicyMode.allCases
             if let currentIndex = allModes.firstIndex(of: sessionUserConfig.telegram.executionPolicy) {
@@ -958,6 +999,18 @@ final class TUIApp {
         inputMode = .prompt
         focus = .settings
         statusLine = values.isEmpty ? "Telegram chat allowlist cleared" : "Saved \(values.count) allowed chat ID(s)"
+    }
+
+    private func commitTelegramAllowedUsersInput() {
+        let values = telegramAllowedUsersInput
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        sessionUserConfig.telegram.allowedUserIDs = values
+        persistUserConfig()
+        inputMode = .prompt
+        focus = .settings
+        statusLine = values.isEmpty ? "Telegram user allowlist cleared" : "Saved \(values.count) allowed user ID(s)"
     }
 
     private func toggleTerminalPane() {
@@ -2230,10 +2283,16 @@ final class TUIApp {
                 value = sessionUserConfig.telegram.enabled ? "Enabled" : "Disabled"
             case .telegramToken:
                 value = telegramTokenStatusLabel()
+            case .telegramAccess:
+                value = sessionUserConfig.telegram.accessMode.rawValue
             case .telegramAllowedChats:
                 value = sessionUserConfig.telegram.allowedChatIDs.isEmpty
-                    ? "All private chats allowed"
+                    ? "No chat IDs configured"
                     : sessionUserConfig.telegram.allowedChatIDs.joined(separator: ", ")
+            case .telegramAllowedUsers:
+                value = sessionUserConfig.telegram.allowedUserIDs.isEmpty
+                    ? "No user IDs configured"
+                    : sessionUserConfig.telegram.allowedUserIDs.joined(separator: ", ")
             case .telegramPolicy:
                 value = sessionUserConfig.telegram.executionPolicy.rawValue
             case .telegramTest:
@@ -2309,6 +2368,9 @@ final class TUIApp {
         } else if inputMode == .telegramAllowedChats {
             lines.append("")
             lines.append("\(TerminalUIStyle.amber)Telegram allowlist edit mode is active in the input bar below.\(TerminalUIStyle.reset)")
+        } else if inputMode == .telegramAllowedUsers {
+            lines.append("")
+            lines.append("\(TerminalUIStyle.amber)Telegram user allowlist edit mode is active in the input bar below.\(TerminalUIStyle.reset)")
         }
 
         return lines
@@ -2395,8 +2457,8 @@ final class TUIApp {
         return [
             ("Choose a provider and working model for daemon runs.", providerReady),
             ("Save the Telegram bot token.", tokenReady),
-            ("Enable Telegram and choose a safety mode.", telegramEnabled),
-            ("Optionally lock the connector to specific private chat IDs.", !sessionUserConfig.telegram.allowedChatIDs.isEmpty),
+            ("Enable Telegram and choose access and safety modes.", telegramEnabled),
+            ("If gating is enabled, save allowed chat IDs and user IDs.", sessionUserConfig.telegram.accessMode == .open || !sessionUserConfig.telegram.allowedChatIDs.isEmpty || !sessionUserConfig.telegram.allowedUserIDs.isEmpty),
             ("Start the daemon and confirm it stays running.", daemonRunning),
         ]
     }
@@ -2605,6 +2667,7 @@ final class TUIApp {
         case .apiKey: actualLabelText = "API Key"
         case .telegramToken: actualLabelText = "Telegram"
         case .telegramAllowedChats: actualLabelText = "Chats"
+        case .telegramAllowedUsers: actualLabelText = "Users"
         case .workspacePath: actualLabelText = "Workspace"
         case .terminalCommand: actualLabelText = "Terminal"
         }
@@ -2616,6 +2679,7 @@ final class TUIApp {
         case .apiKey: currentText = String(repeating: "•", count: apiKeyInput.count)
         case .telegramToken: currentText = String(repeating: "•", count: telegramTokenInput.count)
         case .telegramAllowedChats: currentText = telegramAllowedChatsInput
+        case .telegramAllowedUsers: currentText = telegramAllowedUsersInput
         case .workspacePath: currentText = workspacePathInput
         case .terminalCommand: currentText = terminalCommandInput
         }
@@ -2627,6 +2691,8 @@ final class TUIApp {
                     ? "Paste a Telegram bot token, then press Enter to save…"
                 : inputMode == .telegramAllowedChats
                     ? "Type comma-separated Telegram chat IDs, then press Enter to save…"
+                : inputMode == .telegramAllowedUsers
+                    ? "Type comma-separated Telegram user IDs, then press Enter to save…"
                 : inputMode == .workspacePath
                     ? "Type a project directory path, then press Enter to switch…"
                 : inputMode == .terminalCommand

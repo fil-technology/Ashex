@@ -155,16 +155,19 @@ public actor TelegramConnector: Connector, ConnectorActivityControlling {
 
         let chatID = String(message.chat.id)
         let userID = message.from.map { String($0.id) }
-        if !config.allowedChatIDs.isEmpty, !config.allowedChatIDs.contains(chatID) {
-            await logger?.log(.warning, subsystem: "telegram", message: "Rejected message from non-allowlisted chat", metadata: [
+        let access = Self.evaluateAccess(config: config, chatID: chatID, userID: userID)
+        guard access.allowed else {
+            await logger?.log(.warning, subsystem: "telegram", message: "Rejected message by Telegram access gate", metadata: [
                 "chat_id": .string(chatID),
+                "user_id": .string(userID ?? "<unknown>"),
+                "reason": .string(access.reason),
             ])
-            return nil
-        }
-        if let userID, !config.allowedUserIDs.isEmpty, !config.allowedUserIDs.contains(userID) {
-            await logger?.log(.warning, subsystem: "telegram", message: "Rejected message from non-allowlisted user", metadata: [
-                "user_id": .string(userID),
-            ])
+            try? await client.sendMessage(
+                token: token,
+                chatID: message.chat.id,
+                text: TelegramMessageFormatter.format(Self.accessDeniedMessage(chatID: chatID, userID: userID)),
+                parseMode: TelegramMessageFormatter.parseMode
+            )
             return nil
         }
 
@@ -235,5 +238,48 @@ public actor TelegramConnector: Connector, ConnectorActivityControlling {
 
     private func activityKey(_ activity: ConnectorActivity, conversation: ConnectorConversationReference) -> String {
         "\(activity.rawValue):\(conversation.externalConversationID)"
+    }
+
+    private static func evaluateAccess(config: TelegramConfig, chatID: String, userID: String?) -> (allowed: Bool, reason: String) {
+        switch config.accessMode {
+        case .open:
+            return (true, "open")
+        case .allowlist:
+            let hasChatAllowlist = !config.allowedChatIDs.isEmpty
+            let hasUserAllowlist = !config.allowedUserIDs.isEmpty
+            guard hasChatAllowlist || hasUserAllowlist else {
+                return (false, "allowlist is enabled but no chat or user IDs are configured")
+            }
+            if hasChatAllowlist, !config.allowedChatIDs.contains(chatID) {
+                return (false, "chat is not on the allowlist")
+            }
+            if hasUserAllowlist {
+                guard let userID else {
+                    return (false, "message did not include a Telegram user ID")
+                }
+                if !config.allowedUserIDs.contains(userID) {
+                    return (false, "user is not on the allowlist")
+                }
+            }
+            return (true, "allowlisted")
+        }
+    }
+
+    private static func accessDeniedMessage(chatID: String, userID: String?) -> String {
+        let renderedUserID = userID ?? "<unknown>"
+        return """
+        This Telegram bot is currently gated.
+
+        To allow this chat in Ashex, add these IDs in `Assistant Setup`:
+
+        - `Telegram Chats`: `\(chatID)`
+        - `Telegram Users`: `\(renderedUserID)`
+
+        Or add them directly in `ashex.config.json` under:
+        - `telegram.allowedChatIDs`
+        - `telegram.allowedUserIDs`
+
+        After saving, restart the daemon.
+        """
     }
 }
