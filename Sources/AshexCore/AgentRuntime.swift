@@ -164,7 +164,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                 summary: "Run created and waiting for planning/execution.",
                 now: clock()
             )
-            let plan = TaskPlanner.plan(for: request.prompt)
+            let plan = await resolveTaskPlan(for: request.prompt, taskKind: taskKind)
             var stepSummaries: [String] = []
             var validationNotes: [String] = []
             var remainingItems: [String] = []
@@ -346,6 +346,24 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         } catch {
             await finalizeFailure(error: error, emitter: emitter)
         }
+    }
+
+    private func resolveTaskPlan(for prompt: String, taskKind: TaskKind) async -> TaskPlan? {
+        guard TaskPlanner.shouldAttemptModelPlanning(for: prompt) else {
+            return TaskPlanner.plan(for: prompt)
+        }
+
+        if let planningAdapter = modelAdapter as? any TaskPlanningModelAdapter {
+            do {
+                if let generatedPlan = try await planningAdapter.taskPlan(for: prompt, taskKind: taskKind) {
+                    return generatedPlan
+                }
+            } catch {
+                // Fall back to the existing heuristic planner when structured planning is unavailable.
+            }
+        }
+
+        return TaskPlanner.plan(for: prompt)
     }
 
     private func executeDirectChatRun(

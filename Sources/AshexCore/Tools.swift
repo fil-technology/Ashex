@@ -178,20 +178,18 @@ public final class ToolRegistry: Sendable {
     }
 
     public func schema() -> [ToolSchema] {
+        specs().map { ToolSchema(spec: $0) }
+    }
+
+    public func specs() -> [ToolSpec] {
         tools.values
-            .map {
-                ToolSchema(
-                    name: $0.contract.name,
-                    description: $0.contract.description,
-                    kind: $0.contract.kind,
-                    category: $0.contract.category,
-                    operationArgumentKey: $0.contract.operationArgumentKey,
-                    defaultOperationName: $0.contract.defaultOperationName,
-                    operations: $0.contract.operations,
-                    tags: $0.contract.tags
-                )
-            }
+            .map { $0.contract.toolSpec() }
             .sorted { $0.name < $1.name }
+    }
+
+    public func providerSchemas(for providerID: String) -> [ProviderToolSchema] {
+        let adapter = ToolSchemaAdapterFactory.adapter(for: providerID)
+        return specs().map(adapter.schema(for:))
     }
 
     public func tool(named name: String) throws -> any Tool {
@@ -199,5 +197,74 @@ public final class ToolRegistry: Sendable {
             throw AshexError.toolNotFound(name)
         }
         return tool
+    }
+}
+
+public extension ToolContract {
+    func toolSpec() -> ToolSpec {
+        let operationSpecs = operations.map { $0.toSpec(tags: tags) }
+        let requiresApproval = operations.contains { $0.approval != nil }
+        let hasMutatingOperation = operations.contains { $0.mutatesWorkspace }
+        let requiresNetwork = operations.contains { $0.requiresNetwork }
+        let strongestRisk = operations.compactMap(\.approval?.risk).max(by: { $0.sortRank < $1.sortRank })
+
+        return ToolSpec(
+            name: name,
+            description: description,
+            kind: kind,
+            category: category,
+            inputSchema: ToolSpecSchemaBuilder.makeInputSchema(
+                arguments: mergedArguments(),
+                operationArgumentKey: nil,
+                operationName: nil
+            ),
+            safety: .init(
+                requiresApproval: requiresApproval,
+                isReadOnly: !hasMutatingOperation,
+                requiresNetwork: requiresNetwork,
+                risk: strongestRisk
+            ),
+            timeoutMs: nil,
+            idempotency: hasMutatingOperation ? .sideEffecting : .readOnly,
+            tags: tags,
+            operationArgumentKey: operationArgumentKey,
+            defaultOperationName: defaultOperationName,
+            operations: operationSpecs
+        )
+    }
+
+    private func mergedArguments() -> [ToolArgumentContract] {
+        var seen: Set<String> = []
+        var merged: [ToolArgumentContract] = []
+
+        if let operationArgumentKey {
+            merged.append(.init(
+                name: operationArgumentKey,
+                description: "Operation selector",
+                type: .string,
+                required: defaultOperationName == nil,
+                enumValues: operations.map(\.name)
+            ))
+            seen.insert(operationArgumentKey)
+        }
+
+        for operation in operations {
+            for argument in operation.arguments where !seen.contains(argument.name) {
+                merged.append(argument)
+                seen.insert(argument.name)
+            }
+        }
+
+        return merged
+    }
+}
+
+private extension ApprovalRisk {
+    var sortRank: Int {
+        switch self {
+        case .low: return 0
+        case .medium: return 1
+        case .high: return 2
+        }
     }
 }

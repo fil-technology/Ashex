@@ -114,6 +114,21 @@ public actor DaemonSupervisor {
         case .statsOff:
             try await handleStatsCommand(for: event, forcedState: false)
             return
+        case .model, .models:
+            try await handleModelCommand(for: event)
+            return
+        case .chunks:
+            try await send(
+                text: "Chunked Telegram replies are not available in this build yet. Responses are still split only when they exceed Telegram's message length limit.",
+                for: event
+            )
+            return
+        case .chunksOn, .chunksOff:
+            try await send(
+                text: "Chunked Telegram streaming is not wired up yet, so this toggle does not have an effect yet.",
+                for: event
+            )
+            return
         case .pending:
             try await send(text: await pendingApprovalMessage(for: event.conversation), for: event)
             return
@@ -392,6 +407,23 @@ public actor DaemonSupervisor {
         )
     }
 
+    private func handleModelCommand(for event: InboundConnectorEvent) async throws {
+        let parts = event.text.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
+        if parts.count == 1 {
+            try await send(
+                text: "Current model: `\(config.model)` via `\(config.provider)`. Telegram-side model switching is not wired up yet in this build.",
+                for: event
+            )
+            return
+        }
+
+        let requestedModel = String(parts[1]).trimmingCharacters(in: .whitespacesAndNewlines)
+        try await send(
+            text: "Requested model: `\(requestedModel)`. Telegram-side model switching is not wired up yet in this build, so the daemon is still using `\(config.model)` via `\(config.provider)`.",
+            for: event
+        )
+    }
+
     private func decorateReplyIfNeeded(
         _ reply: String,
         runID: UUID?,
@@ -401,11 +433,20 @@ public actor DaemonSupervisor {
             return reply
         }
         let inspector = SessionInspector(persistence: persistence)
-        guard let savings = try inspector.loadTokenSavings(runID: runID) else {
-            return reply
+        switch TokenSavingsEstimator.costPresentationMode(provider: config.provider) {
+        case .savings:
+            guard let usage = try inspector.loadTokenUsage(runID: runID) else {
+                return reply
+            }
+            let statsBlock = "\n\nSaved: run \(formatTokenCount(usage.currentRun.usedTokenCount))/\(formatSavedMoney(usage.currentRun.usedTokenCount)) • today \(formatTokenCount(usage.today.usedTokenCount)) • session \(formatTokenCount(usage.session.usedTokenCount)) • total \(formatTokenCount(usage.total.usedTokenCount))"
+            return reply + statsBlock
+        case .usage:
+            guard let usage = try inspector.loadTokenUsage(runID: runID) else {
+                return reply
+            }
+            let statsBlock = "\n\nUsed: run \(formatTokenCount(usage.currentRun.usedTokenCount))/\(formatUsedMoney(usage.currentRun.usedTokenCount)) • today \(formatTokenCount(usage.today.usedTokenCount)) • session \(formatTokenCount(usage.session.usedTokenCount)) • total \(formatTokenCount(usage.total.usedTokenCount))"
+            return reply + statsBlock
         }
-        let statsBlock = "\n\nSaved: run \(formatTokenCount(savings.currentRun.savedTokenCount))/\(formatSavedMoney(savings.currentRun.savedTokenCount)) • today \(formatTokenCount(savings.today.savedTokenCount)) • session \(formatTokenCount(savings.session.savedTokenCount)) • total \(formatTokenCount(savings.total.savedTokenCount))"
-        return reply + statsBlock
     }
 
     private func statsEnabled(for conversation: ConnectorConversationReference) -> Bool {
@@ -431,6 +472,11 @@ public actor DaemonSupervisor {
 
     private func formatSavedMoney(_ savedTokens: Int) -> String {
         let dollars = TokenSavingsEstimator.estimatedSavedMoneyUSD(for: savedTokens, provider: config.provider, model: config.model)
+        return TokenSavingsEstimator.formatUSD(dollars)
+    }
+
+    private func formatUsedMoney(_ usedTokens: Int) -> String {
+        let dollars = TokenSavingsEstimator.estimatedUsageMoneyUSD(for: usedTokens, provider: config.provider, model: config.model)
         return TokenSavingsEstimator.formatUSD(dollars)
     }
 }

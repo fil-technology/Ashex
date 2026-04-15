@@ -88,6 +88,34 @@ struct OpenAIResponsesModelAdapterTests {
 
         #expect(reply == "I'm doing well. How can I help?")
     }
+
+    @Test func parsesStructuredTaskPlanOutput() async throws {
+        let session = makeStubbedSession(statusCode: 200, body: """
+        {
+          "output": [
+            {
+              "content": [
+                {
+                  "type": "output_text",
+                  "text": "{\\"steps\\":[{\\"title\\":\\"Inspect the current runtime flow\\",\\"phase\\":\\"exploration\\"},{\\"title\\":\\"Implement the Telegram model toggle\\",\\"phase\\":\\"mutation\\"},{\\"title\\":\\"Validate the updated Telegram flow\\",\\"phase\\":\\"validation\\"}]}"
+                }
+              ]
+            }
+          ]
+        }
+        """)
+
+        let adapter = OpenAIResponsesModelAdapter(
+            configuration: .init(apiKey: "test-key", model: "gpt-5.4-mini", baseURL: URL(string: "https://example.com/v1/responses")!),
+            session: session
+        )
+
+        let plan = try await adapter.taskPlan(for: "Add Telegram model switching and validate the flow", taskKind: .feature)
+
+        #expect(plan?.steps.count == 3)
+        #expect(plan?.steps.first?.title == "Inspect the current runtime flow")
+        #expect(plan?.steps.last?.phase == .validation)
+    }
 }
 
 private func sampleContext() -> ModelContext {

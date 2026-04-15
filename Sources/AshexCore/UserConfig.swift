@@ -9,6 +9,7 @@ public struct AshexUserConfig: Codable, Sendable {
     public var telegram: TelegramConfig
     public var ollama: OllamaConfig
     public var dflash: DFlashConfig
+    public var optimization: OptimizationConfig
     public var logging: LoggingConfig
 
     public init(
@@ -20,6 +21,7 @@ public struct AshexUserConfig: Codable, Sendable {
         telegram: TelegramConfig = .default,
         ollama: OllamaConfig = .default,
         dflash: DFlashConfig = .default,
+        optimization: OptimizationConfig = .default,
         logging: LoggingConfig = .default
     ) {
         self.version = version
@@ -30,6 +32,7 @@ public struct AshexUserConfig: Codable, Sendable {
         self.telegram = telegram
         self.ollama = ollama
         self.dflash = dflash
+        self.optimization = optimization
         self.logging = logging
     }
 
@@ -44,6 +47,7 @@ public struct AshexUserConfig: Codable, Sendable {
         case telegram
         case ollama
         case dflash
+        case optimization
         case logging
     }
 
@@ -57,6 +61,7 @@ public struct AshexUserConfig: Codable, Sendable {
         telegram = try container.decodeIfPresent(TelegramConfig.self, forKey: .telegram) ?? .default
         ollama = try container.decodeIfPresent(OllamaConfig.self, forKey: .ollama) ?? .default
         dflash = try container.decodeIfPresent(DFlashConfig.self, forKey: .dflash) ?? .default
+        optimization = try container.decodeIfPresent(OptimizationConfig.self, forKey: .optimization) ?? .default
         logging = try container.decodeIfPresent(LoggingConfig.self, forKey: .logging) ?? .default
     }
 }

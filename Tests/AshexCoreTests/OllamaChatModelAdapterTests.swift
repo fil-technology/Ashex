@@ -118,6 +118,27 @@ struct OllamaChatModelAdapterTests {
         #expect(abs(OllamaStubURLProtocol.state.lastRequestTimeout - 321) < 0.001)
     }
 
+    @Test func parsesStructuredTaskPlanOutput() async throws {
+        let session = makeOllamaStubbedSession(statusCode: 200, body: """
+        {
+          "message": {
+            "content": "{\\"steps\\":[{\\"title\\":\\"Inspect the current implementation\\",\\"phase\\":\\"exploration\\"},{\\"title\\":\\"Implement the requested controls\\",\\"phase\\":\\"mutation\\"},{\\"title\\":\\"Validate the updated behavior\\",\\"phase\\":\\"validation\\"}]}"
+          }
+        }
+        """)
+
+        let adapter = OllamaChatModelAdapter(
+            configuration: .init(model: "llama3.2", baseURL: URL(string: "http://localhost:11434/api/chat")!),
+            session: session
+        )
+
+        let plan = try await adapter.taskPlan(for: "Add Telegram stop and chunk controls", taskKind: .feature)
+
+        #expect(plan?.steps.count == 3)
+        #expect(plan?.steps[1].title == "Implement the requested controls")
+        #expect(plan?.steps[2].phase == .validation)
+    }
+
     @Test func directReplyFallsBackToPlainTextContent() async throws {
         let session = makeOllamaStubbedSession(statusCode: 200, body: """
         {

@@ -132,6 +132,19 @@ public enum TaskPlanner {
         return TaskPlan(steps: defaultSteps(for: taskKind), taskKind: taskKind)
     }
 
+    public static func shouldAttemptModelPlanning(for prompt: String) -> Bool {
+        let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        return shouldPlan(prompt: trimmed)
+    }
+
+    public static func normalize(plan: TaskPlan, fallbackTaskKind: TaskKind) -> TaskPlan? {
+        let normalizedSteps = plan.steps
+            .map { PlannedStep(title: $0.title.trimmingCharacters(in: .whitespacesAndNewlines), phase: $0.phase) }
+            .filter { $0.title.count > 4 }
+        guard normalizedSteps.count >= 2 else { return nil }
+        return TaskPlan(steps: Array(normalizedSteps.prefix(6)), taskKind: plan.taskKind == .general ? fallbackTaskKind : plan.taskKind)
+    }
+
     private static func shouldPlan(prompt: String) -> Bool {
         let lowered = prompt.lowercased()
         let words = lowered.split(whereSeparator: \.isWhitespace)
@@ -143,6 +156,7 @@ public enum TaskPlanner {
         return words.count >= 14
             || largeTaskMarkers.contains(where: lowered.contains)
             || connectiveMarkers.contains(where: lowered.contains)
+            || splitExplicitSteps(in: prompt).count >= 2
     }
 
     private static func splitExplicitSteps(in prompt: String) -> [String] {
@@ -152,9 +166,23 @@ public enum TaskPlanner {
             .replacingOccurrences(of: " then ", with: "\n", options: [.caseInsensitive])
             .replacingOccurrences(of: " also ", with: "\n", options: [.caseInsensitive])
             .replacingOccurrences(of: " after that ", with: "\n", options: [.caseInsensitive])
-        let rawParts = normalized.split(separator: "\n", omittingEmptySubsequences: true)
-        let trimmedParts = rawParts.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-        let filtered = trimmedParts.filter { $0.count > 8 }
+            .replacingOccurrences(of: " plus ", with: "\n", options: [.caseInsensitive])
+
+        let listedParts = normalized
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .map { normalizeStepText(String($0)) }
+            .filter { $0.count > 8 }
+        if listedParts.count >= 2 {
+            return Array(listedParts.prefix(6))
+        }
+
+        let cleanedPrompt = stripRequestPreamble(from: normalized)
+        let splitOnAnd = splitOnCoordinatedActions(cleanedPrompt)
+        if splitOnAnd.count >= 2 {
+            return Array(splitOnAnd.prefix(6))
+        }
+
+        let filtered = [normalizeStepText(cleanedPrompt)].filter { $0.count > 8 }
         return Array(filtered.prefix(6))
     }
 
@@ -246,5 +274,78 @@ public enum TaskPlanner {
             "understand this codebase"
         ]
         return overviewMarkers.contains(where: lowered.contains)
+    }
+
+    private static func stripRequestPreamble(from prompt: String) -> String {
+        let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        let prefixes = [
+            "can you ",
+            "could you ",
+            "please ",
+            "let's ",
+            "lets ",
+            "i need you to ",
+            "help me "
+        ]
+        let lowered = trimmed.lowercased()
+        for prefix in prefixes where lowered.hasPrefix(prefix) {
+            return String(trimmed.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return trimmed
+    }
+
+    private static func normalizeStepText(_ raw: String) -> String {
+        var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let listPrefixes = [
+            "- ", "* ", "• "
+        ]
+        for prefix in listPrefixes where text.hasPrefix(prefix) {
+            text.removeFirst(prefix.count)
+            return text.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        if let range = text.range(of: #"^\d+[\.\)]\s+"#, options: .regularExpression) {
+            text.removeSubrange(range)
+        }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func splitOnCoordinatedActions(_ prompt: String) -> [String] {
+        let separators = [", and ", " and "]
+        for separator in separators {
+            let parts = prompt
+                .components(separatedBy: separator)
+                .map(normalizeStepText)
+                .filter { $0.count > 8 }
+            let primaryTaskCount = parts.filter(isPrimaryTaskClause).count
+            if parts.count >= 2, parts.allSatisfy(startsWithActionVerb), primaryTaskCount >= 2 {
+                return parts
+            }
+        }
+        return prompt
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .map { normalizeStepText(String($0)) }
+            .filter { $0.count > 8 }
+    }
+
+    private static func startsWithActionVerb(_ text: String) -> Bool {
+        let lowered = stripRequestPreamble(from: text).lowercased()
+        let starters = [
+            "add", "build", "change", "check", "create", "document", "explain", "explore",
+            "fix", "implement", "improve", "inspect", "investigate", "list", "make", "migrate",
+            "persist", "refactor", "remove", "rename", "review", "search", "show", "split",
+            "stop", "summarize", "support", "test", "update", "validate", "verify", "write"
+        ]
+        return starters.contains { lowered.hasPrefix("\($0) ") || lowered == $0 }
+    }
+
+    private static func isPrimaryTaskClause(_ text: String) -> Bool {
+        let lowered = stripRequestPreamble(from: text).lowercased()
+        let primaryStarters = [
+            "add", "build", "change", "create", "fix", "implement", "improve", "inspect",
+            "investigate", "list", "make", "migrate", "persist", "refactor", "remove",
+            "rename", "review", "search", "show", "split", "support", "update", "write"
+        ]
+        return primaryStarters.contains { lowered.hasPrefix("\($0) ") || lowered == $0 }
     }
 }

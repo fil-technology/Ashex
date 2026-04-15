@@ -153,8 +153,10 @@ final class TUIApp {
     private var currentPlannedFiles: [String] = []
     private var currentPatchObjectives: [String] = []
     private var activeThreadID: UUID?
+    private var activeRunID: UUID?
     private var sessionInspector: SessionInspector
     private var tokenSavingsSnapshot: TokenSavingsSnapshot?
+    private var tokenUsageSnapshot: TokenUsageSnapshot?
 
     init(configuration: CLIConfiguration) throws {
         let approvalCoordinator = TUIApprovalCoordinator()
@@ -205,6 +207,7 @@ final class TUIApp {
         try historyStore.initialize()
         try? RecentWorkspaceStore.record(workspaceURL: configuration.workspaceRoot)
         loadRecentWorkspaces()
+        loadHistory()
         Task { [weak self] in
             await self?.refreshProviderStatus()
         }
@@ -1627,6 +1630,7 @@ final class TUIApp {
         runExecutionControl = nil
         runFinished = true
         runStartedAt = nil
+        refreshTokenEconomicsSnapshot(runID: activeRunID)
         if statusLine == "Running" {
             statusLine = "Run finished"
         } else if !promptQueue.isEmpty {
@@ -1648,8 +1652,18 @@ final class TUIApp {
 
     private func updateLiveRunState(from payload: RuntimeEventPayload) {
         switch payload {
+        case .runStarted(_, let runID):
+            activeRunID = runID
+            refreshTokenEconomicsSnapshot(runID: runID)
+            currentRunPhase = nil
+            currentChangedFiles = []
+            currentPlannedFiles = []
+            currentPatchObjectives = []
         case .workflowPhaseChanged(_, let phase, _):
             currentRunPhase = phase
+        case .contextPrepared(let runID, _, _, _, _, _):
+            activeRunID = runID
+            refreshTokenEconomicsSnapshot(runID: runID)
         case .changedFilesTracked(_, let paths):
             for path in paths where !currentChangedFiles.contains(path) {
                 currentChangedFiles.append(path)
@@ -1657,11 +1671,9 @@ final class TUIApp {
         case .patchPlanUpdated(_, let paths, let objectives):
             currentPlannedFiles = paths
             currentPatchObjectives = objectives
-        case .runStarted:
-            currentRunPhase = nil
-            currentChangedFiles = []
-            currentPlannedFiles = []
-            currentPatchObjectives = []
+        case .runFinished(let runID, _):
+            activeRunID = runID
+            refreshTokenEconomicsSnapshot(runID: runID)
         default:
             break
         }
@@ -1940,10 +1952,18 @@ final class TUIApp {
         let sandbox = "\(TerminalUIStyle.faint)sandbox\(TerminalUIStyle.reset) \(TerminalUIStyle.cyan)\(sessionUserConfig.sandbox.mode.rawValue)\(TerminalUIStyle.reset)"
         let usage = "\(TerminalUIStyle.faint)tok~\(TerminalUIStyle.reset) \(TerminalUIStyle.ink)\(formattedEstimatedTokens)\(TerminalUIStyle.reset)"
         let context = "\(TerminalUIStyle.faint)ctx~\(TerminalUIStyle.reset) \(TerminalUIStyle.ink)\(formattedContextUsage)\(TerminalUIStyle.reset)"
-        let savedToday = "\(TerminalUIStyle.faint)today saved\(TerminalUIStyle.reset) \(TerminalUIStyle.green)\(formattedSavedTokens(tokenSavingsSnapshot?.today.savedTokenCount))\(TerminalUIStyle.reset)"
-        let savedSession = "\(TerminalUIStyle.faint)session saved\(TerminalUIStyle.reset) \(TerminalUIStyle.green)\(formattedSavedTokens(tokenSavingsSnapshot?.session.savedTokenCount))\(TerminalUIStyle.reset)"
-        let savedTotal = "\(TerminalUIStyle.faint)total saved\(TerminalUIStyle.reset) \(TerminalUIStyle.green)\(formattedSavedTokens(tokenSavingsSnapshot?.total.savedTokenCount))\(TerminalUIStyle.reset)"
-        let savedMoney = "\(TerminalUIStyle.faint)saved money\(TerminalUIStyle.reset) \(TerminalUIStyle.green)\(formattedSavedMoney(tokenSavingsSnapshot?.total.savedTokenCount))\(TerminalUIStyle.reset)"
+        let economicsLabel = tokenEconomicsMode == .savings ? "saved" : "used"
+        let economicsColor = tokenEconomicsMode == .savings ? TerminalUIStyle.green : TerminalUIStyle.amber
+        let todayValue = formattedTokenMetric(tokenUsageSnapshot?.today.usedTokenCount)
+        let sessionValue = formattedTokenMetric(tokenUsageSnapshot?.session.usedTokenCount)
+        let totalValue = formattedTokenMetric(tokenUsageSnapshot?.total.usedTokenCount)
+        let moneyValue = tokenEconomicsMode == .savings
+            ? formattedSavedMoney(tokenUsageSnapshot?.total.usedTokenCount)
+            : formattedUsedMoney(tokenUsageSnapshot?.total.usedTokenCount)
+        let savedToday = "\(TerminalUIStyle.faint)today \(economicsLabel)\(TerminalUIStyle.reset) \(economicsColor)\(todayValue)\(TerminalUIStyle.reset)"
+        let savedSession = "\(TerminalUIStyle.faint)session \(economicsLabel)\(TerminalUIStyle.reset) \(economicsColor)\(sessionValue)\(TerminalUIStyle.reset)"
+        let savedTotal = "\(TerminalUIStyle.faint)total \(economicsLabel)\(TerminalUIStyle.reset) \(economicsColor)\(totalValue)\(TerminalUIStyle.reset)"
+        let savedMoney = "\(TerminalUIStyle.faint)\(economicsLabel) money\(TerminalUIStyle.reset) \(economicsColor)\(moneyValue)\(TerminalUIStyle.reset)"
         let status = "\(statusColor)\(displayStatusLine)\(TerminalUIStyle.reset)"
         let right = "\(provider)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(model)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(sandbox)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(usage)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(context)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(savedToday)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(savedSession)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(savedTotal)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(savedMoney)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(status)"
 
@@ -2978,7 +2998,11 @@ final class TUIApp {
         return "\(Self.formatTokenCount(usedTokens))/\(Self.formatTokenCount(maxTokens))"
     }
 
-    private func formattedSavedTokens(_ value: Int?) -> String {
+    private var tokenEconomicsMode: TokenCostPresentationMode {
+        TokenSavingsEstimator.costPresentationMode(provider: sessionProvider)
+    }
+
+    private func formattedTokenMetric(_ value: Int?) -> String {
         Self.formatTokenCount(max(value ?? 0, 0))
     }
 
@@ -2987,9 +3011,19 @@ final class TUIApp {
         return TokenSavingsEstimator.formatUSD(dollars)
     }
 
+    private func formattedUsedMoney(_ usedTokens: Int?) -> String {
+        let dollars = estimatedUsedMoneyUSD(for: max(usedTokens ?? 0, 0))
+        return TokenSavingsEstimator.formatUSD(dollars)
+    }
+
     private func estimatedSavedMoneyUSD(for savedTokens: Int) -> Double {
         guard savedTokens > 0 else { return 0 }
         return TokenSavingsEstimator.estimatedSavedMoneyUSD(for: savedTokens, provider: sessionProvider, model: sessionModel)
+    }
+
+    private func estimatedUsedMoneyUSD(for usedTokens: Int) -> Double {
+        guard usedTokens > 0 else { return 0 }
+        return TokenSavingsEstimator.estimatedUsageMoneyUSD(for: usedTokens, provider: sessionProvider, model: sessionModel)
     }
 
     private func riskColor(for risk: ApprovalRisk) -> String {
@@ -3769,12 +3803,47 @@ final class TUIApp {
                 historyRuns[thread.id] = try historyStore.fetchRuns(threadID: thread.id)
             }
             historySelection = min(historySelection, max(historyThreads.count, 0))
+            refreshTokenEconomicsSnapshot(runID: latestPersistedRunID())
             refreshHistoryPreview()
         } catch {
             historyThreads = []
             historyRuns = [:]
             historyPreviewLines = ["[error] \(error.localizedDescription)"]
+            tokenSavingsSnapshot = nil
+            tokenUsageSnapshot = nil
         }
+    }
+
+    private func refreshTokenEconomicsSnapshot(runID: UUID?) {
+        let snapshotRunID = runID ?? latestPersistedRunID()
+        guard let snapshotRunID else {
+            tokenSavingsSnapshot = nil
+            tokenUsageSnapshot = nil
+            return
+        }
+
+        tokenSavingsSnapshot = try? sessionInspector.loadTokenSavings(runID: snapshotRunID)
+        tokenUsageSnapshot = try? sessionInspector.loadTokenUsage(runID: snapshotRunID)
+    }
+
+    private func latestPersistedRunID() -> UUID? {
+        if let activeRunID {
+            return activeRunID
+        }
+        if let activeThreadID {
+            if let runID = historyRuns[activeThreadID]?.first?.id {
+                return runID
+            }
+            if let thread = historyThreads.first(where: { $0.id == activeThreadID }) {
+                return thread.latestRunID
+            }
+        }
+        for thread in historyThreads {
+            if let runID = historyRuns[thread.id]?.first?.id ?? thread.latestRunID {
+                return runID
+            }
+        }
+        return nil
     }
 
     private func persistSessionSettings() {
@@ -3930,9 +3999,11 @@ final class TUIApp {
             guard let snapshotBundle = try sessionInspector.loadRunSnapshot(runID: runID, recentEventLimit: 8) else {
                 historyPreviewLines = ["[error] Run not found"]
                 tokenSavingsSnapshot = nil
+                tokenUsageSnapshot = nil
                 return
             }
             tokenSavingsSnapshot = try sessionInspector.loadTokenSavings(runID: runID)
+            tokenUsageSnapshot = try sessionInspector.loadTokenUsage(runID: runID)
             let events = snapshotBundle.events
             let steps = snapshotBundle.steps
             let compactions = snapshotBundle.compactions
@@ -3970,6 +4041,7 @@ final class TUIApp {
         } catch {
             historyPreviewLines = ["[error] \(error.localizedDescription)"]
             tokenSavingsSnapshot = nil
+            tokenUsageSnapshot = nil
         }
     }
 
@@ -3997,9 +4069,11 @@ final class TUIApp {
                 statusLine = "Failed to load thread"
                 runLines = ["[error] Run not found"]
                 tokenSavingsSnapshot = nil
+                tokenUsageSnapshot = nil
                 return
             }
             tokenSavingsSnapshot = try sessionInspector.loadTokenSavings(runID: runID)
+            tokenUsageSnapshot = try sessionInspector.loadTokenUsage(runID: runID)
             let events = snapshotBundle.events
             let steps = snapshotBundle.steps
             let compactions = snapshotBundle.compactions
@@ -4092,6 +4166,14 @@ final class TUIApp {
                 runLines.append("  total \(Self.formatTokenCount(savings.total.savedTokenCount)) • \(formattedSavedMoney(savings.total.savedTokenCount))")
                 runLines.append("")
             }
+            if let usage = tokenUsageSnapshot, tokenEconomicsMode == .usage {
+                runLines.append("Used token estimates:")
+                runLines.append("  run \(Self.formatTokenCount(usage.currentRun.usedTokenCount)) • \(formattedUsedMoney(usage.currentRun.usedTokenCount))")
+                runLines.append("  today \(Self.formatTokenCount(usage.today.usedTokenCount)) • \(formattedUsedMoney(usage.today.usedTokenCount))")
+                runLines.append("  this session \(Self.formatTokenCount(usage.session.usedTokenCount)) • \(formattedUsedMoney(usage.session.usedTokenCount))")
+                runLines.append("  total \(Self.formatTokenCount(usage.total.usedTokenCount)) • \(formattedUsedMoney(usage.total.usedTokenCount))")
+                runLines.append("")
+            }
             runLines.append(contentsOf: events.flatMap { renderLines(for: $0.payload) })
             currentRunPhase = memory?.currentPhase
             currentChangedFiles = memory?.changedPaths ?? []
@@ -4107,6 +4189,7 @@ final class TUIApp {
             statusLine = "Failed to load thread"
             runLines = ["[error] \(error.localizedDescription)"]
             tokenSavingsSnapshot = nil
+            tokenUsageSnapshot = nil
         }
     }
 

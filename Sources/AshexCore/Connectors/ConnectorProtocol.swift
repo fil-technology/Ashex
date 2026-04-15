@@ -26,6 +26,11 @@ public enum ConnectorCommand: String, Sendable, Codable {
     case stats
     case statsOn = "statson"
     case statsOff = "statsoff"
+    case model
+    case models
+    case chunks
+    case chunksOn = "chunkson"
+    case chunksOff = "chunksoff"
 }
 
 public struct InboundConnectorEvent: Sendable, Codable {

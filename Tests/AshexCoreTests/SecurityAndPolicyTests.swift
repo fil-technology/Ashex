@@ -258,6 +258,33 @@ import Testing
     #expect(loaded.globalFileURL == globalConfigURL)
 }
 
+@Test func mergedUserConfigLoadsOptimizationConfig() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let configURL = root.appendingPathComponent(UserConfigStore.fileName)
+
+    try """
+    {
+      "optimization": {
+        "enabled": true,
+        "backend": "esh",
+        "mode": "auto",
+        "intent": "agentrun",
+        "esh": {
+          "executablePath": "/opt/homebrew/bin/esh",
+          "homePath": "/tmp/.esh"
+        }
+      }
+    }
+    """.write(to: configURL, atomically: true, encoding: .utf8)
+
+    let config = try UserConfigStore.load(from: configURL)
+    #expect(config.optimization.enabled)
+    #expect(config.optimization.backend == .esh)
+    #expect(config.optimization.mode == .automatic)
+    #expect(config.optimization.esh.homePath == "/tmp/.esh")
+}
+
 @Test func sessionInspectorLoadsDurableRunSnapshot() throws {
     let databaseURL = FileManager.default.temporaryDirectory
         .appendingPathComponent(UUID().uuidString)
@@ -377,6 +404,142 @@ import Testing
     #expect(savings.today.savedTokenCount == 340)
     #expect(savings.session.savedTokenCount == 400)
     #expect(savings.total.savedTokenCount == 490)
+}
+
+@Test func sessionInspectorAggregatesUsedTokensAcrossRunScopes() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let store = SQLitePersistenceStore(databaseURL: root.appendingPathComponent("ashex.sqlite"))
+    try store.initialize()
+
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(secondsFromGMT: 0) ?? .current
+    let now = Date(timeIntervalSince1970: 1_710_000_000)
+    let today = now.addingTimeInterval(-3_600)
+    let yesterday = now.addingTimeInterval(-90_000)
+
+    let sessionThread = try store.createThread(now: yesterday)
+    let otherThread = try store.createThread(now: yesterday)
+    let sessionRunA = try store.createRun(threadID: sessionThread.id, state: .completed, now: yesterday)
+    let sessionRunB = try store.createRun(threadID: sessionThread.id, state: .completed, now: today)
+    let otherRun = try store.createRun(threadID: otherThread.id, state: .completed, now: today)
+    try store.transitionRun(runID: sessionRunA.id, to: .completed, reason: nil, now: yesterday)
+    try store.transitionRun(runID: sessionRunB.id, to: .completed, reason: nil, now: today)
+    try store.transitionRun(runID: otherRun.id, to: .completed, reason: nil, now: today)
+
+    try store.appendEvent(.init(payload: .contextPrepared(
+        runID: sessionRunA.id,
+        retainedMessages: 4,
+        droppedMessages: 0,
+        clippedMessages: 0,
+        estimatedTokens: 180,
+        estimatedContextWindow: 8_000
+    )), runID: sessionRunA.id)
+    try store.appendEvent(.init(payload: .contextPrepared(
+        runID: sessionRunA.id,
+        retainedMessages: 5,
+        droppedMessages: 0,
+        clippedMessages: 0,
+        estimatedTokens: 220,
+        estimatedContextWindow: 8_000
+    )), runID: sessionRunA.id)
+    try store.appendEvent(.init(payload: .contextPrepared(
+        runID: sessionRunB.id,
+        retainedMessages: 6,
+        droppedMessages: 1,
+        clippedMessages: 0,
+        estimatedTokens: 340,
+        estimatedContextWindow: 8_000
+    )), runID: sessionRunB.id)
+    try store.appendEvent(.init(payload: .contextPrepared(
+        runID: otherRun.id,
+        retainedMessages: 3,
+        droppedMessages: 0,
+        clippedMessages: 0,
+        estimatedTokens: 90,
+        estimatedContextWindow: 8_000
+    )), runID: otherRun.id)
+
+    let inspector = SessionInspector(persistence: store)
+    let usage = try #require(try inspector.loadTokenUsage(runID: sessionRunB.id, now: now, calendar: calendar))
+    #expect(usage.currentRun.usedTokenCount == 340)
+    #expect(usage.today.usedTokenCount == 430)
+    #expect(usage.session.usedTokenCount == 560)
+    #expect(usage.total.usedTokenCount == 650)
+}
+
+@Test func tokenSavingsEstimatorSwitchesBetweenSavingsAndUsageModes() {
+    #expect(TokenSavingsEstimator.costPresentationMode(provider: "ollama") == .savings)
+    #expect(TokenSavingsEstimator.costPresentationMode(provider: "openai") == .usage)
+    #expect(TokenSavingsEstimator.estimatedSavedMoneyUSD(for: 1_000_000, provider: "ollama", model: "gemma3:latest") > 0)
+    #expect(TokenSavingsEstimator.estimatedUsageMoneyUSD(for: 1_000_000, provider: "openai", model: "gpt-5.4-mini") > 0)
+}
+
+@Test func optimizationAdvisorPrefersTriattentionForFocusedLocalCodeTaskWithCalibration() {
+    let resolution = ContextOptimizationAdvisor().resolve(
+        taskKind: .feature,
+        prompt: "Add a focused local code fix in the daemon runtime.",
+        provider: "ollama",
+        model: "qwen2.5-coder:7b",
+        config: OptimizationConfig(enabled: true, backend: .esh, mode: .automatic, intent: .agentRun),
+        calibrationAvailable: true
+    )
+
+    #expect(resolution.mode == .triattention)
+}
+
+@Test func optimizationAdvisorFallsBackToTurboWithoutCalibration() {
+    let resolution = ContextOptimizationAdvisor().resolve(
+        taskKind: .feature,
+        prompt: "Add a focused local code fix in the daemon runtime.",
+        provider: "ollama",
+        model: "qwen2.5-coder:7b",
+        config: OptimizationConfig(enabled: true, backend: .esh, mode: .automatic, intent: .agentRun),
+        calibrationAvailable: false
+    )
+
+    #expect(resolution.mode == .turbo)
+}
+
+@Test func optimizationAdvisorKeepsRemoteProvidersInRawMode() {
+    let resolution = ContextOptimizationAdvisor().resolve(
+        taskKind: .feature,
+        prompt: "Implement a remote provider feature and validate it.",
+        provider: "openai",
+        model: "gpt-5.4-mini",
+        config: OptimizationConfig(enabled: true, backend: .esh, mode: .automatic, intent: .agentRun),
+        calibrationAvailable: true
+    )
+
+    #expect(resolution.mode == .raw)
+}
+
+@Test func eshOptimizationInspectorComputesTriattentionCalibrationPath() {
+    let inspector = EshOptimizationInspector(
+        environment: ["PATH": "/opt/homebrew/bin:/usr/bin"],
+        fileExists: { path in
+            path == "/opt/homebrew/bin/esh" || path.hasSuffix("/compression/qwen2.5-coder_7b/triattention/triattention_calib.safetensors")
+        }
+    )
+    let config = OptimizationConfig(
+        enabled: true,
+        backend: .esh,
+        mode: .automatic,
+        intent: .agentRun,
+        esh: .init(homePath: "/tmp/.esh")
+    )
+
+    let report = inspector.doctor(
+        provider: "ollama",
+        model: "qwen2.5-coder:7b",
+        taskKind: .feature,
+        prompt: "Implement a focused code change.",
+        config: config
+    )
+
+    #expect(report.executablePath == "/opt/homebrew/bin/esh")
+    #expect(report.calibrationAvailable)
+    #expect(report.calibrationPath == "/tmp/.esh/compression/qwen2.5-coder_7b/triattention/triattention_calib.safetensors")
+    #expect(report.recommendedMode == .triattention)
 }
 
 @Test func cronScheduleComputesNextRunInRequestedTimezone() throws {

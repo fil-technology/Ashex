@@ -8,6 +8,9 @@ struct AshexCLI {
             if try await DaemonCLI.handle(arguments: CommandLine.arguments) {
                 return
             }
+            if try OptimizationCLI.handle(arguments: CommandLine.arguments) {
+                return
+            }
 
             let configuration = try CLIConfiguration(arguments: CommandLine.arguments)
             try configuration.persistSessionSettings()

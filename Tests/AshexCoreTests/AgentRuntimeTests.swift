@@ -61,6 +61,74 @@ private final class RecordingExecutionRuntime: ExecutionRuntime, @unchecked Send
     #expect(plan?.steps.last?.phase == .validation)
 }
 
+@Test func taskPlannerSplitsBulletListsIntoExplicitSteps() {
+    let prompt = """
+    1. Fix persisted token accounting so stats survive restart
+    2. Add Telegram commands to view and change the model
+    3. Add chunked Telegram replies for long responses
+    """
+    let plan = TaskPlanner.plan(for: prompt)
+
+    #expect(plan?.steps.count == 3)
+    #expect(plan?.steps[0].title == "Fix persisted token accounting so stats survive restart")
+    #expect(plan?.steps[1].title == "Add Telegram commands to view and change the model")
+    #expect(plan?.steps[2].title == "Add chunked Telegram replies for long responses")
+}
+
+@Test func taskPlannerSplitsCoordinatedActionPromptsIntoSequentialSteps() {
+    let prompt = "Fix persisted token accounting and add Telegram model commands and validate the updated flow."
+    let plan = TaskPlanner.plan(for: prompt)
+
+    #expect(plan?.steps.count == 3)
+    #expect(plan?.steps[0].title == "Fix persisted token accounting")
+    #expect(plan?.steps[1].title == "add Telegram model commands")
+    #expect(plan?.steps[2].title == "validate the updated flow.")
+    #expect(plan?.steps[0].phase == .exploration)
+    #expect(plan?.steps[2].phase == .validation)
+}
+
+@Test func runtimePrefersModelGeneratedPlanWhenAvailable() async throws {
+    let fileManager = FileManager.default
+    let root = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let dbURL = root.appendingPathComponent(".ashex/test.sqlite")
+    try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+
+    let runtime = try AgentRuntime(
+        modelAdapter: PlannedSequencedModelAdapter(
+            plan: TaskPlan(
+                steps: [
+                    PlannedStep(title: "Inspect the current implementation", phase: .exploration),
+                    PlannedStep(title: "Implement the requested changes", phase: .mutation),
+                    PlannedStep(title: "Validate the updated behavior", phase: .validation),
+                ],
+                taskKind: .feature
+            ),
+            actions: [
+                .finalAnswer("Explored the implementation."),
+                .finalAnswer("Applied the requested change."),
+                .finalAnswer("Validated the result."),
+            ]
+        ),
+        toolRegistry: ToolRegistry(tools: [
+            FileSystemTool(workspaceGuard: WorkspaceGuard(rootURL: root)),
+        ]),
+        persistence: SQLitePersistenceStore(databaseURL: dbURL)
+    )
+
+    var plannedSteps: [String] = []
+    for await event in runtime.run(RunRequest(prompt: "Implement the new Telegram controls and persist the selected model after restart")) {
+        if case .taskPlanCreated(_, let steps) = event.payload {
+            plannedSteps = steps
+        }
+    }
+
+    #expect(plannedSteps == [
+        "Inspect the current implementation",
+        "Implement the requested changes",
+        "Validate the updated behavior",
+    ])
+}
+
 @Test func taskPlannerUsesExplorationFallbackForShortAnalysisPrompts() {
     let step = TaskPlanner.defaultSingleStep(for: "what is this project about?", taskKind: .analysis)
 
@@ -861,6 +929,31 @@ private actor SequencedModelAdapter: ModelAdapter {
 
     init(actions: [ModelAction]) {
         self.actions = actions
+    }
+
+    func nextAction(for context: ModelContext) async throws -> ModelAction {
+        guard !actions.isEmpty else {
+            throw AshexError.model("No more actions")
+        }
+        return actions.removeFirst()
+    }
+}
+
+private actor PlannedSequencedModelAdapter: TaskPlanningModelAdapter {
+    let name = "planned-sequenced-test"
+    let providerID = "test"
+    let modelID = "planned-sequenced-test"
+
+    private let planValue: TaskPlan?
+    private var actions: [ModelAction]
+
+    init(plan: TaskPlan?, actions: [ModelAction]) {
+        self.planValue = plan
+        self.actions = actions
+    }
+
+    func taskPlan(for prompt: String, taskKind: TaskKind) async throws -> TaskPlan? {
+        planValue
     }
 
     func nextAction(for context: ModelContext) async throws -> ModelAction {

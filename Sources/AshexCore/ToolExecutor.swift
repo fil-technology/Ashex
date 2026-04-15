@@ -44,7 +44,13 @@ struct ToolExecutor: Sendable {
         }
 
         if let mutationReason = inspectBeforeMutateViolation(for: call, tool: tool, preconditions: preconditions) {
-            let toolMessage = try persistence.appendMessage(threadID: threadID, runID: runID, role: .tool, content: mutationReason, now: clock())
+            let toolMessage = try persistence.appendMessage(
+                threadID: threadID,
+                runID: runID,
+                role: .tool,
+                content: ToolResultMessageFormatter.blocked(call: call, reason: mutationReason),
+                now: clock()
+            )
             try emitter.emit(.messageAppended(runID: runID, messageID: toolMessage.id, role: .tool), runID: runID)
             try emitter.emit(.status(runID: runID, message: "Inspect-before-mutate policy blocked a write action. Asking the model to inspect relevant files first."), runID: runID)
             return .retryableFailure
@@ -53,7 +59,13 @@ struct ToolExecutor: Sendable {
         let toolCall = try persistence.recordToolCall(runID: runID, toolName: tool.name, arguments: call.arguments, now: clock())
 
         if let shellPolicyViolation = shellPolicyViolation(for: call) {
-            let toolMessage = try persistence.appendMessage(threadID: threadID, runID: runID, role: .tool, content: shellPolicyViolation, now: clock())
+            let toolMessage = try persistence.appendMessage(
+                threadID: threadID,
+                runID: runID,
+                role: .tool,
+                content: ToolResultMessageFormatter.blocked(call: call, reason: shellPolicyViolation),
+                now: clock()
+            )
             try emitter.emit(.messageAppended(runID: runID, messageID: toolMessage.id, role: .tool), runID: runID)
             try persistence.finishToolCall(toolCallID: toolCall.id, status: "blocked", output: shellPolicyViolation, finishedAt: clock())
             try emitter.emit(.toolCallFinished(runID: runID, toolCallID: toolCall.id, success: false, summary: shellPolicyViolation), runID: runID)
@@ -82,7 +94,13 @@ struct ToolExecutor: Sendable {
 
             guard decision.allowed else {
                 try persistence.finishToolCall(toolCallID: toolCall.id, status: "denied", output: decision.reason, finishedAt: clock())
-                let toolMessage = try persistence.appendMessage(threadID: threadID, runID: runID, role: .tool, content: "Tool denied: \(decision.reason)", now: clock())
+                let toolMessage = try persistence.appendMessage(
+                    threadID: threadID,
+                    runID: runID,
+                    role: .tool,
+                    content: ToolResultMessageFormatter.denied(call: call, reason: decision.reason),
+                    now: clock()
+                )
                 try emitter.emit(.messageAppended(runID: runID, messageID: toolMessage.id, role: .tool), runID: runID)
                 throw AshexError.approvalDenied("Execution denied for \(tool.name): \(decision.reason)")
             }
@@ -106,14 +124,26 @@ struct ToolExecutor: Sendable {
             let result = try await tool.execute(arguments: call.arguments, context: toolContext)
             let text = result.displayText
             let metadata = metadata(for: tool, call: call, result: result)
-            let toolMessage = try persistence.appendMessage(threadID: threadID, runID: runID, role: .tool, content: text, now: clock())
+            let toolMessage = try persistence.appendMessage(
+                threadID: threadID,
+                runID: runID,
+                role: .tool,
+                content: ToolResultMessageFormatter.completed(call: call, result: result),
+                now: clock()
+            )
             try emitter.emit(.messageAppended(runID: runID, messageID: toolMessage.id, role: .tool), runID: runID)
             try persistence.finishToolCall(toolCallID: toolCall.id, status: "completed", output: text, finishedAt: clock())
             try emitter.emit(.toolCallFinished(runID: runID, toolCallID: toolCall.id, success: true, summary: text), runID: runID)
             return .completed(output: text, safeToReuse: AgentRuntime.isSafeRepeatedToolCall(toolName: tool.name, arguments: call.arguments), metadata: metadata)
         } catch {
             let message = error.localizedDescription
-            let toolMessage = try persistence.appendMessage(threadID: threadID, runID: runID, role: .tool, content: "Tool error: \(message)", now: clock())
+            let toolMessage = try persistence.appendMessage(
+                threadID: threadID,
+                runID: runID,
+                role: .tool,
+                content: ToolResultMessageFormatter.failure(call: call, error: message),
+                now: clock()
+            )
             try emitter.emit(.messageAppended(runID: runID, messageID: toolMessage.id, role: .tool), runID: runID)
             try persistence.finishToolCall(toolCallID: toolCall.id, status: "failed", output: message, finishedAt: clock())
             try emitter.emit(.toolCallFinished(runID: runID, toolCallID: toolCall.id, success: false, summary: message), runID: runID)
@@ -139,7 +169,10 @@ struct ToolExecutor: Sendable {
             threadID: threadID,
             runID: runID,
             role: .tool,
-            content: "Tool error: \(error.localizedDescription)",
+            content: ToolResultMessageFormatter.failure(
+                call: .init(toolName: "unknown", arguments: [:]),
+                error: error.localizedDescription
+            ),
             now: clock()
         )
         try emitter.emit(.messageAppended(runID: runID, messageID: toolMessage.id, role: .tool), runID: runID)

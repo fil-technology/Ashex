@@ -82,6 +82,10 @@ public protocol DirectChatModelAdapter: ModelAdapter {
     func directReply(history: [MessageRecord], systemPrompt: String) async throws -> String
 }
 
+public protocol TaskPlanningModelAdapter: ModelAdapter {
+    func taskPlan(for prompt: String, taskKind: TaskKind) async throws -> TaskPlan?
+}
+
 private enum ModelPromptRenderer {
     static func responseSchema(for tools: [ToolSchema]) -> JSONObject {
         let argumentNames = Set(defaultArgumentSchemas.keys)
@@ -122,6 +126,41 @@ private enum ModelPromptRenderer {
                 .string("tool_name"),
                 .string("arguments"),
             ]),
+            "additionalProperties": .bool(false),
+        ]
+    }
+
+    static func taskPlanSchema() -> JSONObject {
+        [
+            "type": .string("object"),
+            "properties": .object([
+                "steps": .object([
+                    "type": .string("array"),
+                    "items": .object([
+                        "type": .string("object"),
+                        "properties": .object([
+                            "title": .object([
+                                "type": .string("string"),
+                            ]),
+                            "phase": .object([
+                                "type": .string("string"),
+                                "enum": .array([
+                                    .string("exploration"),
+                                    .string("planning"),
+                                    .string("mutation"),
+                                    .string("validation"),
+                                ]),
+                            ]),
+                        ]),
+                        "required": .array([
+                            .string("title"),
+                            .string("phase"),
+                        ]),
+                        "additionalProperties": .bool(false),
+                    ]),
+                ]),
+            ]),
+            "required": .array([.string("steps")]),
             "additionalProperties": .bool(false),
         ]
     }
@@ -305,8 +344,7 @@ public struct OpenAIResponsesModelAdapter: ModelAdapter {
             throw AshexError.model("OpenAI response did not include structured output text")
         }
 
-        let parsed = try decoder.decode(ModelActionEnvelope.self, from: Data(outputText.utf8))
-        return try parsed.toModelAction()
+        return try ToolInvocationParser.parseAction(from: outputText)
     }
 }
 
@@ -355,6 +393,51 @@ extension OpenAIResponsesModelAdapter: DirectChatModelAdapter {
             throw AshexError.model("OpenAI direct chat did not return a reply")
         }
         return reply
+    }
+}
+
+extension OpenAIResponsesModelAdapter: TaskPlanningModelAdapter {
+    public func taskPlan(for prompt: String, taskKind: TaskKind) async throws -> TaskPlan? {
+        let requestBody = OpenAIResponsesRequest(
+            model: configuration.model,
+            input: """
+            You are planning a software task for an agent.
+            Break the request into a short, concrete ordered task list.
+            Return 2 to 6 steps only when the work is genuinely multi-step.
+            Use phases from: exploration, planning, mutation, validation.
+            Keep each title concise and action-oriented.
+            Task kind: \(taskKind.rawValue)
+
+            User request:
+            \(prompt)
+            """,
+            store: false,
+            text: .init(format: .init(
+                type: "json_schema",
+                name: "ashex_task_plan",
+                strict: true,
+                schema: ModelPromptRenderer.taskPlanSchema()
+            ))
+        )
+
+        var request = URLRequest(url: configuration.baseURL)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(configuration.apiKey)", forHTTPHeaderField: "Authorization")
+        request.httpBody = try encoder.encode(requestBody)
+
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw AshexError.model("OpenAI request did not return an HTTP response")
+        }
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            let apiError = try? decoder.decode(OpenAIErrorEnvelope.self, from: data)
+            throw AshexError.model(apiError?.error.message ?? "OpenAI request failed with status \(httpResponse.statusCode)")
+        }
+        guard let outputText = try decoder.decode(OpenAIResponseEnvelope.self, from: data).outputText, !outputText.isEmpty else {
+            throw AshexError.model("OpenAI planning response did not include structured output text")
+        }
+        return try TaskPlanParser.parsePlan(from: outputText, fallbackTaskKind: taskKind)
     }
 }
 
@@ -573,8 +656,7 @@ public struct OllamaChatModelAdapter: ModelAdapter {
 
         let candidate = DirectChatReplyParser.extractJSONObjectString(from: content) ?? content
         do {
-            let parsed = try decoder.decode(ModelActionEnvelope.self, from: Data(candidate.utf8))
-            return try parsed.toModelAction()
+            return try ToolInvocationParser.parseAction(from: candidate)
         } catch {
             throw AshexError.model("Ollama response did not decode into the expected structured output")
         }
@@ -629,6 +711,52 @@ extension OllamaChatModelAdapter: DirectChatModelAdapter {
             throw AshexError.model("Ollama direct chat did not return a reply")
         }
         return reply
+    }
+}
+
+extension OllamaChatModelAdapter: TaskPlanningModelAdapter {
+    public func taskPlan(for prompt: String, taskKind: TaskKind) async throws -> TaskPlan? {
+        let requestBody = OllamaChatRequest(
+            model: configuration.model,
+            messages: [
+                .init(role: "system", content: """
+                You are planning a software task for an agent.
+                Break the request into a short, concrete ordered task list.
+                Return 2 to 6 steps only when the work is genuinely multi-step.
+                Use phases from: exploration, planning, mutation, validation.
+                Keep each title concise and action-oriented.
+                """),
+                .init(role: "user", content: "Task kind: \(taskKind.rawValue)\n\nUser request:\n\(prompt)")
+            ],
+            format: ModelPromptRenderer.taskPlanSchema(),
+            options: [
+                "temperature": .number(0),
+            ],
+            stream: false
+        )
+
+        var request = URLRequest(url: configuration.baseURL)
+        request.httpMethod = "POST"
+        request.timeoutInterval = TimeInterval(configuration.requestTimeoutSeconds)
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try encoder.encode(requestBody)
+
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw AshexError.model("Ollama request did not return an HTTP response")
+        }
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            let apiError = try? decoder.decode(OllamaErrorEnvelope.self, from: data)
+            throw AshexError.model(apiError?.error ?? "Ollama request failed with status \(httpResponse.statusCode)")
+        }
+
+        let envelope = try decoder.decode(OllamaChatResponseEnvelope.self, from: data)
+        let content = envelope.message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !content.isEmpty else {
+            throw AshexError.model("Ollama planning response did not include structured output content")
+        }
+        let candidate = DirectChatReplyParser.extractJSONObjectString(from: content) ?? content
+        return try TaskPlanParser.parsePlan(from: candidate, fallbackTaskKind: taskKind)
     }
 }
 
@@ -700,8 +828,7 @@ public struct AnthropicMessagesModelAdapter: ModelAdapter {
             throw AshexError.model("Anthropic response did not include structured output text")
         }
 
-        let parsed = try decoder.decode(ModelActionEnvelope.self, from: Data(content.utf8))
-        return try parsed.toModelAction()
+        return try ToolInvocationParser.parseAction(from: content)
     }
 }
 
@@ -739,6 +866,53 @@ extension AnthropicMessagesModelAdapter: DirectChatModelAdapter {
             throw AshexError.model("Anthropic direct chat did not return a reply")
         }
         return reply
+    }
+}
+
+extension AnthropicMessagesModelAdapter: TaskPlanningModelAdapter {
+    public func taskPlan(for prompt: String, taskKind: TaskKind) async throws -> TaskPlan? {
+        let requestBody = AnthropicMessagesRequest(
+            model: configuration.model,
+            maxTokens: 900,
+            system: """
+            You are planning a software task for an agent.
+            Break the request into a short, concrete ordered task list.
+            Return 2 to 6 steps only when the work is genuinely multi-step.
+            Use phases from: exploration, planning, mutation, validation.
+            Keep each title concise and action-oriented.
+            Return only a JSON object with a `steps` array of `{title, phase}` items.
+            """,
+            messages: [
+                .init(role: "user", content: "Task kind: \(taskKind.rawValue)\n\nUser request:\n\(prompt)")
+            ]
+        )
+
+        var request = URLRequest(url: configuration.baseURL)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(configuration.apiKey, forHTTPHeaderField: "x-api-key")
+        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+        request.httpBody = try encoder.encode(requestBody)
+
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw AshexError.model("Anthropic request did not return an HTTP response")
+        }
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            let apiError = try? decoder.decode(AnthropicErrorEnvelope.self, from: data)
+            throw AshexError.model(apiError?.error.message ?? "Anthropic request failed with status \(httpResponse.statusCode)")
+        }
+
+        let envelope = try decoder.decode(AnthropicMessagesResponseEnvelope.self, from: data)
+        let content = envelope.content
+            .filter { $0.type == "text" }
+            .compactMap(\.text)
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !content.isEmpty else {
+            throw AshexError.model("Anthropic planning response did not include structured output text")
+        }
+        return try TaskPlanParser.parsePlan(from: content, fallbackTaskKind: taskKind)
     }
 }
 
@@ -868,6 +1042,12 @@ extension MockModelAdapter: DirectChatModelAdapter {
             return "Hello. How can I help?"
         }
         return "I'm doing well and ready to help. You said: \(lastUserMessage)"
+    }
+}
+
+extension MockModelAdapter: TaskPlanningModelAdapter {
+    public func taskPlan(for prompt: String, taskKind: TaskKind) async throws -> TaskPlan? {
+        TaskPlanner.plan(for: prompt)
     }
 }
 
@@ -1094,7 +1274,30 @@ private enum DirectChatReplyParser {
     }
 }
 
-private enum ToolCallArgumentNormalizer {
+private struct TaskPlanEnvelope: Codable {
+    struct Step: Codable {
+        let title: String
+        let phase: PlannedStepPhase
+    }
+
+    let steps: [Step]
+}
+
+private enum TaskPlanParser {
+    static func parsePlan(from content: String, fallbackTaskKind: TaskKind) throws -> TaskPlan? {
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let candidate = DirectChatReplyParser.extractJSONObjectString(from: trimmed) ?? trimmed
+        let envelope = try JSONDecoder().decode(TaskPlanEnvelope.self, from: Data(candidate.utf8))
+        let plan = TaskPlan(
+            steps: envelope.steps.map { PlannedStep(title: $0.title, phase: $0.phase) },
+            taskKind: fallbackTaskKind
+        )
+        return TaskPlanner.normalize(plan: plan, fallbackTaskKind: fallbackTaskKind)
+    }
+}
+
+enum ToolCallArgumentNormalizer {
     static func canonicalToolName(for toolName: String) -> String {
         switch toolName.lowercased() {
         case "filesystem", "file_system", "files", "file":
