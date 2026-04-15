@@ -232,26 +232,27 @@ struct CLIConfiguration {
     }
 
     func makeModelAdapter(provider: String, model: String) throws -> any ModelAdapter {
+        let baseAdapter: any ModelAdapter
         switch provider {
         case "mock":
-            return MockModelAdapter()
+            baseAdapter = MockModelAdapter()
         case "openai":
             guard let apiKey = try resolvedAPIKey(for: "openai"), !apiKey.isEmpty else {
                 throw AshexError.model("OPENAI_API_KEY is required when --provider openai is used")
             }
-            return OpenAIResponsesModelAdapter(
+            baseAdapter = OpenAIResponsesModelAdapter(
                 configuration: .init(apiKey: apiKey, model: model)
             )
         case "anthropic":
             guard let apiKey = try resolvedAPIKey(for: "anthropic"), !apiKey.isEmpty else {
                 throw AshexError.model("ANTHROPIC_API_KEY is required when --provider anthropic is used")
             }
-            return AnthropicMessagesModelAdapter(
+            baseAdapter = AnthropicMessagesModelAdapter(
                 configuration: .init(apiKey: apiKey, model: model)
             )
         case "dflash":
             try Self.validateDFlashSupport()
-            return DFlashServerModelAdapter(
+            baseAdapter = DFlashServerModelAdapter(
                 configuration: .init(
                     model: model,
                     baseURL: Self.dflashBaseURL(config: userConfig.dflash),
@@ -260,7 +261,7 @@ struct CLIConfiguration {
                 )
             )
         case "ollama":
-            return OllamaChatModelAdapter(
+            baseAdapter = OllamaChatModelAdapter(
                 configuration: .init(
                     model: model,
                     baseURL: URL(string: ProcessInfo.processInfo.environment["OLLAMA_BASE_URL"] ?? "http://localhost:11434/api/chat")!,
@@ -270,6 +271,8 @@ struct CLIConfiguration {
         default:
             throw AshexError.model("Unsupported provider '\(provider)'. Supported: mock, openai, anthropic, ollama, dflash")
         }
+
+        return makeOptimizedAdapterIfNeeded(baseAdapter: baseAdapter, provider: provider, model: model)
     }
 
     func makeRuntime() throws -> AgentRuntime {
@@ -350,6 +353,7 @@ struct CLIConfiguration {
     func validateModelGuardrails() async throws {
         guard provider == "ollama" else { return }
         if ProcessInfo.processInfo.environment["ASHEX_ALLOW_LARGE_MODELS"] == "1" { return }
+        if shouldUseEshBridge(provider: provider) { return }
 
         let catalog = try await OllamaCatalogClient().fetchModels(baseURL: Self.ollamaBaseURL())
         let assessment = LocalModelGuardrails.assessOllamaModel(model: model, installedModels: catalog)
@@ -396,6 +400,54 @@ struct CLIConfiguration {
             return parsed
         }
         return config.requestTimeoutSeconds
+    }
+
+    private func makeOptimizedAdapterIfNeeded(
+        baseAdapter: any ModelAdapter,
+        provider: String,
+        model: String
+    ) -> any ModelAdapter {
+        guard let executablePath = resolvedEshExecutablePathIfEnabled(for: provider) else {
+            return baseAdapter
+        }
+
+        let optimization = userConfig.optimization
+        let inspector = EshOptimizationInspector()
+        guard FileManager.default.fileExists(atPath: executablePath) else {
+            return baseAdapter
+        }
+        let homePath = inspector.resolveHomePath(config: optimization.esh)
+        let repoRootPath = optimization.esh.repoRootPath ?? workspaceRoot.path
+
+        return EshBackedModelAdapter(
+            configuration: .init(
+                executablePath: executablePath,
+                homePath: homePath,
+                repoRootPath: repoRootPath,
+                model: model,
+                providerID: provider,
+                optimization: optimization,
+                requestTimeoutSeconds: Self.ollamaRequestTimeoutSeconds(config: userConfig.ollama)
+            ),
+            fallback: baseAdapter
+        )
+    }
+
+    private func shouldUseEshBridge(provider: String) -> Bool {
+        resolvedEshExecutablePathIfEnabled(for: provider) != nil
+    }
+
+    private func resolvedEshExecutablePathIfEnabled(for provider: String) -> String? {
+        guard provider == "ollama" else { return nil }
+        let optimization = userConfig.optimization
+        guard optimization.enabled, optimization.backend == .esh else { return nil }
+
+        let inspector = EshOptimizationInspector()
+        guard let executablePath = inspector.resolveExecutablePath(config: optimization.esh),
+              FileManager.default.fileExists(atPath: executablePath) else {
+            return nil
+        }
+        return executablePath
     }
 
     func resolvedAPIKey(for provider: String) throws -> String? {

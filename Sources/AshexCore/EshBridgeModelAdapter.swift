@@ -1,0 +1,551 @@
+import Foundation
+
+public struct EshBridgeConfiguration: Sendable, Equatable {
+    public let executablePath: String
+    public let homePath: String
+    public let repoRootPath: String
+    public let model: String
+    public let providerID: String
+    public let optimization: OptimizationConfig
+    public let requestTimeoutSeconds: Int
+
+    public init(
+        executablePath: String,
+        homePath: String,
+        repoRootPath: String,
+        model: String,
+        providerID: String,
+        optimization: OptimizationConfig,
+        requestTimeoutSeconds: Int = 180
+    ) {
+        self.executablePath = executablePath
+        self.homePath = homePath
+        self.repoRootPath = repoRootPath
+        self.model = model
+        self.providerID = providerID
+        self.optimization = optimization
+        self.requestTimeoutSeconds = requestTimeoutSeconds
+    }
+}
+
+public struct EshBackedModelAdapter: ModelAdapter {
+    public let name: String
+    public var providerID: String { configuration.providerID }
+    public var modelID: String { configuration.model }
+
+    private let configuration: EshBridgeConfiguration
+    private let fallback: any ModelAdapter
+    private let runner: any EshCommandRunning
+    private let now: @Sendable () -> Date
+    private let makeUUID: @Sendable () -> UUID
+    private let createDirectory: @Sendable (URL) throws -> Void
+    private let removeItem: @Sendable (URL) throws -> Void
+
+    public init(
+        configuration: EshBridgeConfiguration,
+        fallback: any ModelAdapter
+    ) {
+        self.init(
+            configuration: configuration,
+            fallback: fallback,
+            runner: nil,
+            now: Date.init,
+            makeUUID: UUID.init,
+            createDirectory: { url in
+                try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+            },
+            removeItem: { url in
+                try FileManager.default.removeItem(at: url)
+            }
+        )
+    }
+
+    init(
+        configuration: EshBridgeConfiguration,
+        fallback: any ModelAdapter,
+        runner: (any EshCommandRunning)? = nil,
+        now: @escaping @Sendable () -> Date = Date.init,
+        makeUUID: @escaping @Sendable () -> UUID = UUID.init,
+        createDirectory: @escaping @Sendable (URL) throws -> Void,
+        removeItem: @escaping @Sendable (URL) throws -> Void
+    ) {
+        self.configuration = configuration
+        self.fallback = fallback
+        self.runner = runner ?? DefaultEshCommandRunner()
+        self.now = now
+        self.makeUUID = makeUUID
+        self.createDirectory = createDirectory
+        self.removeItem = removeItem
+        self.name = "esh-bridge:\(configuration.providerID):\(configuration.model)"
+    }
+
+    public func nextAction(for context: ModelContext) async throws -> ModelAction {
+        let assembly = PromptBuilder.build(for: context, provider: providerID, model: modelID)
+        let prompt = context.messages.last(where: { $0.role == .user })?.content ?? assembly.userPrompt
+
+        do {
+            let reply = try await runEsh(
+                systemPrompt: assembly.systemPrompt,
+                history: Array(context.messages.dropLast()),
+                message: assembly.userPrompt,
+                taskKind: TaskPlanner.classify(prompt: prompt),
+                taskPrompt: prompt
+            )
+            return try ToolInvocationParser.parseAction(from: reply)
+        } catch {
+            return try await fallback.nextAction(for: context)
+        }
+    }
+}
+
+extension EshBackedModelAdapter: DirectChatModelAdapter {
+    public func directReply(history: [MessageRecord], systemPrompt: String) async throws -> String {
+        let latestUserMessage = history.last(where: { $0.role == .user })?.content ?? "Continue the conversation."
+        let priorHistory = dropTrailingUserMessageIfPresent(from: history)
+
+        do {
+            let reply = try await runEsh(
+                systemPrompt: systemPrompt,
+                history: priorHistory,
+                message: latestUserMessage,
+                taskKind: .analysis,
+                taskPrompt: latestUserMessage
+            )
+            if let parsed = EshBridgeReplyParser.parseReply(from: reply) {
+                return parsed
+            }
+            throw AshexError.model("esh direct chat reply was empty")
+        } catch {
+            guard let fallback = fallback as? any DirectChatModelAdapter else {
+                throw error
+            }
+            return try await fallback.directReply(history: history, systemPrompt: systemPrompt)
+        }
+    }
+}
+
+extension EshBackedModelAdapter: TaskPlanningModelAdapter {
+    public func taskPlan(for prompt: String, taskKind: TaskKind) async throws -> TaskPlan? {
+        let systemPrompt = """
+        You are planning a software task for an agent.
+        Break the request into a short, concrete ordered task list.
+        Return 2 to 6 steps only when the work is genuinely multi-step.
+        Use phases from: exploration, planning, mutation, validation.
+        Keep each title concise and action-oriented.
+        Return only a JSON object with a `steps` array of `{title, phase}` items.
+        """
+        let message = "Task kind: \(taskKind.rawValue)\n\nUser request:\n\(prompt)"
+
+        do {
+            let reply = try await runEsh(
+                systemPrompt: systemPrompt,
+                history: [],
+                message: message,
+                taskKind: taskKind,
+                taskPrompt: prompt
+            )
+            return try EshBridgeReplyParser.parseTaskPlan(from: reply, fallbackTaskKind: taskKind)
+        } catch {
+            guard let fallback = fallback as? any TaskPlanningModelAdapter else {
+                throw error
+            }
+            return try await fallback.taskPlan(for: prompt, taskKind: taskKind)
+        }
+    }
+}
+
+private extension EshBackedModelAdapter {
+    func runEsh(
+        systemPrompt: String,
+        history: [MessageRecord],
+        message: String,
+        taskKind: TaskKind,
+        taskPrompt: String
+    ) async throws -> String {
+        let sessionID = makeUUID()
+        let now = now()
+        let sessionURL = try writeSession(
+            id: sessionID,
+            systemPrompt: systemPrompt,
+            history: history,
+            timestamp: now,
+            taskKind: taskKind,
+            taskPrompt: taskPrompt
+        )
+
+        var artifactID: String?
+        defer {
+            try? cleanup(sessionURL: sessionURL, artifactID: artifactID)
+        }
+
+        let resolution = resolveOptimization(taskKind: taskKind, prompt: taskPrompt)
+        let buildCommand = EshCommandBuilder.buildCommand(
+            executablePath: configuration.executablePath,
+            homePath: configuration.homePath,
+            sessionID: sessionID.uuidString,
+            mode: resolution.mode,
+            intent: resolvedIntent(taskKind: taskKind, prompt: taskPrompt),
+            model: configuration.model,
+            task: taskPrompt
+        )
+        let buildResult = try await runner.run(
+            command: buildCommand,
+            workspaceURL: URL(fileURLWithPath: configuration.repoRootPath, isDirectory: true),
+            timeout: TimeInterval(configuration.requestTimeoutSeconds)
+        )
+        guard buildResult.exitCode == 0, !buildResult.timedOut else {
+            throw AshexError.model("esh cache build failed: \(buildResult.stderr.trimmingCharacters(in: .whitespacesAndNewlines))")
+        }
+
+        let buildMetadata = try EshBridgeOutputParser.parseMetadataBlock(from: buildResult.stdout)
+        guard let artifact = buildMetadata["artifact"], !artifact.isEmpty else {
+            throw AshexError.model("esh cache build did not return an artifact identifier")
+        }
+        artifactID = artifact
+
+        let loadCommand = EshCommandBuilder.loadCommand(
+            executablePath: configuration.executablePath,
+            homePath: configuration.homePath,
+            artifactID: artifact,
+            model: configuration.model,
+            message: message
+        )
+        let loadResult = try await runner.run(
+            command: loadCommand,
+            workspaceURL: URL(fileURLWithPath: configuration.repoRootPath, isDirectory: true),
+            timeout: TimeInterval(configuration.requestTimeoutSeconds)
+        )
+        guard loadResult.exitCode == 0, !loadResult.timedOut else {
+            throw AshexError.model("esh cache load failed: \(loadResult.stderr.trimmingCharacters(in: .whitespacesAndNewlines))")
+        }
+
+        let reply = EshBridgeOutputParser.stripMetadataTrailer(from: loadResult.stdout)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !reply.isEmpty else {
+            throw AshexError.model("esh cache load did not return a reply")
+        }
+        return reply
+    }
+
+    func resolveOptimization(taskKind: TaskKind, prompt: String) -> ContextOptimizationResolution {
+        let doctor = EshOptimizationInspector().doctor(
+            provider: configuration.providerID,
+            model: configuration.model,
+            taskKind: taskKind,
+            prompt: prompt,
+            config: configuration.optimization
+        )
+        return ContextOptimizationAdvisor().resolve(
+            taskKind: taskKind,
+            prompt: prompt,
+            provider: configuration.providerID,
+            model: configuration.model,
+            config: configuration.optimization,
+            calibrationAvailable: doctor.calibrationAvailable
+        )
+    }
+
+    func resolvedIntent(taskKind: TaskKind, prompt: String) -> ContextOptimizationIntent {
+        let configured = configuration.optimization.intent
+        if configured != .agentRun {
+            return configured
+        }
+
+        switch taskKind {
+        case .bugFix, .feature, .refactor:
+            return .code
+        case .analysis where TaskPlanner.shouldAttemptModelPlanning(for: prompt):
+            return .agentRun
+        case .analysis, .general, .docs, .git, .shell:
+            return .chat
+        }
+    }
+
+    func writeSession(
+        id: UUID,
+        systemPrompt: String,
+        history: [MessageRecord],
+        timestamp: Date,
+        taskKind: TaskKind,
+        taskPrompt: String
+    ) throws -> URL {
+        let sessionsDirectory = URL(fileURLWithPath: configuration.homePath, isDirectory: true)
+            .appendingPathComponent("sessions", isDirectory: true)
+        try createDirectory(sessionsDirectory)
+
+        let sessionURL = sessionsDirectory.appendingPathComponent("\(id.uuidString).json")
+        let session = EshSessionRecord(
+            id: id,
+            name: "Ashex \(taskKind.rawValue)",
+            modelID: configuration.model,
+            backend: nil,
+            cacheMode: resolveOptimization(taskKind: taskKind, prompt: taskPrompt).mode.rawValue,
+            intent: resolvedIntent(taskKind: taskKind, prompt: taskPrompt).rawValue,
+            autosaveEnabled: false,
+            messages: buildMessages(systemPrompt: systemPrompt, history: history, timestamp: timestamp),
+            createdAt: timestamp,
+            updatedAt: timestamp
+        )
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(session).write(to: sessionURL, options: .atomic)
+        return sessionURL
+    }
+
+    func buildMessages(systemPrompt: String, history: [MessageRecord], timestamp: Date) -> [EshSessionRecord.Message] {
+        let systemMessage = EshSessionRecord.Message(
+            id: makeUUID(),
+            role: "system",
+            text: systemPrompt,
+            createdAt: timestamp
+        )
+
+        let mappedHistory = history.suffix(12).map { record in
+            EshSessionRecord.Message(
+                id: record.id,
+                role: record.role.rawValue,
+                text: record.content,
+                createdAt: record.createdAt
+            )
+        }
+        return [systemMessage] + mappedHistory
+    }
+
+    func cleanup(sessionURL: URL, artifactID: String?) throws {
+        try? removeItem(sessionURL)
+
+        guard let artifactID, !artifactID.isEmpty else { return }
+
+        let homeURL = URL(fileURLWithPath: configuration.homePath, isDirectory: true)
+        let manifestURL = homeURL
+            .appendingPathComponent("caches", isDirectory: true)
+            .appendingPathComponent("manifests", isDirectory: true)
+            .appendingPathComponent("\(artifactID).json")
+        let payloadURL = homeURL
+            .appendingPathComponent("caches", isDirectory: true)
+            .appendingPathComponent("payloads", isDirectory: true)
+            .appendingPathComponent("\(artifactID).bin")
+
+        try? removeItem(manifestURL)
+        try? removeItem(payloadURL)
+    }
+
+    func dropTrailingUserMessageIfPresent(from history: [MessageRecord]) -> [MessageRecord] {
+        guard history.last?.role == .user else { return history }
+        return Array(history.dropLast())
+    }
+}
+
+private struct EshSessionRecord: Codable {
+    struct Message: Codable {
+        let id: UUID
+        let role: String
+        let text: String
+        let createdAt: Date
+    }
+
+    let id: UUID
+    let name: String
+    let modelID: String?
+    let backend: String?
+    let cacheMode: String?
+    let intent: String?
+    let autosaveEnabled: Bool?
+    let messages: [Message]
+    let createdAt: Date
+    let updatedAt: Date
+}
+
+protocol EshCommandRunning: Sendable {
+    func run(command: String, workspaceURL: URL, timeout: TimeInterval) async throws -> ShellExecutionResult
+}
+
+private struct DefaultEshCommandRunner: EshCommandRunning {
+    private let runtime = ProcessExecutionRuntime()
+
+    func run(command: String, workspaceURL: URL, timeout: TimeInterval) async throws -> ShellExecutionResult {
+        try await runtime.execute(
+            .init(command: command, workspaceURL: workspaceURL, timeout: timeout),
+            cancellationToken: CancellationToken(),
+            onStdout: { _ in },
+            onStderr: { _ in }
+        )
+    }
+}
+
+enum EshBridgeOutputParser {
+    static func parseMetadataBlock(from stdout: String) throws -> [String: String] {
+        let pairs = stdout
+            .split(whereSeparator: \.isNewline)
+            .compactMap { line -> (String, String)? in
+                guard let separator = line.firstIndex(of: ":") else { return nil }
+                let key = line[..<separator].trimmingCharacters(in: .whitespacesAndNewlines)
+                let value = line[line.index(after: separator)...].trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !key.isEmpty else { return nil }
+                return (key, value)
+            }
+        guard !pairs.isEmpty else {
+            throw AshexError.model("esh did not return a metadata block")
+        }
+        return Dictionary(uniqueKeysWithValues: pairs)
+    }
+
+    static func stripMetadataTrailer(from stdout: String) -> String {
+        var lines = stdout.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        while let last = lines.last, last.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            lines.removeLast()
+        }
+        while let last = lines.last, isMetadataLine(last) {
+            lines.removeLast()
+        }
+        while let last = lines.last, last.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            lines.removeLast()
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private static func isMetadataLine(_ line: String) -> Bool {
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let separator = trimmed.firstIndex(of: ":") else { return false }
+        let key = trimmed[..<separator].lowercased()
+        return key == "artifact"
+            || key == "requested_mode"
+            || key == "mode"
+            || key == "intent"
+            || key == "policy"
+            || key == "size"
+            || key == "snapshot"
+            || key == "reply_chars"
+            || key == "ttft_ms"
+            || key == "tok_s"
+            || key.hasPrefix("context_")
+    }
+}
+
+private enum EshBridgeReplyParser {
+    static func parseReply(from content: String) -> String? {
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        if let candidate = extractJSONObjectString(from: trimmed),
+           let payload = try? JSONSerialization.jsonObject(with: Data(candidate.utf8)) as? [String: Any],
+           let reply = payload["reply"] as? String {
+            let normalized = reply.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !normalized.isEmpty {
+                return normalized
+            }
+        }
+
+        return trimmed
+    }
+
+    static func parseTaskPlan(from content: String, fallbackTaskKind: TaskKind) throws -> TaskPlan? {
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let candidate = extractJSONObjectString(from: trimmed) ?? trimmed
+        let envelope = try JSONDecoder().decode(EshTaskPlanEnvelope.self, from: Data(candidate.utf8))
+        let plan = TaskPlan(
+            steps: envelope.steps.map { PlannedStep(title: $0.title, phase: $0.phase) },
+            taskKind: fallbackTaskKind
+        )
+        return TaskPlanner.normalize(plan: plan, fallbackTaskKind: fallbackTaskKind)
+    }
+
+    private static func extractJSONObjectString(from content: String) -> String? {
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("{"), trimmed.hasSuffix("}") {
+            return trimmed
+        }
+
+        if let fencedRange = trimmed.range(of: "```") {
+            let afterFence = trimmed[fencedRange.upperBound...]
+            let withoutLanguage = afterFence.hasPrefix("json")
+                ? afterFence.dropFirst(4)
+                : afterFence
+            if let closingFence = withoutLanguage.range(of: "```") {
+                let inner = withoutLanguage[..<closingFence.lowerBound]
+                let candidate = inner.trimmingCharacters(in: .whitespacesAndNewlines)
+                if candidate.hasPrefix("{"), candidate.hasSuffix("}") {
+                    return candidate
+                }
+            }
+        }
+
+        guard let start = trimmed.firstIndex(of: "{"),
+              let end = trimmed.lastIndex(of: "}"),
+              start < end else {
+            return nil
+        }
+        let candidate = String(trimmed[start...end]).trimmingCharacters(in: .whitespacesAndNewlines)
+        return candidate.hasPrefix("{") && candidate.hasSuffix("}") ? candidate : nil
+    }
+}
+
+private struct EshTaskPlanEnvelope: Codable {
+    struct Step: Codable {
+        let title: String
+        let phase: PlannedStepPhase
+    }
+
+    let steps: [Step]
+}
+
+private enum EshCommandBuilder {
+    static func buildCommand(
+        executablePath: String,
+        homePath: String,
+        sessionID: String,
+        mode: ContextOptimizationMode,
+        intent: ContextOptimizationIntent,
+        model: String,
+        task: String
+    ) -> String {
+        var parts = [
+            "env",
+            "ESH_HOME=\(quote(homePath))",
+            quote(executablePath),
+            "cache",
+            "build",
+            "--session",
+            quote(sessionID),
+            "--mode",
+            quote(mode.rawValue),
+            "--intent",
+            quote(intent.rawValue),
+            "--model",
+            quote(model),
+        ]
+        if !task.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            parts.append(contentsOf: ["--task", quote(task)])
+        }
+        return parts.joined(separator: " ")
+    }
+
+    static func loadCommand(
+        executablePath: String,
+        homePath: String,
+        artifactID: String,
+        model: String,
+        message: String
+    ) -> String {
+        [
+            "env",
+            "ESH_HOME=\(quote(homePath))",
+            quote(executablePath),
+            "cache",
+            "load",
+            "--artifact",
+            quote(artifactID),
+            "--model",
+            quote(model),
+            "--message",
+            quote(message),
+        ].joined(separator: " ")
+    }
+
+    static func quote(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+}

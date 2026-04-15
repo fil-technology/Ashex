@@ -1,4 +1,5 @@
 @testable import AshexCLI
+import AshexCore
 import Foundation
 import Testing
 
@@ -26,4 +27,29 @@ import Testing
     let configuration = try CLIConfiguration(arguments: ["ashex", "--workspace", workspace.path, "--provider", "dflash"])
     #expect(configuration.provider == "dflash")
     #expect(configuration.model == "Qwen/Qwen3.5-4B")
+}
+
+@Test func cliConfigurationUsesEshBridgeForEnabledOptimizedOllama() throws {
+    let workspace = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+
+    let config = AshexUserConfig(
+        optimization: .init(
+            enabled: true,
+            backend: .esh,
+            mode: .automatic,
+            intent: .agentRun,
+            esh: .init(
+                executablePath: "/bin/echo",
+                homePath: workspace.appendingPathComponent(".esh").path,
+                repoRootPath: workspace.path
+            )
+        )
+    )
+    try UserConfigStore.write(config, to: workspace.appendingPathComponent(UserConfigStore.fileName))
+
+    let configuration = try CLIConfiguration(arguments: ["ashex", "--workspace", workspace.path, "--provider", "ollama", "--model", "qwen2.5-coder:7b"])
+    let adapter = try configuration.makeModelAdapter()
+
+    #expect(adapter.name.hasPrefix("esh-bridge:ollama:qwen2.5-coder:7b"))
 }
