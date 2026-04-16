@@ -89,6 +89,60 @@ struct OpenAIResponsesModelAdapterTests {
         #expect(reply == "I'm doing well. How can I help?")
     }
 
+    @Test func directReplyRetriesWhenStructuredReplyIsEmpty() async throws {
+        let session = makeStubbedSession(responses: [
+            (
+                200,
+                """
+                {
+                  "output": [
+                    {
+                      "content": [
+                        {
+                          "type": "output_text",
+                          "text": "{\\"reply\\":\\"\\"}"
+                        }
+                      ]
+                    }
+                  ]
+                }
+                """
+            ),
+            (
+                200,
+                """
+                {
+                  "output": [
+                    {
+                      "content": [
+                        {
+                          "type": "output_text",
+                          "text": "{\\"reply\\":\\"This repo looks like a skill pack for ASO-related workflows.\\"}"
+                        }
+                      ]
+                    }
+                  ]
+                }
+                """
+            ),
+        ])
+
+        let adapter = OpenAIResponsesModelAdapter(
+            configuration: .init(apiKey: "test-key", model: "gpt-5.4-mini", baseURL: URL(string: "https://example.com/v1/responses")!),
+            session: session
+        )
+
+        let reply = try await adapter.directReply(
+            history: [
+                .init(id: UUID(), threadID: UUID(), runID: UUID(), role: .user, content: "What this repo is about: https://github.com/Eronred/aso-skills", createdAt: Date())
+            ],
+            systemPrompt: "You are helpful."
+        )
+
+        #expect(reply == "This repo looks like a skill pack for ASO-related workflows.")
+        #expect(StubURLProtocol.state.requestCount == 2)
+    }
+
     @Test func parsesStructuredTaskPlanOutput() async throws {
         let session = makeStubbedSession(statusCode: 200, body: """
         {
@@ -135,7 +189,14 @@ private func sampleContext() -> ModelContext {
 }
 
 private func makeStubbedSession(statusCode: Int, body: String) -> URLSession {
-    StubURLProtocol.state.set(statusCode: statusCode, body: body)
+    StubURLProtocol.state.setResponses([(statusCode, body)])
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [StubURLProtocol.self]
+    return URLSession(configuration: configuration)
+}
+
+private func makeStubbedSession(responses: [(Int, String)]) -> URLSession {
+    StubURLProtocol.state.setResponses(responses)
     let configuration = URLSessionConfiguration.ephemeral
     configuration.protocolClasses = [StubURLProtocol.self]
     return URLSession(configuration: configuration)
@@ -171,19 +232,22 @@ private final class StubURLProtocol: URLProtocol, @unchecked Sendable {
 
 private final class StubResponseState: @unchecked Sendable {
     private let lock = NSLock()
-    private var statusCode = 200
-    private var body = ""
+    private var responses: [(statusCode: Int, body: String)] = [(200, "")]
+    private(set) var requestCount = 0
 
-    func set(statusCode: Int, body: String) {
+    func setResponses(_ responses: [(Int, String)]) {
         lock.lock()
-        self.statusCode = statusCode
-        self.body = body
+        self.responses = responses.map { (statusCode: $0.0, body: $0.1) }
+        self.requestCount = 0
         lock.unlock()
     }
 
     func snapshot() -> (statusCode: Int, body: String) {
         lock.lock()
         defer { lock.unlock() }
-        return (statusCode, body)
+        let index = min(requestCount, max(responses.count - 1, 0))
+        let response = responses[index]
+        requestCount += 1
+        return response
     }
 }

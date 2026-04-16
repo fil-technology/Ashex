@@ -430,15 +430,40 @@ private enum EshBridgeReplyParser {
         guard !trimmed.isEmpty else { return nil }
 
         if let candidate = extractJSONObjectString(from: trimmed),
-           let payload = try? JSONSerialization.jsonObject(with: Data(candidate.utf8)) as? [String: Any],
-           let reply = payload["reply"] as? String {
-            let normalized = reply.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !normalized.isEmpty {
+           let payload = try? JSONSerialization.jsonObject(with: Data(candidate.utf8)) as? [String: Any] {
+            if let reply = payload["reply"] as? String {
+                let normalized = reply.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !normalized.isEmpty, !looksLikeInternalReasoning(normalized) else { return nil }
                 return normalized
             }
+            return nil
         }
 
+        guard !looksLikeInternalReasoning(trimmed) else { return nil }
         return trimmed
+    }
+
+    private static func looksLikeInternalReasoning(_ text: String) -> Bool {
+        let lowered = text.lowercased()
+        let markers = [
+            "the user is asking",
+            "i need to analyze",
+            "i need to",
+            "i should provide",
+            "i should",
+            "let me think",
+            "i can infer",
+            "based on the context",
+            "or simulate the analysis",
+            "common github repo structures",
+            "the name gives a strong hint",
+        ]
+        let matches = markers.reduce(into: 0) { partial, marker in
+            if lowered.contains(marker) {
+                partial += 1
+            }
+        }
+        return matches >= 2
     }
 
     static func parseTaskPlan(from content: String, fallbackTaskKind: TaskKind) throws -> TaskPlan? {

@@ -35,6 +35,57 @@ struct DFlashServerModelAdapterTests {
         #expect(reply == "Doing well. How can I help?")
     }
 
+    @Test func directReplyRetriesWhenModelLeaksInternalReasoning() async throws {
+        let session = makeDFlashStubbedSession(responses: [
+            (
+                200,
+                """
+                {
+                  "choices": [
+                    {
+                      "message": {
+                        "content": "The user is asking for a summary of a GitHub repository. I need to analyze the repository content and infer what it is about."
+                      }
+                    }
+                  ]
+                }
+                """
+            ),
+            (
+                200,
+                """
+                {
+                  "choices": [
+                    {
+                      "message": {
+                        "content": "It looks like a repository of ASO-related skills and prompts."
+                      }
+                    }
+                  ]
+                }
+                """
+            ),
+        ])
+
+        let adapter = DFlashServerModelAdapter(
+            configuration: .init(
+                model: "Qwen/Qwen3.5-4B",
+                baseURL: URL(string: "http://127.0.0.1:8000")!
+            ),
+            session: session
+        )
+
+        let reply = try await adapter.directReply(
+            history: [
+                .init(id: UUID(), threadID: UUID(), runID: UUID(), role: .user, content: "What this repo is about: https://github.com/Eronred/aso-skills", createdAt: Date())
+            ],
+            systemPrompt: "You are helpful."
+        )
+
+        #expect(reply == "It looks like a repository of ASO-related skills and prompts.")
+        #expect(DFlashStubURLProtocol.state.requestCount == 2)
+    }
+
     @Test func toolModeIsExplicitlyUnsupportedForNow() async throws {
         let adapter = DFlashServerModelAdapter(
             configuration: .init(model: "Qwen/Qwen3.5-4B")
@@ -58,7 +109,14 @@ struct DFlashServerModelAdapterTests {
 }
 
 private func makeDFlashStubbedSession(statusCode: Int, body: String) -> URLSession {
-    DFlashStubURLProtocol.state.set(statusCode: statusCode, body: body)
+    DFlashStubURLProtocol.state.setResponses([(statusCode, body)])
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [DFlashStubURLProtocol.self]
+    return URLSession(configuration: configuration)
+}
+
+private func makeDFlashStubbedSession(responses: [(Int, String)]) -> URLSession {
+    DFlashStubURLProtocol.state.setResponses(responses)
     let configuration = URLSessionConfiguration.ephemeral
     configuration.protocolClasses = [DFlashStubURLProtocol.self]
     return URLSession(configuration: configuration)
@@ -94,19 +152,22 @@ private final class DFlashStubURLProtocol: URLProtocol, @unchecked Sendable {
 
 private final class DFlashStubResponseState: @unchecked Sendable {
     private let lock = NSLock()
-    private var statusCode = 200
-    private var body = ""
+    private var responses: [(statusCode: Int, body: String)] = [(200, "")]
+    private(set) var requestCount = 0
 
-    func set(statusCode: Int, body: String) {
+    func setResponses(_ responses: [(Int, String)]) {
         lock.lock()
-        self.statusCode = statusCode
-        self.body = body
+        self.responses = responses.map { (statusCode: $0.0, body: $0.1) }
+        self.requestCount = 0
         lock.unlock()
     }
 
     func snapshot() -> (statusCode: Int, body: String) {
         lock.lock()
         defer { lock.unlock() }
-        return (statusCode, body)
+        let index = min(requestCount, max(responses.count - 1, 0))
+        let response = responses[index]
+        requestCount += 1
+        return response
     }
 }

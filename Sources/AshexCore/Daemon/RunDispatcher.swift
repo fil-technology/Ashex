@@ -11,12 +11,16 @@ public struct RunDispatchResult: Sendable, Equatable {
 }
 
 public actor RunDispatcher {
-    private let runtime: RuntimeStreaming
+    private var runtime: RuntimeStreaming
     private let logger: DaemonLogger?
 
     public init(runtime: RuntimeStreaming, logger: DaemonLogger? = nil) {
         self.runtime = runtime
         self.logger = logger
+    }
+
+    public func replaceRuntime(_ runtime: RuntimeStreaming) {
+        self.runtime = runtime
     }
 
     public func dispatch(prompt: String, threadID: UUID, maxIterations: Int) async throws -> RunDispatchResult {

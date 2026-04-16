@@ -123,6 +123,36 @@ enum DaemonCLI {
             logger: logger,
             maxIterations: configuration.maxIterations
         )
+        let listModels: (@Sendable () async throws -> [String])?
+        if configuration.provider == "ollama" {
+            listModels = {
+                let models = try await OllamaCatalogClient().fetchModels(baseURL: CLIConfiguration.ollamaBaseURL())
+                return models.map(\.name).sorted()
+            }
+        } else {
+            listModels = nil
+        }
+        let switchModel: @Sendable (String) async throws -> Void = { requestedModel in
+            let updatedRuntime = try configuration.makeRuntime(
+                persistence: persistence,
+                provider: configuration.provider,
+                model: requestedModel,
+                approvalPolicy: ConnectorApprovalPolicy(
+                    policyMode: configuration.userConfig.telegram.executionPolicy,
+                    connectorName: "telegram",
+                    remoteApprovalInbox: remoteApprovalInbox,
+                    runStore: runStore
+                )
+            )
+            await dispatcher.replaceRuntime(updatedRuntime)
+            let now = Date()
+            try persistence.upsertSetting(namespace: "ui.session", key: "default_provider", value: .string(configuration.provider), now: now)
+            try persistence.upsertSetting(namespace: "ui.session", key: "default_model", value: .string(requestedModel), now: now)
+        }
+        let modelControl = DaemonModelControl(
+            listModels: listModels,
+            switchModel: switchModel
+        )
         let supervisor = DaemonSupervisor(
             registry: registry,
             router: router,
@@ -131,6 +161,7 @@ enum DaemonCLI {
             logger: logger,
             runStore: runStore,
             remoteApprovalInbox: remoteApprovalInbox,
+            modelControl: modelControl,
             config: .init(
                 maxIterations: configuration.maxIterations,
                 connectorLabel: "telegram",

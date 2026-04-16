@@ -351,9 +351,26 @@ public struct OpenAIResponsesModelAdapter: ModelAdapter {
 extension OpenAIResponsesModelAdapter: DirectChatModelAdapter {
     public func directReply(history: [MessageRecord], systemPrompt: String) async throws -> String {
         let transcript = Self.directChatTranscript(from: history)
+        do {
+            return try await requestDirectReply(transcript: transcript, systemPrompt: systemPrompt, repair: false)
+        } catch let error as AshexError {
+            let message = error.localizedDescription.lowercased()
+            guard message.contains("did not return a reply") else { throw error }
+            return try await requestDirectReply(transcript: transcript, systemPrompt: systemPrompt, repair: true)
+        }
+    }
+
+    private func requestDirectReply(
+        transcript: String,
+        systemPrompt: String,
+        repair: Bool
+    ) async throws -> String {
+        let repairSuffix = repair
+            ? "\n\nYour previous reply was empty. Reply again with a non-empty `reply` string."
+            : ""
         let requestBody = OpenAIResponsesRequest(
             model: configuration.model,
-            input: "\(systemPrompt)\n\nConversation:\n\(transcript)\n\nReply naturally to the latest user message. Do not call tools or emit JSON.",
+            input: "\(systemPrompt)\n\nConversation:\n\(transcript)\n\nReply naturally to the latest user message. Do not call tools or emit JSON.\(repairSuffix)",
             store: false,
             text: .init(format: .init(
                 type: "json_schema",
@@ -534,13 +551,30 @@ public struct DFlashServerModelAdapter: ModelAdapter {
 
 extension DFlashServerModelAdapter: DirectChatModelAdapter {
     public func directReply(history: [MessageRecord], systemPrompt: String) async throws -> String {
+        do {
+            return try await requestDirectReply(history: history, systemPrompt: systemPrompt, repair: false)
+        } catch let error as AshexError {
+            let message = error.localizedDescription.lowercased()
+            guard message.contains("did not return a reply") else { throw error }
+            return try await requestDirectReply(history: history, systemPrompt: systemPrompt, repair: true)
+        }
+    }
+
+    private func requestDirectReply(
+        history: [MessageRecord],
+        systemPrompt: String,
+        repair: Bool
+    ) async throws -> String {
+        let repairInstruction = repair
+            ? "\n\nYour previous reply was empty or included internal reasoning. Reply again with only the final user-facing answer."
+            : ""
         var request = URLRequest(url: configuration.chatCompletionsURL)
         request.httpMethod = "POST"
         request.timeoutInterval = TimeInterval(configuration.requestTimeoutSeconds)
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try encoder.encode(DFlashChatCompletionsRequest(
             model: configuration.model,
-            messages: Self.directChatMessages(from: history, systemPrompt: systemPrompt),
+            messages: Self.directChatMessages(from: history, systemPrompt: systemPrompt + repairInstruction),
             temperature: 0.2,
             stream: false
         ))
@@ -556,8 +590,8 @@ extension DFlashServerModelAdapter: DirectChatModelAdapter {
 
         let envelope = try decoder.decode(DFlashChatCompletionsResponseEnvelope.self, from: data)
         guard
-            let reply = envelope.choices.first?.message.content?.trimmingCharacters(in: .whitespacesAndNewlines),
-            !reply.isEmpty
+            let content = envelope.choices.first?.message.content?.trimmingCharacters(in: .whitespacesAndNewlines),
+            let reply = DirectChatReplyParser.parseReply(from: content)
         else {
             throw AshexError.model("DFlash direct chat did not return a reply")
         }
@@ -672,9 +706,30 @@ public struct OllamaChatModelAdapter: ModelAdapter {
 
 extension OllamaChatModelAdapter: DirectChatModelAdapter {
     public func directReply(history: [MessageRecord], systemPrompt: String) async throws -> String {
+        do {
+            return try await requestDirectReply(history: history, systemPrompt: systemPrompt, repair: false)
+        } catch let error as AshexError {
+            guard shouldRetryStructuredOutput(for: error) || error.localizedDescription.lowercased().contains("did not return a reply") else {
+                throw error
+            }
+            return try await requestDirectReply(history: history, systemPrompt: systemPrompt, repair: true)
+        }
+    }
+
+    private func requestDirectReply(
+        history: [MessageRecord],
+        systemPrompt: String,
+        repair: Bool
+    ) async throws -> String {
+        let repairInstruction = repair
+            ? " Your previous reply was empty. Reply again with a non-empty `reply` string."
+            : ""
         let requestBody = OllamaChatRequest(
             model: configuration.model,
-            messages: Self.directChatMessages(from: history, systemPrompt: systemPrompt),
+            messages: Self.directChatMessages(
+                from: history,
+                systemPrompt: systemPrompt + repairInstruction
+            ),
             format: [
                 "type": .string("object"),
                 "properties": .object([
@@ -834,10 +889,27 @@ public struct AnthropicMessagesModelAdapter: ModelAdapter {
 
 extension AnthropicMessagesModelAdapter: DirectChatModelAdapter {
     public func directReply(history: [MessageRecord], systemPrompt: String) async throws -> String {
+        do {
+            return try await requestDirectReply(history: history, systemPrompt: systemPrompt, repair: false)
+        } catch let error as AshexError {
+            let message = error.localizedDescription.lowercased()
+            guard message.contains("did not return a reply") else { throw error }
+            return try await requestDirectReply(history: history, systemPrompt: systemPrompt, repair: true)
+        }
+    }
+
+    private func requestDirectReply(
+        history: [MessageRecord],
+        systemPrompt: String,
+        repair: Bool
+    ) async throws -> String {
+        let repairInstruction = repair
+            ? "\n\nYour previous reply was empty. Reply again with a non-empty `reply` string."
+            : ""
         let requestBody = AnthropicMessagesRequest(
             model: configuration.model,
             maxTokens: 600,
-            system: systemPrompt + "\n\nReply naturally to the latest user message. Do not call tools. Return only a JSON object with a single `reply` string field.",
+            system: systemPrompt + "\n\nReply naturally to the latest user message. Do not call tools. Return only a JSON object with a single `reply` string field." + repairInstruction,
             messages: Self.directChatAnthropicMessages(from: history)
         )
 
@@ -1233,15 +1305,40 @@ private enum DirectChatReplyParser {
         guard !trimmed.isEmpty else { return nil }
 
         if let candidate = extractJSONObjectString(from: trimmed),
-           let payload = try? JSONSerialization.jsonObject(with: Data(candidate.utf8)) as? [String: Any],
-           let reply = payload["reply"] as? String {
-            let normalized = reply.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !normalized.isEmpty {
+           let payload = try? JSONSerialization.jsonObject(with: Data(candidate.utf8)) as? [String: Any] {
+            if let reply = payload["reply"] as? String {
+                let normalized = reply.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !normalized.isEmpty, !looksLikeInternalReasoning(normalized) else { return nil }
                 return normalized
             }
+            return nil
         }
 
+        guard !looksLikeInternalReasoning(trimmed) else { return nil }
         return trimmed
+    }
+
+    private static func looksLikeInternalReasoning(_ text: String) -> Bool {
+        let lowered = text.lowercased()
+        let markers = [
+            "the user is asking",
+            "i need to analyze",
+            "i need to",
+            "i should provide",
+            "i should",
+            "let me think",
+            "i can infer",
+            "based on the context",
+            "or simulate the analysis",
+            "common github repo structures",
+            "the name gives a strong hint",
+        ]
+        let matches = markers.reduce(into: 0) { partial, marker in
+            if lowered.contains(marker) {
+                partial += 1
+            }
+        }
+        return matches >= 2
     }
 
     static func extractJSONObjectString(from content: String) -> String? {

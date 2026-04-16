@@ -14,6 +14,19 @@ public struct DaemonSupervisorConfig: Sendable {
     }
 }
 
+public struct DaemonModelControl: Sendable {
+    public let listModels: (@Sendable () async throws -> [String])?
+    public let switchModel: @Sendable (String) async throws -> Void
+
+    public init(
+        listModels: (@Sendable () async throws -> [String])? = nil,
+        switchModel: @escaping @Sendable (String) async throws -> Void
+    ) {
+        self.listModels = listModels
+        self.switchModel = switchModel
+    }
+}
+
 public actor DaemonSupervisor {
     private let registry: ConnectorRegistry
     private let router: ConversationRouter
@@ -23,7 +36,10 @@ public actor DaemonSupervisor {
     private let config: DaemonSupervisorConfig
     private let runStore: DaemonConversationRunStore
     private let remoteApprovalInbox: RemoteApprovalInbox
+    private let modelControl: DaemonModelControl?
     private var activeTasks: [ConnectorConversationReference: Task<Void, Never>] = [:]
+    private var activeProvider: String
+    private var activeModel: String
 
     public init(
         registry: ConnectorRegistry,
@@ -33,6 +49,7 @@ public actor DaemonSupervisor {
         logger: DaemonLogger,
         runStore: DaemonConversationRunStore,
         remoteApprovalInbox: RemoteApprovalInbox,
+        modelControl: DaemonModelControl? = nil,
         config: DaemonSupervisorConfig = .init()
     ) {
         self.registry = registry
@@ -42,7 +59,10 @@ public actor DaemonSupervisor {
         self.logger = logger
         self.runStore = runStore
         self.remoteApprovalInbox = remoteApprovalInbox
+        self.modelControl = modelControl
         self.config = config
+        self.activeProvider = config.provider
+        self.activeModel = config.model
     }
 
     public func start() async throws {
@@ -99,6 +119,8 @@ public actor DaemonSupervisor {
             /stats [on|off] - show or toggle token/savings stats for this chat
             /statson - enable token/savings stats for this chat
             /statsoff - disable token/savings stats for this chat
+            /model [name] - show or switch the active daemon model
+            /models - list available models for the active provider
             /stop - stop the current reply or pending run
             """, for: event)
             return
@@ -114,8 +136,11 @@ public actor DaemonSupervisor {
         case .statsOff:
             try await handleStatsCommand(for: event, forcedState: false)
             return
-        case .model, .models:
+        case .model:
             try await handleModelCommand(for: event)
+            return
+        case .models:
+            try await handleModelsCommand(for: event)
             return
         case .chunks:
             try await send(
@@ -339,7 +364,7 @@ public actor DaemonSupervisor {
             if pending != nil {
                 return await pendingApprovalMessage(for: conversation)
             }
-            return "Ash is idle in this chat."
+            return "Ash is idle in this chat.\nModel: \(activeModel) via \(activeProvider)"
         }
 
         let stateLine = status.awaitingApproval
@@ -350,6 +375,7 @@ public actor DaemonSupervisor {
         \(stateLine)
         Thread: \(status.threadID.uuidString)
         Prompt: \(status.prompt)
+        Model: \(activeModel) via \(activeProvider)
         Stats: \(statsState)
 
         Use `/stop` to cancel the run\(status.awaitingApproval ? ", `/approve`, or `/deny`." : ".")
@@ -411,17 +437,79 @@ public actor DaemonSupervisor {
         let parts = event.text.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
         if parts.count == 1 {
             try await send(
-                text: "Current model: `\(config.model)` via `\(config.provider)`. Telegram-side model switching is not wired up yet in this build.",
+                text: "Current model: `\(activeModel)` via `\(activeProvider)`. Use `/models` to browse available models or `/model gemma4:latest` to switch.",
                 for: event
             )
             return
         }
 
         let requestedModel = String(parts[1]).trimmingCharacters(in: .whitespacesAndNewlines)
-        try await send(
-            text: "Requested model: `\(requestedModel)`. Telegram-side model switching is not wired up yet in this build, so the daemon is still using `\(config.model)` via `\(config.provider)`.",
-            for: event
-        )
+        guard !requestedModel.isEmpty else {
+            try await send(text: "Usage: `/model gemma4:latest`", for: event)
+            return
+        }
+        guard let modelControl else {
+            try await send(text: "Live model switching is not available in this daemon build.", for: event)
+            return
+        }
+        let hasActiveRuns = await runStore.hasActiveRuns()
+        guard !hasActiveRuns else {
+            try await send(text: "Ash is busy right now. Use `/stop` and wait for the run to finish before switching the model.", for: event)
+            return
+        }
+
+        do {
+            try await modelControl.switchModel(requestedModel)
+            activeModel = requestedModel
+            try await send(
+                text: "Switched model to `\(activeModel)` via `\(activeProvider)`.",
+                for: event
+            )
+        } catch {
+            try await send(
+                text: "Failed to switch model to `\(requestedModel)`: \(error.localizedDescription)",
+                for: event
+            )
+        }
+    }
+
+    private func handleModelsCommand(for event: InboundConnectorEvent) async throws {
+        guard let modelControl else {
+            try await send(text: "Model listing is not available in this daemon build.", for: event)
+            return
+        }
+        guard let listModels = modelControl.listModels else {
+            try await send(
+                text: "Model listing is not available for `\(activeProvider)` yet. Current model: `\(activeModel)`.",
+                for: event
+            )
+            return
+        }
+
+        do {
+            let models = try await listModels()
+            guard !models.isEmpty else {
+                try await send(text: "No models were returned for `\(activeProvider)`.", for: event)
+                return
+            }
+            let rendered = models.prefix(12).map { model in
+                model == activeModel ? "• `\(model)` ← current" : "• `\(model)`"
+            }.joined(separator: "\n")
+            try await send(
+                text: """
+                Available models for `\(activeProvider)`:
+                \(rendered)
+
+                Switch with `/model your-model-name`.
+                """,
+                for: event
+            )
+        } catch {
+            try await send(
+                text: "Failed to fetch models for `\(activeProvider)`: \(error.localizedDescription)",
+                for: event
+            )
+        }
     }
 
     private func decorateReplyIfNeeded(
@@ -433,7 +521,7 @@ public actor DaemonSupervisor {
             return reply
         }
         let inspector = SessionInspector(persistence: persistence)
-        switch TokenSavingsEstimator.costPresentationMode(provider: config.provider) {
+        switch TokenSavingsEstimator.costPresentationMode(provider: activeProvider) {
         case .savings:
             guard let usage = try inspector.loadTokenUsage(runID: runID) else {
                 return reply
@@ -471,12 +559,12 @@ public actor DaemonSupervisor {
     }
 
     private func formatSavedMoney(_ savedTokens: Int) -> String {
-        let dollars = TokenSavingsEstimator.estimatedSavedMoneyUSD(for: savedTokens, provider: config.provider, model: config.model)
+        let dollars = TokenSavingsEstimator.estimatedSavedMoneyUSD(for: savedTokens, provider: activeProvider, model: activeModel)
         return TokenSavingsEstimator.formatUSD(dollars)
     }
 
     private func formatUsedMoney(_ usedTokens: Int) -> String {
-        let dollars = TokenSavingsEstimator.estimatedUsageMoneyUSD(for: usedTokens, provider: config.provider, model: config.model)
+        let dollars = TokenSavingsEstimator.estimatedUsageMoneyUSD(for: usedTokens, provider: activeProvider, model: activeModel)
         return TokenSavingsEstimator.formatUSD(dollars)
     }
 }

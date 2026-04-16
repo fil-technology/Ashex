@@ -162,6 +162,46 @@ struct OllamaChatModelAdapterTests {
 
         #expect(reply == "I'm doing well, thanks for asking.")
     }
+
+    @Test func directReplyRetriesWhenStructuredReplyIsEmpty() async throws {
+        let session = makeOllamaStubbedSession(responses: [
+            (
+                200,
+                """
+                {
+                  "message": {
+                    "content": "{\\"reply\\":\\"\\"}"
+                  }
+                }
+                """
+            ),
+            (
+                200,
+                """
+                {
+                  "message": {
+                    "content": "{\\"reply\\":\\"It looks like an ASO skills repository for app-store optimization workflows.\\"}"
+                  }
+                }
+                """
+            ),
+        ])
+
+        let adapter = OllamaChatModelAdapter(
+            configuration: .init(model: "llama3.2", baseURL: URL(string: "http://localhost:11434/api/chat")!),
+            session: session
+        )
+
+        let reply = try await adapter.directReply(
+            history: [
+                .init(id: UUID(), threadID: UUID(), runID: UUID(), role: .user, content: "What this repo is about: https://github.com/Eronred/aso-skills", createdAt: Date())
+            ],
+            systemPrompt: "You are helpful."
+        )
+
+        #expect(reply == "It looks like an ASO skills repository for app-store optimization workflows.")
+        #expect(OllamaStubURLProtocol.state.requestCount == 2)
+    }
 }
 
 private func sampleModelContext() -> ModelContext {

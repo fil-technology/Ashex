@@ -372,6 +372,95 @@ import Testing
     #expect(setting?.value.boolValue == false)
 }
 
+@Test func daemonSupervisorModelCommandSwitchesActiveModel() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let persistence = SQLitePersistenceStore(databaseURL: root.appendingPathComponent("ashex.sqlite"))
+    try persistence.initialize()
+
+    let connector = RecordingConnector()
+    let switchedModels = LockedValues<String>()
+    let supervisor = DaemonSupervisor(
+        registry: ConnectorRegistry(connectors: [connector]),
+        router: ConversationRouter(mappingStore: ConnectorConversationMappingStore(persistence: persistence)),
+        dispatcher: RunDispatcher(runtime: BlockingRuntime()),
+        persistence: persistence,
+        logger: DaemonLogger(minimumLevel: .error),
+        runStore: DaemonConversationRunStore(),
+        remoteApprovalInbox: RemoteApprovalInbox(persistence: persistence),
+        modelControl: .init(
+            listModels: { ["gemma4:latest", "functiongemma:latest"] },
+            switchModel: { requestedModel in
+                await switchedModels.append(requestedModel)
+            }
+        ),
+        config: .init(maxIterations: 2, connectorLabel: "telegram", provider: "ollama", model: "llama3.2")
+    )
+
+    let conversation = ConnectorConversationReference(
+        connectorKind: "telegram",
+        connectorID: "telegram",
+        externalConversationID: "chat-77"
+    )
+
+    try await supervisor.handle(.init(
+        connectorKind: "telegram",
+        connectorID: "telegram",
+        messageID: "3001",
+        conversation: conversation,
+        externalUserID: "44",
+        text: "/model gemma4:latest",
+        command: .model
+    ))
+
+    let sentMessages = await connector.recordedMessages()
+    #expect(await switchedModels.values == ["gemma4:latest"])
+    #expect(sentMessages.contains { $0.text.contains("Switched model to `gemma4:latest`") })
+}
+
+@Test func daemonSupervisorModelsCommandListsAvailableModels() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let persistence = SQLitePersistenceStore(databaseURL: root.appendingPathComponent("ashex.sqlite"))
+    try persistence.initialize()
+
+    let connector = RecordingConnector()
+    let supervisor = DaemonSupervisor(
+        registry: ConnectorRegistry(connectors: [connector]),
+        router: ConversationRouter(mappingStore: ConnectorConversationMappingStore(persistence: persistence)),
+        dispatcher: RunDispatcher(runtime: BlockingRuntime()),
+        persistence: persistence,
+        logger: DaemonLogger(minimumLevel: .error),
+        runStore: DaemonConversationRunStore(),
+        remoteApprovalInbox: RemoteApprovalInbox(persistence: persistence),
+        modelControl: .init(
+            listModels: { ["gemma4:latest", "functiongemma:latest"] },
+            switchModel: { _ in }
+        ),
+        config: .init(maxIterations: 2, connectorLabel: "telegram", provider: "ollama", model: "gemma4:latest")
+    )
+
+    let conversation = ConnectorConversationReference(
+        connectorKind: "telegram",
+        connectorID: "telegram",
+        externalConversationID: "chat-78"
+    )
+
+    try await supervisor.handle(.init(
+        connectorKind: "telegram",
+        connectorID: "telegram",
+        messageID: "3002",
+        conversation: conversation,
+        externalUserID: "44",
+        text: "/models",
+        command: .models
+    ))
+
+    let sentMessages = await connector.recordedMessages()
+    #expect(sentMessages.contains { $0.text.contains("Available models for `ollama`") })
+    #expect(sentMessages.contains { $0.text.contains("`gemma4:latest` ← current") })
+}
+
 @Test func telegramConnectorNormalizesStatsAliases() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     let persistence = SQLitePersistenceStore(databaseURL: root.appendingPathComponent("ashex.sqlite"))
@@ -529,5 +618,17 @@ private actor MockTelegramBotClient: TelegramBotClient {
 
     func sendChatAction(token: String, chatID: Int64, action: String) async throws {
         chatActions.append((chatID, action))
+    }
+}
+
+private actor LockedValues<T: Sendable> {
+    private var storage: [T] = []
+
+    func append(_ value: T) {
+        storage.append(value)
+    }
+
+    var values: [T] {
+        storage
     }
 }

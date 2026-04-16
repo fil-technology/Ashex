@@ -85,5 +85,8 @@ public actor DaemonConversationRunStore {
             conversationByRunID.removeValue(forKey: runID)
         }
     }
-}
 
+    public func hasActiveRuns() -> Bool {
+        !activeRuns.isEmpty
+    }
+}
