@@ -96,6 +96,7 @@ final class TUIApp {
     private var focus: FocusArea = .launcher
     private var selectedIndex = 0
     private var settingsSelection = 0
+    private var modelPickerSelection = 0
     private var promptText = ""
     private var modelInput = ""
     private var apiKeyInput = ""
@@ -110,6 +111,7 @@ final class TUIApp {
     private var showWorkspaces = false
     private var showHistory = false
     private var showSettings = false
+    private var showModelPicker = false
     private var showTerminalPane = false
     private var statusLine = "Ready"
     private var runLines: [String] = []
@@ -227,6 +229,12 @@ final class TUIApp {
         default:
             return "Open Provider Settings to choose a working provider."
         }
+    }
+
+    private static func selectableModelName(from displayName: String) -> String? {
+        let trimmed = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return trimmed.components(separatedBy: " • ").first?.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     func run() async throws {
@@ -424,7 +432,11 @@ final class TUIApp {
             historySelection = max(historySelection - 1, 0)
             refreshHistoryPreview()
         case .settings:
-            settingsSelection = max(settingsSelection - 1, 0)
+            if showModelPicker {
+                modelPickerSelection = max(modelPickerSelection - 1, 0)
+            } else {
+                settingsSelection = max(settingsSelection - 1, 0)
+            }
         case .transcript:
             scrollTranscript(by: 1)
         case .terminal:
@@ -445,7 +457,11 @@ final class TUIApp {
             historySelection = min(historySelection + 1, max(historyThreads.count, 0))
             refreshHistoryPreview()
         case .settings:
-            settingsSelection = min(settingsSelection + 1, SettingsAction.allCases.count - 1)
+            if showModelPicker {
+                modelPickerSelection = min(modelPickerSelection + 1, max(ollamaPickerModels.count - 1, 0))
+            } else {
+                settingsSelection = min(settingsSelection + 1, SettingsAction.allCases.count - 1)
+            }
         case .transcript:
             scrollTranscript(by: -1)
         case .terminal:
@@ -545,6 +561,10 @@ final class TUIApp {
         } else if focus == .history {
             openSelectedHistoryRun()
         } else if focus == .settings {
+            if showModelPicker {
+                commitSelectedOllamaModel()
+                return
+            }
             activate(settingsAction: SettingsAction.allCases[settingsSelection])
         } else if focus == .input {
             statusLine = inputMode == .prompt ? "Prompt is empty" : "Model name is empty"
@@ -686,6 +706,11 @@ final class TUIApp {
         }
 
         if showSettings {
+            if showModelPicker {
+                showModelPicker = false
+                statusLine = "Closed Ollama model picker"
+                return
+            }
             showSettings = false
             inputMode = .prompt
             focus = .launcher
@@ -873,10 +898,17 @@ final class TUIApp {
         case .provider:
             cycleProvider()
         case .model:
-            inputMode = .model
-            modelInput = sessionModel
-            focus = .input
-            statusLine = "Edit model and press Enter to apply"
+            if sessionProvider == "ollama", !ollamaPickerModels.isEmpty {
+                showModelPicker = true
+                modelPickerSelection = selectedOllamaModelPickerIndex()
+                focus = .settings
+                statusLine = "Choose an Ollama model and press Enter"
+            } else {
+                inputMode = .model
+                modelInput = sessionModel
+                focus = .input
+                statusLine = "Edit model and press Enter to apply"
+            }
         case .apiKey:
             inputMode = .apiKey
             apiKeyInput = ""
@@ -961,6 +993,7 @@ final class TUIApp {
 
         sessionProvider = nextProvider
         sessionModel = CLIConfiguration.defaultModel(for: nextProvider)
+        showModelPicker = false
         refreshSessionRuntime()
         persistSessionSettings()
         statusLine = "Provider switched to \(sessionProvider)"
@@ -1048,6 +1081,37 @@ final class TUIApp {
         inputMode = .prompt
         focus = showSettings ? .settings : .launcher
 
+        refreshSessionRuntime()
+        persistSessionSettings()
+        statusLine = "Model updated to \(sessionModel)"
+
+        Task { [weak self] in
+            await self?.refreshProviderStatus()
+        }
+    }
+
+    private var ollamaPickerModels: [String] {
+        guard sessionProvider == "ollama" else { return [] }
+        return providerStatus.availableModels.compactMap(Self.selectableModelName(from:))
+    }
+
+    private func selectedOllamaModelPickerIndex() -> Int {
+        let models = ollamaPickerModels
+        guard !models.isEmpty else { return 0 }
+        return models.firstIndex(of: sessionModel) ?? 0
+    }
+
+    private func commitSelectedOllamaModel() {
+        let models = ollamaPickerModels
+        guard !models.isEmpty else {
+            statusLine = "No Ollama models available yet. Refresh status first."
+            showModelPicker = false
+            return
+        }
+
+        let index = min(max(modelPickerSelection, 0), models.count - 1)
+        sessionModel = models[index]
+        showModelPicker = false
         refreshSessionRuntime()
         persistSessionSettings()
         statusLine = "Model updated to \(sessionModel)"
@@ -2376,9 +2440,18 @@ final class TUIApp {
 
         if !providerStatus.availableModels.isEmpty {
             lines.append("")
-            lines.append("\(TerminalUIStyle.ink)Available Models\(TerminalUIStyle.reset)")
-            for model in providerStatus.availableModels.prefix(6) {
-                lines.append("\(TerminalUIStyle.blue)\(TerminalUIStyle.truncateVisible(model, limit: width))\(TerminalUIStyle.reset)")
+            lines.append("\(TerminalUIStyle.ink)\(showModelPicker ? "Pick an Ollama Model" : "Available Models")\(TerminalUIStyle.reset)")
+            let availableModels = showModelPicker ? providerStatus.availableModels : Array(providerStatus.availableModels.prefix(6))
+            for (index, model) in availableModels.enumerated() {
+                let pickerSelected = showModelPicker && index == modelPickerSelection
+                let marker = pickerSelected ? "\(TerminalUIStyle.selection) \(TerminalUIStyle.reset)" : " "
+                let color = pickerSelected ? TerminalUIStyle.cyan : TerminalUIStyle.blue
+                let line = "\(marker) \(color)\(TerminalUIStyle.truncateVisible(model, limit: max(width - 2, 10)))\(TerminalUIStyle.reset)"
+                let lineIndex = lines.count
+                lines.append(line)
+                if pickerSelected {
+                    selectedLineRange = lineIndex...lineIndex
+                }
             }
         }
 
@@ -2400,7 +2473,10 @@ final class TUIApp {
             }
         }
 
-        if inputMode == .model {
+        if showModelPicker {
+            lines.append("")
+            lines.append("\(TerminalUIStyle.amber)Use ↑/↓ to choose an Ollama model and press Enter to apply. Esc closes the picker.\(TerminalUIStyle.reset)")
+        } else if inputMode == .model {
             lines.append("")
             lines.append("\(TerminalUIStyle.amber)Model edit mode is active in the input bar below.\(TerminalUIStyle.reset)")
         } else if inputMode == .apiKey {
@@ -4033,8 +4109,12 @@ final class TUIApp {
                     lines.append("[saved] run \(Self.formatTokenCount(compactions.reduce(0) { $0 + $1.estimatedSavedTokenCount })) • \(formattedSavedMoney(compactions.reduce(0) { $0 + $1.estimatedSavedTokenCount }))")
                 }
             }
-            if let savings = tokenSavingsSnapshot {
-                lines.append("[saved] today \(Self.formatTokenCount(savings.today.savedTokenCount)) • session \(Self.formatTokenCount(savings.session.savedTokenCount)) • total \(Self.formatTokenCount(savings.total.savedTokenCount))")
+            if let usage = tokenUsageSnapshot {
+                let label = tokenEconomicsMode == .savings ? "saved" : "used"
+                let moneyValue = tokenEconomicsMode == .savings
+                    ? formattedSavedMoney(usage.total.usedTokenCount)
+                    : formattedUsedMoney(usage.total.usedTokenCount)
+                lines.append("[\(label)] today \(Self.formatTokenCount(usage.today.usedTokenCount)) • session \(Self.formatTokenCount(usage.session.usedTokenCount)) • total \(Self.formatTokenCount(usage.total.usedTokenCount)) • \(moneyValue)")
             }
             lines.append(contentsOf: events.flatMap { renderLines(for: $0.payload) })
             historyPreviewLines = Array(lines.suffix(8))
@@ -4158,20 +4238,16 @@ final class TUIApp {
                 }
                 runLines.append("")
             }
-            if let savings = tokenSavingsSnapshot {
-                runLines.append("Saved token estimates:")
-                runLines.append("  run \(Self.formatTokenCount(savings.currentRun.savedTokenCount)) • \(formattedSavedMoney(savings.currentRun.savedTokenCount))")
-                runLines.append("  today \(Self.formatTokenCount(savings.today.savedTokenCount)) • \(formattedSavedMoney(savings.today.savedTokenCount))")
-                runLines.append("  this session \(Self.formatTokenCount(savings.session.savedTokenCount)) • \(formattedSavedMoney(savings.session.savedTokenCount))")
-                runLines.append("  total \(Self.formatTokenCount(savings.total.savedTokenCount)) • \(formattedSavedMoney(savings.total.savedTokenCount))")
-                runLines.append("")
-            }
-            if let usage = tokenUsageSnapshot, tokenEconomicsMode == .usage {
-                runLines.append("Used token estimates:")
-                runLines.append("  run \(Self.formatTokenCount(usage.currentRun.usedTokenCount)) • \(formattedUsedMoney(usage.currentRun.usedTokenCount))")
-                runLines.append("  today \(Self.formatTokenCount(usage.today.usedTokenCount)) • \(formattedUsedMoney(usage.today.usedTokenCount))")
-                runLines.append("  this session \(Self.formatTokenCount(usage.session.usedTokenCount)) • \(formattedUsedMoney(usage.session.usedTokenCount))")
-                runLines.append("  total \(Self.formatTokenCount(usage.total.usedTokenCount)) • \(formattedUsedMoney(usage.total.usedTokenCount))")
+            if let usage = tokenUsageSnapshot {
+                let label = tokenEconomicsMode == .savings ? "Saved" : "Used"
+                let formatMoney: (Int) -> String = tokenEconomicsMode == .savings
+                    ? { self.formattedSavedMoney($0) }
+                    : { self.formattedUsedMoney($0) }
+                runLines.append("\(label) token estimates:")
+                runLines.append("  run \(Self.formatTokenCount(usage.currentRun.usedTokenCount)) • \(formatMoney(usage.currentRun.usedTokenCount))")
+                runLines.append("  today \(Self.formatTokenCount(usage.today.usedTokenCount)) • \(formatMoney(usage.today.usedTokenCount))")
+                runLines.append("  this session \(Self.formatTokenCount(usage.session.usedTokenCount)) • \(formatMoney(usage.session.usedTokenCount))")
+                runLines.append("  total \(Self.formatTokenCount(usage.total.usedTokenCount)) • \(formatMoney(usage.total.usedTokenCount))")
                 runLines.append("")
             }
             runLines.append(contentsOf: events.flatMap { renderLines(for: $0.payload) })
@@ -4343,6 +4419,13 @@ final class TUIApp {
             dflashConfig: sessionUserConfig.dflash
         )
         providerStatus = snapshot
+        if showModelPicker {
+            if sessionProvider != "ollama" || ollamaPickerModels.isEmpty {
+                showModelPicker = false
+            } else {
+                modelPickerSelection = min(max(modelPickerSelection, 0), ollamaPickerModels.count - 1)
+            }
+        }
         if let providerStartupIssue {
             statusLine = "Provider needs attention"
             let shouldReplaceTranscript = runLines.isEmpty || runLines.first?.hasPrefix("[startup]") == true

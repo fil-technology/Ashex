@@ -277,6 +277,7 @@ enum ToolResultMessageFormatter {
         structuredOutput: JSONValue?,
         error: String?
     ) -> String {
+        let prettyStructuredOutput = structuredOutput?.prettyPrinted
         var lines = [
             "[tool_result]",
             "tool \(call.toolName)",
@@ -287,14 +288,16 @@ enum ToolResultMessageFormatter {
             lines.append("operation \(operation)")
         }
 
-        if let output, !output.isEmpty {
+        if let output,
+           !output.isEmpty,
+           prettyStructuredOutput?.trimmingCharacters(in: .whitespacesAndNewlines) != output.trimmingCharacters(in: .whitespacesAndNewlines) {
             lines.append("output:")
             lines.append(output)
         }
 
-        if let structuredOutput {
+        if let prettyStructuredOutput {
             lines.append("structured_output:")
-            lines.append(structuredOutput.prettyPrinted)
+            lines.append(prettyStructuredOutput)
         }
 
         if let error, !error.isEmpty {

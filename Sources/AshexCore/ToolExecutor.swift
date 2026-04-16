@@ -395,6 +395,26 @@ struct ToolExecutor: Sendable {
         for (key, value) in arguments {
             rendered = rendered.replacingOccurrences(of: "{{\(key)}}", with: value.stringValue ?? value.prettyPrinted)
         }
-        return rendered
+        rendered = rendered.replacingOccurrences(
+            of: #"\{\{[^}]+\}\}"#,
+            with: "",
+            options: .regularExpression
+        )
+        rendered = rendered.replacingOccurrences(
+            of: #"\s+([,.;:])"#,
+            with: "$1",
+            options: .regularExpression
+        )
+        rendered = rendered.replacingOccurrences(
+            of: #"\s{2,}"#,
+            with: " ",
+            options: .regularExpression
+        )
+        rendered = rendered.replacingOccurrences(
+            of: #"\s*@\s*$"#,
+            with: "",
+            options: .regularExpression
+        )
+        return rendered.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

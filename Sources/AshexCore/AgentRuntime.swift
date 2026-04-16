@@ -377,6 +377,30 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         }
 
         let history = try persistence.fetchMessages(threadID: thread.id)
+        let preparedContext = ContextManager.prepare(
+            context: .init(
+                thread: thread,
+                run: run,
+                messages: history,
+                availableTools: [],
+                workspaceSnapshot: nil,
+                workingMemory: nil
+            ),
+            provider: modelAdapter.providerID,
+            model: modelAdapter.modelID
+        )
+        try emitter.emit(
+            .contextPrepared(
+                runID: run.id,
+                retainedMessages: preparedContext.retainedMessages.count,
+                droppedMessages: preparedContext.droppedMessageCount,
+                clippedMessages: preparedContext.clippedMessageCount,
+                estimatedTokens: preparedContext.estimatedTokenCount,
+                estimatedContextWindow: preparedContext.estimatedContextWindow
+            ),
+            runID: run.id
+        )
+
         let systemPrompt = """
         You are Ash, a helpful local-first assistant replying in a Telegram chat.
         Answer naturally and conversationally.
@@ -726,6 +750,13 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
 
             switch action {
             case .finalAnswer(let answer):
+                if Self.isLeakedToolTranscript(answer) {
+                    let reminder = "Do not return raw tool transcripts or JSON dumps. Summarize the latest tool result for the user in plain language."
+                    let toolMessage = try persistence.appendMessage(threadID: thread.id, runID: run.id, role: .tool, content: reminder, now: clock())
+                    try emitter.emit(.messageAppended(runID: run.id, messageID: toolMessage.id, role: .tool), runID: run.id)
+                    try emitter.emit(.status(runID: run.id, message: "The model echoed raw tool output. Asking it to summarize the result instead."), runID: run.id)
+                    continue
+                }
                 if stepPhase == .validation,
                    !changedFiles.isEmpty,
                    !workflowState.hasValidationEvidence(for: changedFiles.map(\.path)) {
@@ -963,6 +994,18 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
 
             switch action {
             case .finalAnswer(let answer):
+                if Self.isLeakedToolTranscript(answer) {
+                    localMessages.append(MessageRecord(
+                        id: UUID(),
+                        threadID: thread.id,
+                        runID: run.id,
+                        role: .tool,
+                        content: "Do not return raw tool transcripts or JSON dumps. Summarize the latest tool result for the user in plain language.",
+                        createdAt: clock()
+                    ))
+                    try emitter.emit(.status(runID: run.id, message: "Subagent echoed raw tool output. Asking it to summarize instead."), runID: run.id)
+                    continue
+                }
                 if stepPhase == .validation,
                    !changedFiles.isEmpty,
                    !workflowState.hasValidationEvidence(for: changedFiles.map(\.path)) {
@@ -1502,6 +1545,22 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
     private static func mergeChangedArtifacts(_ lhs: [ChangedArtifact], _ rhs: [ChangedArtifact]) -> [ChangedArtifact] {
         var seen: Set<String> = []
         return (lhs + rhs).filter { seen.insert($0.path + "|" + $0.reason).inserted }
+    }
+
+    private static func isLeakedToolTranscript(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        let lowered = trimmed.lowercased()
+        if lowered.contains("[tool_result]") || lowered.contains("structured_output:") {
+            return true
+        }
+        if lowered.hasPrefix("tool execution finished.") {
+            return true
+        }
+        if lowered.contains("\"repository_url\"") && lowered.contains("\"clone_url\"") && lowered.contains("\"readme_excerpt\"") {
+            return true
+        }
+        return false
     }
 }
 

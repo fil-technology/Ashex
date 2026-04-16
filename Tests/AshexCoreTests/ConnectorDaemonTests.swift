@@ -254,6 +254,8 @@ import Testing
     )
 
     #expect(result.finalText.contains("I'm doing well"))
+    let usage = try SessionInspector(persistence: persistence).loadTokenUsage(runID: try #require(result.runID))
+    #expect(usage?.currentRun.usedTokenCount ?? 0 > 0)
     let messages = try persistence.fetchMessages(threadID: thread.id)
     #expect(messages.count == 2)
     #expect(messages.last?.role == .assistant)

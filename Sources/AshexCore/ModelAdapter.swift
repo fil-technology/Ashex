@@ -1001,10 +1001,15 @@ public struct MockModelAdapter: ModelAdapter {
         }
 
         if lastMessage.role == .tool {
-            return .finalAnswer("Tool execution finished.\n\n\(lastMessage.content)")
+            return .finalAnswer(Self.summarizeToolMessage(lastMessage.content))
         }
 
         let prompt = lastMessage.content.lowercased()
+
+        if (prompt.contains("what do you think") || prompt.contains("what is this repo about") || prompt.contains("this repo")),
+           let lastToolMessage = context.messages.reversed().first(where: { $0.role == .tool && $0.content.contains("tool github_repo") }) {
+            return .finalAnswer(Self.summarizeToolMessage(lastToolMessage.content))
+        }
 
         if prompt.contains("list") && prompt.contains("file") {
             return .toolCall(.init(toolName: "filesystem", arguments: [
@@ -1120,6 +1125,93 @@ public struct MockModelAdapter: ModelAdapter {
         }
         let range = NSRange(input.startIndex..<input.endIndex, in: input)
         return detector.firstMatch(in: input, options: [], range: range)?.url?.absoluteString
+    }
+
+    private static func summarizeToolMessage(_ content: String) -> String {
+        let toolName = field(named: "tool", in: content) ?? "tool"
+        let operation = field(named: "operation", in: content)
+
+        if let payload = structuredOutput(in: content)?.objectValue {
+            if toolName == "github_repo", operation == "inspect_repository" {
+                let repoURL = payload["repository_url"]?.stringValue ?? "the repository"
+                let excerpt = payload["readme_excerpt"]?.stringValue?
+                    .components(separatedBy: "\n\n")
+                    .first?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let entries = payload["top_level_entries"]?.arrayValue?
+                    .compactMap(\.stringValue)
+                    .prefix(5)
+                    .joined(separator: ", ")
+                let latestCommit = payload["latest_commit"]?.objectValue?["subject"]?.stringValue
+
+                var lines: [String] = []
+                if let excerpt, !excerpt.isEmpty {
+                    lines.append(excerpt)
+                } else {
+                    lines.append("I inspected \(repoURL).")
+                }
+                if let entries, !entries.isEmpty {
+                    lines.append("Top-level files: \(entries).")
+                }
+                if let latestCommit, !latestCommit.isEmpty {
+                    lines.append("Latest commit: \(latestCommit)")
+                }
+                return lines.joined(separator: " ")
+            }
+
+            if toolName == "filesystem", operation == "list_directory",
+               let entries = payload["entries"]?.arrayValue?.compactMap(\.stringValue),
+               !entries.isEmpty {
+                return "Files: \(entries.joined(separator: ", "))"
+            }
+
+            if toolName == "filesystem", operation == "read_text_file",
+               let content = payload["content"]?.stringValue,
+               !content.isEmpty {
+                return content
+            }
+
+            if toolName == "git", operation == "status",
+               let stdout = payload["stdout"]?.stringValue,
+               !stdout.isEmpty {
+                return "Git status:\n\(stdout)"
+            }
+        }
+
+        if let output = section(named: "output:", in: content), !output.isEmpty {
+            return output
+        }
+
+        return "I completed the tool step, but I need a more specific follow-up prompt to summarize it cleanly."
+    }
+
+    private static func field(named name: String, in content: String) -> String? {
+        let prefix = "\(name) "
+        for line in content.components(separatedBy: .newlines) {
+            if line.hasPrefix(prefix) {
+                let value = String(line.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                return value.isEmpty ? nil : value
+            }
+        }
+        return nil
+    }
+
+    private static func section(named marker: String, in content: String) -> String? {
+        guard let range = content.range(of: marker) else { return nil }
+        let tail = content[range.upperBound...]
+        let stopMarkers = ["structured_output:", "error:"]
+        let nextStop = stopMarkers.compactMap { stopMarker in
+            tail.range(of: stopMarker).map(\.lowerBound)
+        }.min() ?? tail.endIndex
+        let value = tail[..<nextStop].trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : String(value)
+    }
+
+    private static func structuredOutput(in content: String) -> JSONValue? {
+        guard let range = content.range(of: "structured_output:") else { return nil }
+        let tail = content[range.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !tail.isEmpty else { return nil }
+        return try? JSONDecoder().decode(JSONValue.self, from: Data(tail.utf8))
     }
 }
 

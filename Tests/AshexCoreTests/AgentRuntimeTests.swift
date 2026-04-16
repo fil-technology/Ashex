@@ -318,6 +318,86 @@ private final class RecordingExecutionRuntime: ExecutionRuntime, @unchecked Send
     #expect(sawRecoveredAnswer)
 }
 
+@Test func runtimeRejectsRawToolTranscriptAsFinalAnswer() async throws {
+    let fileManager = FileManager.default
+    let root = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let dbURL = root.appendingPathComponent(".ashex/test.sqlite")
+    try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+    try "hello".write(to: root.appendingPathComponent("note.txt"), atomically: true, encoding: .utf8)
+
+    let runtime = try AgentRuntime(
+        modelAdapter: SequencedModelAdapter(actions: [
+            .toolCall(.init(toolName: "filesystem", arguments: [
+                "operation": .string("read_text_file"),
+                "path": .string("note.txt"),
+            ])),
+            .finalAnswer("""
+            Tool execution finished.
+
+            [tool_result]
+            tool filesystem
+            status completed
+            structured_output:
+            {"content":"hello"}
+            """),
+            .finalAnswer("The file currently contains hello."),
+        ]),
+        toolRegistry: ToolRegistry(tools: [
+            FileSystemTool(workspaceGuard: WorkspaceGuard(rootURL: root)),
+            ShellTool(executionRuntime: ProcessExecutionRuntime(), workspaceURL: root, executionPolicy: testShellExecutionPolicy),
+        ]),
+        persistence: SQLitePersistenceStore(databaseURL: dbURL)
+    )
+
+    var statuses: [String] = []
+    var finalAnswer = ""
+    for await event in runtime.run(RunRequest(prompt: "read note.txt")) {
+        switch event.payload {
+        case .status(_, let message):
+            statuses.append(message)
+        case .finalAnswer(_, _, let text):
+            finalAnswer = text
+        default:
+            break
+        }
+    }
+
+    #expect(statuses.contains { $0.contains("echoed raw tool output") })
+    #expect(finalAnswer == "The file currently contains hello.")
+}
+
+@Test func githubRepoApprovalReasonOmitsMissingRefPlaceholder() async throws {
+    let fileManager = FileManager.default
+    let root = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let dbURL = root.appendingPathComponent(".ashex/test.sqlite")
+    try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+
+    let runtime = try AgentRuntime(
+        modelAdapter: SequencedModelAdapter(actions: [
+            .toolCall(.init(toolName: "github_repo", arguments: [
+                "operation": .string("inspect_repository"),
+                "repository_url": .string("https://github.com/z-lab/dflash"),
+            ])),
+            .finalAnswer("done"),
+        ]),
+        toolRegistry: ToolRegistry(tools: [
+            GitHubRepoTool(executionRuntime: ProcessExecutionRuntime()),
+        ]),
+        persistence: SQLitePersistenceStore(databaseURL: dbURL),
+        approvalPolicy: AutoApprovePolicy()
+    )
+
+    var approvalReason = ""
+    for await event in runtime.run(RunRequest(prompt: "Inspect https://github.com/z-lab/dflash")) {
+        if case .approvalRequested(_, _, _, let reason, _) = event.payload {
+            approvalReason = reason
+            break
+        }
+    }
+
+    #expect(approvalReason == "https://github.com/z-lab/dflash")
+}
+
 @Test func runtimeBreaksRepeatedReadOnlyToolLoop() async throws {
     let fileManager = FileManager.default
     let root = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -936,6 +1016,14 @@ private actor SequencedModelAdapter: ModelAdapter {
             throw AshexError.model("No more actions")
         }
         return actions.removeFirst()
+    }
+}
+
+private struct AutoApprovePolicy: ApprovalPolicy {
+    let mode: ApprovalMode = .guarded
+
+    func evaluate(_ request: ApprovalRequest) async -> ApprovalDecision {
+        .allow("Approved in test")
     }
 }
 
