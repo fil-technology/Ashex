@@ -3,6 +3,8 @@ import Foundation
 public protocol TelegramBotClient: Sendable {
     func getMe(token: String) async throws -> TelegramBotIdentity
     func getUpdates(token: String, offset: Int64?, timeoutSeconds: Int) async throws -> [TelegramUpdate]
+    func getFile(token: String, fileID: String) async throws -> TelegramFile
+    func downloadFile(token: String, filePath: String) async throws -> Data
     func sendMessage(token: String, chatID: Int64, text: String, parseMode: String?) async throws
     func sendChatAction(token: String, chatID: Int64, action: String) async throws
 }
@@ -32,6 +34,24 @@ public struct URLSessionTelegramBotClient: TelegramBotClient {
         }
         let (data, _) = try await session.data(from: url)
         return try JSONDecoder().decode(TelegramUpdatesResponse.self, from: data).result
+    }
+
+    public func getFile(token: String, fileID: String) async throws -> TelegramFile {
+        var components = URLComponents(url: try endpoint(token: token, method: "getFile"), resolvingAgainstBaseURL: false)
+        components?.queryItems = [URLQueryItem(name: "file_id", value: fileID)]
+        guard let url = components?.url else {
+            throw AshexError.model("Failed to build Telegram getFile URL")
+        }
+        let (data, _) = try await session.data(from: url)
+        return try JSONDecoder().decode(TelegramGetFileResponse.self, from: data).result
+    }
+
+    public func downloadFile(token: String, filePath: String) async throws -> Data {
+        guard let url = URL(string: "https://api.telegram.org/file/bot\(token)/\(filePath)") else {
+            throw AshexError.model("Failed to build Telegram file download URL")
+        }
+        let (data, _) = try await session.data(from: url)
+        return data
     }
 
     public func sendMessage(token: String, chatID: Int64, text: String, parseMode: String?) async throws {

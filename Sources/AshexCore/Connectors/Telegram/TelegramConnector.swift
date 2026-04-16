@@ -9,6 +9,7 @@ public actor TelegramConnector: Connector, ConnectorActivityControlling {
     private let client: any TelegramBotClient
     private let persistence: PersistenceStore
     private let logger: DaemonLogger?
+    private let mediaRoot: URL
     private var pollTask: Task<Void, Never>?
     private var activityTasks: [String: Task<Void, Never>] = [:]
 
@@ -18,7 +19,8 @@ public actor TelegramConnector: Connector, ConnectorActivityControlling {
         config: TelegramConfig,
         client: any TelegramBotClient = URLSessionTelegramBotClient(),
         persistence: PersistenceStore,
-        logger: DaemonLogger? = nil
+        logger: DaemonLogger? = nil,
+        mediaRoot: URL = FileManager.default.temporaryDirectory.appendingPathComponent("ashex-telegram-media", isDirectory: true)
     ) {
         self.id = id
         self.token = token
@@ -26,6 +28,7 @@ public actor TelegramConnector: Connector, ConnectorActivityControlling {
         self.client = client
         self.persistence = persistence
         self.logger = logger
+        self.mediaRoot = mediaRoot
     }
 
     public func start(handler: @escaping @Sendable (InboundConnectorEvent) async throws -> Void) async throws {
@@ -145,7 +148,7 @@ public actor TelegramConnector: Connector, ConnectorActivityControlling {
             return nil
         }
 
-        guard let text = message.text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else {
+        guard let normalized = try await normalizeMessageContent(message), !normalized.text.isEmpty else {
             await logger?.log(.info, subsystem: "telegram", message: "Skipping unsupported message", metadata: [
                 "chat_id": .string(String(message.chat.id)),
                 "message_id": .string(String(message.messageID)),
@@ -171,19 +174,23 @@ public actor TelegramConnector: Connector, ConnectorActivityControlling {
             return nil
         }
 
-        let command = Self.command(from: text)
+        let command = Self.command(from: normalized.text)
+        var metadata: JSONObject = [
+            "telegram_update_id": .string(String(update.updateID)),
+            "telegram_message_id": .string(String(message.messageID)),
+        ]
+        for (key, value) in normalized.metadata {
+            metadata[key] = value
+        }
         return InboundConnectorEvent(
             connectorKind: kind,
             connectorID: id,
             messageID: String(update.updateID),
             conversation: .init(connectorKind: kind, connectorID: id, externalConversationID: chatID),
             externalUserID: userID,
-            text: text,
+            text: normalized.text,
             command: command,
-            metadata: [
-                "telegram_update_id": .string(String(update.updateID)),
-                "telegram_message_id": .string(String(message.messageID)),
-            ]
+            metadata: metadata
         )
     }
 
@@ -299,5 +306,132 @@ public actor TelegramConnector: Connector, ConnectorActivityControlling {
 
         After saving, restart the daemon.
         """
+    }
+
+    private func normalizeMessageContent(_ message: TelegramMessage) async throws -> (text: String, metadata: JSONObject)? {
+        if let text = message.text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty {
+            return (text, [:])
+        }
+
+        if let photo = message.photo?.max(by: { lhs, rhs in
+            (lhs.fileSize ?? lhs.width * lhs.height) < (rhs.fileSize ?? rhs.width * rhs.height)
+        }) {
+            return try await normalizeDownloadedMedia(
+                kind: "image",
+                fileID: photo.fileID,
+                sourceName: "telegram-photo-\(photo.fileUniqueID).jpg",
+                caption: message.caption,
+                chatID: String(message.chat.id),
+                messageID: message.messageID,
+                extraMetadata: [
+                    "width": .number(Double(photo.width)),
+                    "height": .number(Double(photo.height)),
+                    "size_bytes": photo.fileSize.map { .number(Double($0)) } ?? .null,
+                ]
+            )
+        }
+
+        if let voice = message.voice {
+            return try await normalizeDownloadedMedia(
+                kind: "audio",
+                fileID: voice.fileID,
+                sourceName: "telegram-voice-\(voice.fileUniqueID).ogg",
+                caption: message.caption,
+                chatID: String(message.chat.id),
+                messageID: message.messageID,
+                extraMetadata: [
+                    "duration_seconds": .number(Double(voice.duration)),
+                    "mime_type": voice.mimeType.map(JSONValue.string) ?? .null,
+                    "size_bytes": voice.fileSize.map { .number(Double($0)) } ?? .null,
+                ]
+            )
+        }
+
+        if let audio = message.audio {
+            let filename = audio.fileName ?? "telegram-audio-\(audio.fileUniqueID).bin"
+            return try await normalizeDownloadedMedia(
+                kind: "audio",
+                fileID: audio.fileID,
+                sourceName: filename,
+                caption: message.caption,
+                chatID: String(message.chat.id),
+                messageID: message.messageID,
+                extraMetadata: [
+                    "duration_seconds": .number(Double(audio.duration)),
+                    "mime_type": audio.mimeType.map(JSONValue.string) ?? .null,
+                    "size_bytes": audio.fileSize.map { .number(Double($0)) } ?? .null,
+                ]
+            )
+        }
+
+        if let document = message.document,
+           let mimeType = document.mimeType?.lowercased(),
+           mimeType.hasPrefix("image/") || mimeType.hasPrefix("audio/") {
+            let filename = document.fileName ?? "telegram-document-\(document.fileUniqueID)"
+            let kind = mimeType.hasPrefix("image/") ? "image" : "audio"
+            return try await normalizeDownloadedMedia(
+                kind: kind,
+                fileID: document.fileID,
+                sourceName: filename,
+                caption: message.caption,
+                chatID: String(message.chat.id),
+                messageID: message.messageID,
+                extraMetadata: [
+                    "mime_type": .string(mimeType),
+                    "size_bytes": document.fileSize.map { .number(Double($0)) } ?? .null,
+                ]
+            )
+        }
+
+        return nil
+    }
+
+    private func normalizeDownloadedMedia(
+        kind: String,
+        fileID: String,
+        sourceName: String,
+        caption: String?,
+        chatID: String,
+        messageID: Int64,
+        extraMetadata: JSONObject
+    ) async throws -> (text: String, metadata: JSONObject) {
+        let remoteFile = try await client.getFile(token: token, fileID: fileID)
+        guard let remotePath = remoteFile.filePath, !remotePath.isEmpty else {
+            throw AshexError.model("Telegram getFile did not return a file path")
+        }
+        let bytes = try await client.downloadFile(token: token, filePath: remotePath)
+
+        let destinationDirectory = mediaRoot
+            .appendingPathComponent(id, isDirectory: true)
+            .appendingPathComponent(chatID, isDirectory: true)
+        try FileManager.default.createDirectory(at: destinationDirectory, withIntermediateDirectories: true)
+        let sanitizedName = Self.sanitizedFilename(sourceName)
+        let destinationURL = destinationDirectory.appendingPathComponent("\(messageID)-\(sanitizedName)")
+        try bytes.write(to: destinationURL, options: .atomic)
+
+        var metadata = extraMetadata
+        metadata["telegram_media_kind"] = .string(kind)
+        metadata["telegram_file_id"] = .string(fileID)
+        metadata["telegram_file_path"] = .string(remotePath)
+        metadata["local_path"] = .string(destinationURL.path)
+        metadata["downloaded_bytes"] = .number(Double(bytes.count))
+
+        let trimmedCaption = caption?.trimmingCharacters(in: .whitespacesAndNewlines)
+        var lines = [
+            "The user sent a Telegram \(kind) attachment.",
+            "Local file: \(destinationURL.path)",
+        ]
+        if let trimmedCaption, !trimmedCaption.isEmpty {
+            lines.append("Caption: \(trimmedCaption)")
+        }
+        lines.append("Use the attachment context in your reply. If the current provider cannot directly inspect \(kind) files, say so clearly and suggest the next best step.")
+        return (lines.joined(separator: "\n"), metadata)
+    }
+
+    private static func sanitizedFilename(_ value: String) -> String {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "._-"))
+        let scalars = value.unicodeScalars.map { allowed.contains($0) ? Character($0) : "-" }
+        let rendered = String(scalars)
+        return rendered.isEmpty ? "attachment.bin" : rendered
     }
 }

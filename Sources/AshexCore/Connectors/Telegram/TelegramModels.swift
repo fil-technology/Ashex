@@ -40,6 +40,11 @@ public struct TelegramMessage: Codable, Sendable, Equatable {
     public let chat: TelegramChat
     public let date: Int64
     public let text: String?
+    public let caption: String?
+    public let photo: [TelegramPhotoSize]?
+    public let voice: TelegramVoice?
+    public let audio: TelegramAudio?
+    public let document: TelegramDocument?
 
     enum CodingKeys: String, CodingKey {
         case messageID = "message_id"
@@ -47,6 +52,101 @@ public struct TelegramMessage: Codable, Sendable, Equatable {
         case chat
         case date
         case text
+        case caption
+        case photo
+        case voice
+        case audio
+        case document
+    }
+
+    public init(
+        messageID: Int64,
+        from: TelegramUser?,
+        chat: TelegramChat,
+        date: Int64,
+        text: String?,
+        caption: String? = nil,
+        photo: [TelegramPhotoSize]? = nil,
+        voice: TelegramVoice? = nil,
+        audio: TelegramAudio? = nil,
+        document: TelegramDocument? = nil
+    ) {
+        self.messageID = messageID
+        self.from = from
+        self.chat = chat
+        self.date = date
+        self.text = text
+        self.caption = caption
+        self.photo = photo
+        self.voice = voice
+        self.audio = audio
+        self.document = document
+    }
+}
+
+public struct TelegramPhotoSize: Codable, Sendable, Equatable {
+    public let fileID: String
+    public let fileUniqueID: String
+    public let width: Int
+    public let height: Int
+    public let fileSize: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case fileID = "file_id"
+        case fileUniqueID = "file_unique_id"
+        case width
+        case height
+        case fileSize = "file_size"
+    }
+}
+
+public struct TelegramVoice: Codable, Sendable, Equatable {
+    public let fileID: String
+    public let fileUniqueID: String
+    public let duration: Int
+    public let mimeType: String?
+    public let fileSize: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case fileID = "file_id"
+        case fileUniqueID = "file_unique_id"
+        case duration
+        case mimeType = "mime_type"
+        case fileSize = "file_size"
+    }
+}
+
+public struct TelegramAudio: Codable, Sendable, Equatable {
+    public let fileID: String
+    public let fileUniqueID: String
+    public let duration: Int
+    public let fileName: String?
+    public let mimeType: String?
+    public let fileSize: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case fileID = "file_id"
+        case fileUniqueID = "file_unique_id"
+        case duration
+        case fileName = "file_name"
+        case mimeType = "mime_type"
+        case fileSize = "file_size"
+    }
+}
+
+public struct TelegramDocument: Codable, Sendable, Equatable {
+    public let fileID: String
+    public let fileUniqueID: String
+    public let fileName: String?
+    public let mimeType: String?
+    public let fileSize: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case fileID = "file_id"
+        case fileUniqueID = "file_unique_id"
+        case fileName = "file_name"
+        case mimeType = "mime_type"
+        case fileSize = "file_size"
     }
 }
 
@@ -84,4 +184,23 @@ public struct TelegramSendMessageResponse: Codable, Sendable {
 public struct TelegramBoolResponse: Codable, Sendable {
     public let ok: Bool
     public let result: Bool
+}
+
+public struct TelegramFile: Codable, Sendable, Equatable {
+    public let fileID: String
+    public let fileUniqueID: String
+    public let fileSize: Int?
+    public let filePath: String?
+
+    enum CodingKeys: String, CodingKey {
+        case fileID = "file_id"
+        case fileUniqueID = "file_unique_id"
+        case fileSize = "file_size"
+        case filePath = "file_path"
+    }
+}
+
+public struct TelegramGetFileResponse: Codable, Sendable {
+    public let ok: Bool
+    public let result: TelegramFile
 }

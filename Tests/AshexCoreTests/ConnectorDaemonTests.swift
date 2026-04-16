@@ -112,6 +112,110 @@ import Testing
     #expect(event?.externalUserID == "44")
 }
 
+@Test func telegramConnectorNormalizesPhotoMessagesIntoAttachmentPrompt() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let persistence = SQLitePersistenceStore(databaseURL: root.appendingPathComponent("ashex.sqlite"))
+    try persistence.initialize()
+
+    let client = MockTelegramBotClient(
+        filesByID: [
+            "photo-file": TelegramFile(
+                fileID: "photo-file",
+                fileUniqueID: "photo-uniq",
+                fileSize: 128,
+                filePath: "photos/demo.jpg"
+            )
+        ],
+        fileDataByPath: [
+            "photos/demo.jpg": Data([0x01, 0x02, 0x03])
+        ]
+    )
+    let mediaRoot = root.appendingPathComponent("telegram-media", isDirectory: true)
+    let connector = TelegramConnector(
+        token: "test-token",
+        config: TelegramConfig(enabled: true),
+        client: client,
+        persistence: persistence,
+        mediaRoot: mediaRoot
+    )
+
+    let event = try await connector.normalize(update: TelegramUpdate(
+        updateID: 81,
+        message: TelegramMessage(
+            messageID: 15,
+            from: TelegramUser(id: 44, isBot: false, firstName: "Sam", username: "sam"),
+            chat: TelegramChat(id: 55, type: "private"),
+            date: 0,
+            text: nil,
+            caption: "What is in this image?",
+            photo: [
+                TelegramPhotoSize(fileID: "photo-file", fileUniqueID: "photo-uniq", width: 1024, height: 768, fileSize: 128)
+            ],
+            voice: nil,
+            audio: nil,
+            document: nil
+        )
+    ))
+
+    #expect(event?.command == nil)
+    #expect(event?.text.contains("Telegram image attachment") == true)
+    #expect(event?.text.contains("Caption: What is in this image?") == true)
+    #expect(event?.metadata["telegram_media_kind"]?.stringValue == "image")
+    let localPath = try #require(event?.metadata["local_path"]?.stringValue)
+    #expect(FileManager.default.fileExists(atPath: localPath))
+}
+
+@Test func telegramConnectorNormalizesVoiceMessagesIntoAttachmentPrompt() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let persistence = SQLitePersistenceStore(databaseURL: root.appendingPathComponent("ashex.sqlite"))
+    try persistence.initialize()
+
+    let client = MockTelegramBotClient(
+        filesByID: [
+            "voice-file": TelegramFile(
+                fileID: "voice-file",
+                fileUniqueID: "voice-uniq",
+                fileSize: 256,
+                filePath: "voice/demo.ogg"
+            )
+        ],
+        fileDataByPath: [
+            "voice/demo.ogg": Data([0x10, 0x20, 0x30])
+        ]
+    )
+    let mediaRoot = root.appendingPathComponent("telegram-media", isDirectory: true)
+    let connector = TelegramConnector(
+        token: "test-token",
+        config: TelegramConfig(enabled: true),
+        client: client,
+        persistence: persistence,
+        mediaRoot: mediaRoot
+    )
+
+    let event = try await connector.normalize(update: TelegramUpdate(
+        updateID: 82,
+        message: TelegramMessage(
+            messageID: 16,
+            from: TelegramUser(id: 44, isBot: false, firstName: "Sam", username: "sam"),
+            chat: TelegramChat(id: 55, type: "private"),
+            date: 0,
+            text: nil,
+            caption: nil,
+            photo: nil,
+            voice: TelegramVoice(fileID: "voice-file", fileUniqueID: "voice-uniq", duration: 4, mimeType: "audio/ogg", fileSize: 256),
+            audio: nil,
+            document: nil
+        )
+    ))
+
+    #expect(event?.command == nil)
+    #expect(event?.text.contains("Telegram audio attachment") == true)
+    #expect(event?.metadata["telegram_media_kind"]?.stringValue == "audio")
+    #expect(event?.metadata["duration_seconds"]?.intValue == 4)
+    let localPath = try #require(event?.metadata["local_path"]?.stringValue)
+    #expect(FileManager.default.fileExists(atPath: localPath))
+}
+
 @Test func telegramConnectorNormalizesTasksAndChatsCommands() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     let persistence = SQLitePersistenceStore(databaseURL: root.appendingPathComponent("ashex.sqlite"))
@@ -825,11 +929,19 @@ private struct BlockingRuntime: RuntimeStreaming, Sendable {
 
 private actor MockTelegramBotClient: TelegramBotClient {
     private var updates: [[TelegramUpdate]]
+    private let filesByID: [String: TelegramFile]
+    private let fileDataByPath: [String: Data]
     private(set) var sentMessages: [(Int64, String, String?)] = []
     private(set) var chatActions: [(Int64, String)] = []
 
-    init(updates: [[TelegramUpdate]] = []) {
+    init(
+        updates: [[TelegramUpdate]] = [],
+        filesByID: [String: TelegramFile] = [:],
+        fileDataByPath: [String: Data] = [:]
+    ) {
         self.updates = updates
+        self.filesByID = filesByID
+        self.fileDataByPath = fileDataByPath
     }
 
     func getMe(token: String) async throws -> TelegramBotIdentity {
@@ -842,6 +954,20 @@ private actor MockTelegramBotClient: TelegramBotClient {
             return []
         }
         return updates.removeFirst()
+    }
+
+    func getFile(token: String, fileID: String) async throws -> TelegramFile {
+        guard let file = filesByID[fileID] else {
+            throw AshexError.model("Missing mocked Telegram file for \(fileID)")
+        }
+        return file
+    }
+
+    func downloadFile(token: String, filePath: String) async throws -> Data {
+        guard let data = fileDataByPath[filePath] else {
+            throw AshexError.model("Missing mocked Telegram file data for \(filePath)")
+        }
+        return data
     }
 
     func sendMessage(token: String, chatID: Int64, text: String, parseMode: String?) async throws {
