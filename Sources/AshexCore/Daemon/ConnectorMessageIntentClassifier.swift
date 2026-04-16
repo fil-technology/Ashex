@@ -10,6 +10,10 @@ public enum ConnectorMessageIntentClassifier {
         let lowered = prompt.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !lowered.isEmpty else { return .directChat }
 
+        if lowered.contains("github.com/") || lowered.contains("github repo") {
+            return .workspaceTask
+        }
+
         let explicitToolSignals = [
             "shell:", "run shell", "use curl", "run curl", "curl ", "wget ", "git ", "swift test",
             "xcodebuild", "npm ", "pnpm ", "yarn ", "python ", "ruby ", "node ", "make ",

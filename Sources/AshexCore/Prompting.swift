@@ -360,6 +360,7 @@ public enum PromptBuilder {
             - Never invent tools.
             - Do not call tools for greetings, casual chat, or questions that can be answered without workspace state.
             - Only call filesystem, git, or shell when the user is asking about files, wants you to inspect project state, or explicitly asks you to run something.
+            - When the user asks about a GitHub or other remote repository URL, prefer `github_repo` for read-only inspection before using local workspace tools.
             - For coding or editing requests, prefer this workflow: explore relevant files first, plan briefly, then mutate, then validate, then summarize.
             - During exploration, bias toward `find_files`, `search_text`, `list_directory`, `file_info`, `read_text_file`, and read-only git inspection before changing anything.
             - During validation, prefer checking changed files, `git diff`, focused reads, and relevant test/build commands before concluding.
@@ -379,6 +380,8 @@ public enum PromptBuilder {
             `read_text_file`, `write_text_file`, `replace_in_file`, `apply_patch`, `list_directory`, `create_directory`, `delete_path`, `move_path`, `copy_path`, `file_info`, `find_files`, `search_text`.
             For git tool calls, always use the `operation` field with one of:
             `status`, `current_branch`, `diff_unstaged`, `diff_staged`, `log`, `show_commit`, `init`, `add`, `add_all`, `commit`, `create_branch`, `switch_branch`, `switch_new_branch`, `restore_worktree`, `restore_staged`, `reset_mixed`, `reset_hard`, `clean_force`, `tag`, `merge`, `rebase`, `pull`, `push`.
+            For github_repo tool calls, always use the `operation` field with one of:
+            `inspect_repository`, `list_files`, `read_file`, `search_text`.
             For shell tool calls, always send `command` and optional `timeout_seconds`.
             For installable tools, use the tool's listed operations and argument names exactly as shown in the available tools block.
 
@@ -390,6 +393,8 @@ public enum PromptBuilder {
             {"type":"tool_call","final_answer":null,"tool_name":"filesystem","arguments":{"operation":"search_text","path":"Sources","query":"ApprovalPolicy","max_results":20}}
             {"type":"tool_call","final_answer":null,"tool_name":"filesystem","arguments":{"operation":"apply_patch","path":"README.md","edits":[{"old_text":"old","new_text":"new","replace_all":false}]}}
             {"type":"tool_call","final_answer":null,"tool_name":"git","arguments":{"operation":"status","limit":null,"commit":null}}
+            {"type":"tool_call","final_answer":null,"tool_name":"github_repo","arguments":{"operation":"inspect_repository","repository_url":"https://github.com/owner/repo","ref":"main"}}
+            {"type":"tool_call","final_answer":null,"tool_name":"github_repo","arguments":{"operation":"read_file","repository_url":"https://github.com/owner/repo","ref":"main","path":"README.md"}}
             {"type":"tool_call","final_answer":null,"tool_name":"git","arguments":{"operation":"add","paths":["README.md","Sources/App.swift"]}}
             {"type":"tool_call","final_answer":null,"tool_name":"git","arguments":{"operation":"commit","message":"Initial project setup","amend":false,"allow_empty":false}}
             {"type":"tool_call","final_answer":null,"tool_name":"shell","arguments":{"command":"ls -la","timeout_seconds":30}}

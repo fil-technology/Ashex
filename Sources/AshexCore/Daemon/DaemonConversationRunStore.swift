@@ -8,6 +8,11 @@ public struct ActiveConversationRunStatus: Sendable, Equatable {
     public let awaitingApproval: Bool
 }
 
+public struct ActiveConversationRunSnapshot: Sendable, Equatable {
+    public let conversation: ConnectorConversationReference
+    public let status: ActiveConversationRunStatus
+}
+
 public actor DaemonConversationRunStore {
     private struct ActiveConversationRun {
         let threadID: UUID
@@ -88,5 +93,21 @@ public actor DaemonConversationRunStore {
 
     public func hasActiveRuns() -> Bool {
         !activeRuns.isEmpty
+    }
+
+    public func listActiveRuns() -> [ActiveConversationRunSnapshot] {
+        activeRuns.map { conversation, active in
+            ActiveConversationRunSnapshot(
+                conversation: conversation,
+                status: ActiveConversationRunStatus(
+                    threadID: active.threadID,
+                    runID: active.runID,
+                    startedAt: active.startedAt,
+                    prompt: active.prompt,
+                    awaitingApproval: active.awaitingApproval
+                )
+            )
+        }
+        .sorted { $0.status.startedAt < $1.status.startedAt }
     }
 }

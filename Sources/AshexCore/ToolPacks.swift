@@ -579,6 +579,7 @@ public enum RuntimeToolFactory {
         var tools: [any Tool] = [
             FileSystemTool(workspaceGuard: workspaceGuard),
             GitTool(executionRuntime: executionRuntime, workspaceURL: workspaceURL),
+            GitHubRepoTool(executionRuntime: executionRuntime),
             BuildTool(executionRuntime: executionRuntime, workspaceURL: workspaceURL),
             ShellTool(executionRuntime: executionRuntime, workspaceURL: workspaceURL, executionPolicy: shellExecutionPolicy),
             ToolPackScaffoldTool(workspaceGuard: workspaceGuard),

@@ -22,4 +22,20 @@ public actor ConversationRouter {
     public func resetConversation(for reference: ConnectorConversationReference) async throws -> ConnectorConversationMapping {
         try await mappingStore.reset(reference: reference)
     }
+
+    public func listThreadIDs(for reference: ConnectorConversationReference) async throws -> [UUID] {
+        try await mappingStore.listThreadIDs(for: reference)
+    }
+
+    public func switchConversation(
+        for reference: ConnectorConversationReference,
+        to threadID: UUID,
+        externalUserID: String?
+    ) async throws -> ConnectorConversationMapping {
+        try await mappingStore.switchToThread(threadID, for: reference, externalUserID: externalUserID)
+    }
+
+    public func listConversations(connectorKind: String? = nil) async throws -> [ConnectorConversationMapping] {
+        try await mappingStore.listMappings(connectorKind: connectorKind)
+    }
 }

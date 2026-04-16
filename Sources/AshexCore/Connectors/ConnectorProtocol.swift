@@ -15,8 +15,13 @@ public struct ConnectorConversationReference: Sendable, Codable, Hashable {
 public enum ConnectorCommand: String, Sendable, Codable {
     case start
     case help
+    case whoami
+    case tasks
+    case chats
     case reset
     case newConversation = "new"
+    case thread
+    case threads
     case stop
     case cancel
     case status

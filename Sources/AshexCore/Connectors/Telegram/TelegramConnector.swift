@@ -223,6 +223,15 @@ public actor TelegramConnector: Connector, ConnectorActivityControlling {
         if raw == "statsoff" {
             return .statsOff
         }
+        if raw == "thread" {
+            return .thread
+        }
+        if raw == "threads" {
+            return .threads
+        }
+        if raw == "whoami" {
+            return .whoami
+        }
         return raw.flatMap(ConnectorCommand.init(rawValue:))
     }
 

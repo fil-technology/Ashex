@@ -1019,6 +1019,13 @@ public struct MockModelAdapter: ModelAdapter {
             ]))
         }
 
+        if prompt.contains("github.com"), let repositoryURL = Self.firstURL(in: lastMessage.content) {
+            return .toolCall(.init(toolName: "github_repo", arguments: [
+                "operation": .string("inspect_repository"),
+                "repository_url": .string(repositoryURL),
+            ]))
+        }
+
         if prompt.contains("swift build") {
             return .toolCall(.init(toolName: "build", arguments: [
                 "operation": .string("swift_build"),
@@ -1105,6 +1112,14 @@ public struct MockModelAdapter: ModelAdapter {
         let content = input[range.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
         guard !path.isEmpty else { return nil }
         return (path, content)
+    }
+
+    private static func firstURL(in input: String) -> String? {
+        guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) else {
+            return nil
+        }
+        let range = NSRange(input.startIndex..<input.endIndex, in: input)
+        return detector.firstMatch(in: input, options: [], range: range)?.url?.absoluteString
     }
 }
 

@@ -248,19 +248,23 @@ struct ToolExecutor: Sendable {
     }
 
     private func metadata(for tool: any Tool, call: ToolCallRequest, result: ToolContent) -> ToolExecutionMetadata {
-        if tool.contract.kind == .installable,
-           let operation = tool.contract.operation(for: call.arguments) {
+        let contractMetadata: ToolExecutionMetadata?
+        if let operation = tool.contract.operation(for: call.arguments) {
             let inspectedPaths = resolveArgumentValues(keys: operation.inspectedPathArguments, from: call.arguments)
             let changedPaths = resolveArgumentValues(keys: operation.changedPathArguments, from: call.arguments)
             if !operation.validationArtifacts.isEmpty || !inspectedPaths.isEmpty || !changedPaths.isEmpty || operation.progressSummary != nil {
-                return .init(
+                contractMetadata = .init(
                     inspectedPaths: inspectedPaths,
                     changedPaths: changedPaths,
                     validationArtifacts: operation.validationArtifacts,
                     summary: operation.progressSummary ?? result.displayText,
                     representsProgress: true
                 )
+            } else {
+                contractMetadata = nil
             }
+        } else {
+            contractMetadata = nil
         }
 
         switch call.toolName {
@@ -289,7 +293,7 @@ struct ToolExecutor: Sendable {
             }
             return .init(inspectedPaths: ["<shell>"], changedPaths: [], validationArtifacts: shellValidationArtifacts(command: command), summary: "inspected via shell", representsProgress: true)
         default:
-            return .init(inspectedPaths: [], changedPaths: [], validationArtifacts: [], summary: result.displayText, representsProgress: false)
+            return contractMetadata ?? .init(inspectedPaths: [], changedPaths: [], validationArtifacts: [], summary: result.displayText, representsProgress: false)
         }
     }
 

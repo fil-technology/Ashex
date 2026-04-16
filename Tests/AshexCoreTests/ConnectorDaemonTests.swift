@@ -84,6 +84,71 @@ import Testing
     #expect(event?.externalUserID == "22")
 }
 
+@Test func telegramConnectorNormalizesWhoAmICommand() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let persistence = SQLitePersistenceStore(databaseURL: root.appendingPathComponent("ashex.sqlite"))
+    try persistence.initialize()
+
+    let connector = TelegramConnector(
+        token: "test-token",
+        config: TelegramConfig(enabled: true),
+        client: MockTelegramBotClient(),
+        persistence: persistence
+    )
+
+    let event = try await connector.normalize(update: TelegramUpdate(
+        updateID: 78,
+        message: TelegramMessage(
+            messageID: 12,
+            from: TelegramUser(id: 44, isBot: false, firstName: "Sam", username: "sam"),
+            chat: TelegramChat(id: 55, type: "private"),
+            date: 0,
+            text: "/whoami"
+        )
+    ))
+
+    #expect(event?.command == .whoami)
+    #expect(event?.conversation.externalConversationID == "55")
+    #expect(event?.externalUserID == "44")
+}
+
+@Test func telegramConnectorNormalizesTasksAndChatsCommands() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let persistence = SQLitePersistenceStore(databaseURL: root.appendingPathComponent("ashex.sqlite"))
+    try persistence.initialize()
+
+    let connector = TelegramConnector(
+        token: "test-token",
+        config: TelegramConfig(enabled: true),
+        client: MockTelegramBotClient(),
+        persistence: persistence
+    )
+
+    let tasksEvent = try await connector.normalize(update: TelegramUpdate(
+        updateID: 79,
+        message: TelegramMessage(
+            messageID: 13,
+            from: TelegramUser(id: 44, isBot: false, firstName: "Sam", username: "sam"),
+            chat: TelegramChat(id: 55, type: "private"),
+            date: 0,
+            text: "/tasks"
+        )
+    ))
+    let chatsEvent = try await connector.normalize(update: TelegramUpdate(
+        updateID: 80,
+        message: TelegramMessage(
+            messageID: 14,
+            from: TelegramUser(id: 44, isBot: false, firstName: "Sam", username: "sam"),
+            chat: TelegramChat(id: 55, type: "private"),
+            date: 0,
+            text: "/chats"
+        )
+    ))
+
+    #expect(tasksEvent?.command == .tasks)
+    #expect(chatsEvent?.command == .chats)
+}
+
 @Test func telegramConnectorRepliesWithOnboardingForUnauthorizedChat() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     let persistence = SQLitePersistenceStore(databaseURL: root.appendingPathComponent("ashex.sqlite"))
@@ -166,6 +231,7 @@ import Testing
     #expect(ConnectorMessageIntentClassifier.classify("Search for the weather in Petah Tikva Israel") == .directChat)
     #expect(ConnectorMessageIntentClassifier.classify("Give me simple swift hello world app code") == .directChat)
     #expect(ConnectorMessageIntentClassifier.classify("What this repo is about?") == .directChat)
+    #expect(ConnectorMessageIntentClassifier.classify("What this repo is about: https://github.com/Eronred/aso-skills") == .workspaceTask)
 }
 
 @Test func runDispatcherDirectChatModeAvoidsToolLoopForCasualMessage() async throws {
@@ -459,6 +525,170 @@ import Testing
     let sentMessages = await connector.recordedMessages()
     #expect(sentMessages.contains { $0.text.contains("Available models for `ollama`") })
     #expect(sentMessages.contains { $0.text.contains("`gemma4:latest` ← current") })
+}
+
+@Test func daemonSupervisorListsAndSwitchesThreadsWithinTelegramChat() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let persistence = SQLitePersistenceStore(databaseURL: root.appendingPathComponent("ashex.sqlite"))
+    try persistence.initialize()
+
+    let mappingStore = ConnectorConversationMappingStore(persistence: persistence)
+    let router = ConversationRouter(mappingStore: mappingStore)
+    let connector = RecordingConnector()
+    let supervisor = DaemonSupervisor(
+        registry: ConnectorRegistry(connectors: [connector]),
+        router: router,
+        dispatcher: RunDispatcher(runtime: BlockingRuntime()),
+        persistence: persistence,
+        logger: DaemonLogger(minimumLevel: .error),
+        runStore: DaemonConversationRunStore(),
+        remoteApprovalInbox: RemoteApprovalInbox(persistence: persistence),
+        config: .init(maxIterations: 2, connectorLabel: "telegram", provider: "ollama", model: "gemma4:latest")
+    )
+
+    let conversation = ConnectorConversationReference(
+        connectorKind: "telegram",
+        connectorID: "telegram",
+        externalConversationID: "chat-threads"
+    )
+
+    _ = try await router.resolveConversation(
+        for: conversation,
+        externalUserID: "44",
+        createThread: { try persistence.createThread(now: Date()) }
+    )
+    _ = try await router.resetConversation(for: conversation)
+
+    try await supervisor.handle(.init(
+        connectorKind: "telegram",
+        connectorID: "telegram",
+        messageID: "4001",
+        conversation: conversation,
+        externalUserID: "44",
+        text: "/threads",
+        command: .threads
+    ))
+
+    try await supervisor.handle(.init(
+        connectorKind: "telegram",
+        connectorID: "telegram",
+        messageID: "4002",
+        conversation: conversation,
+        externalUserID: "44",
+        text: "/thread 2",
+        command: .thread
+    ))
+
+    let sentMessages = await connector.recordedMessages()
+    #expect(sentMessages.contains { $0.text.contains("Threads in this chat:") })
+    #expect(sentMessages.contains { $0.text.contains("Switched to thread `2`") })
+}
+
+@Test func daemonSupervisorWhoAmICommandShowsTelegramIDs() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let persistence = SQLitePersistenceStore(databaseURL: root.appendingPathComponent("ashex.sqlite"))
+    try persistence.initialize()
+
+    let connector = RecordingConnector()
+    let supervisor = DaemonSupervisor(
+        registry: ConnectorRegistry(connectors: [connector]),
+        router: ConversationRouter(mappingStore: ConnectorConversationMappingStore(persistence: persistence)),
+        dispatcher: RunDispatcher(runtime: BlockingRuntime()),
+        persistence: persistence,
+        logger: DaemonLogger(minimumLevel: .error),
+        runStore: DaemonConversationRunStore(),
+        remoteApprovalInbox: RemoteApprovalInbox(persistence: persistence),
+        config: .init(maxIterations: 2, connectorLabel: "telegram", provider: "ollama", model: "gemma4:latest")
+    )
+
+    try await supervisor.handle(.init(
+        connectorKind: "telegram",
+        connectorID: "telegram",
+        messageID: "4010",
+        conversation: .init(connectorKind: "telegram", connectorID: "telegram", externalConversationID: "123456"),
+        externalUserID: "654321",
+        text: "/whoami",
+        command: .whoami
+    ))
+
+    let sentMessages = await connector.recordedMessages()
+    #expect(sentMessages.contains { $0.text.contains("Chat ID: `123456`") })
+    #expect(sentMessages.contains { $0.text.contains("User ID: `654321`") })
+}
+
+@Test func daemonSupervisorTasksAndChatsCommandsShowGlobalTelegramState() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let persistence = SQLitePersistenceStore(databaseURL: root.appendingPathComponent("ashex.sqlite"))
+    try persistence.initialize()
+
+    let mappingStore = ConnectorConversationMappingStore(persistence: persistence)
+    let router = ConversationRouter(mappingStore: mappingStore)
+    let connector = RecordingConnector()
+    let runStore = DaemonConversationRunStore()
+    let supervisor = DaemonSupervisor(
+        registry: ConnectorRegistry(connectors: [connector]),
+        router: router,
+        dispatcher: RunDispatcher(runtime: BlockingRuntime()),
+        persistence: persistence,
+        logger: DaemonLogger(minimumLevel: .error),
+        runStore: runStore,
+        remoteApprovalInbox: RemoteApprovalInbox(persistence: persistence),
+        config: .init(maxIterations: 2, connectorLabel: "telegram", provider: "ollama", model: "gemma4:latest")
+    )
+
+    let conversationA = ConnectorConversationReference(
+        connectorKind: "telegram",
+        connectorID: "telegram",
+        externalConversationID: "chat-a"
+    )
+    let conversationB = ConnectorConversationReference(
+        connectorKind: "telegram",
+        connectorID: "telegram",
+        externalConversationID: "chat-b"
+    )
+    let mappingA = try await router.resolveConversation(
+        for: conversationA,
+        externalUserID: "user-a",
+        createThread: { try persistence.createThread(now: Date()) }
+    )
+    _ = try await router.resolveConversation(
+        for: conversationB,
+        externalUserID: "user-b",
+        createThread: { try persistence.createThread(now: Date()) }
+    )
+
+    _ = await runStore.beginRun(
+        for: conversationB,
+        threadID: mappingA.threadID,
+        prompt: "Investigate daemon startup and summarize next steps",
+        cancellationToken: CancellationToken()
+    )
+
+    try await supervisor.handle(.init(
+        connectorKind: "telegram",
+        connectorID: "telegram",
+        messageID: "4020",
+        conversation: conversationA,
+        externalUserID: "user-a",
+        text: "/tasks",
+        command: .tasks
+    ))
+    try await supervisor.handle(.init(
+        connectorKind: "telegram",
+        connectorID: "telegram",
+        messageID: "4021",
+        conversation: conversationA,
+        externalUserID: "user-a",
+        text: "/chats",
+        command: .chats
+    ))
+
+    let sentMessages = await connector.recordedMessages()
+    #expect(sentMessages.contains { $0.text.contains("Active tasks:") })
+    #expect(sentMessages.contains { $0.text.contains("chat `chat-b`") })
+    #expect(sentMessages.contains { $0.text.contains("Known chats:") })
+    #expect(sentMessages.contains { $0.text.contains("chat `chat-a`") })
 }
 
 @Test func telegramConnectorNormalizesStatsAliases() async throws {

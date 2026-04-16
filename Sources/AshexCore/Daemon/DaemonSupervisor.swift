@@ -111,7 +111,13 @@ public actor DaemonSupervisor {
             Commands:
             /start - confirm the bot is connected
             /help - show this help
+            /whoami - show your Telegram user ID and current chat ID
+            /tasks - list active tasks across Telegram chats
+            /chats - list known Telegram chats and their current thread info
             /reset - start a fresh Ash conversation for this chat
+            /new - start a fresh thread in this Telegram chat
+            /threads - list threads in this Telegram chat
+            /thread N - switch to thread number N from `/threads`
             /status - show whether Ash is running or waiting for approval
             /pending - show the current pending approval request
             /approve - allow the pending tool request in this chat
@@ -126,6 +132,21 @@ public actor DaemonSupervisor {
             return
         case .status:
             try await send(text: await statusMessage(for: event.conversation), for: event)
+            return
+        case .whoami:
+            try await send(text: identityMessage(for: event), for: event)
+            return
+        case .tasks:
+            try await handleTasksCommand(for: event)
+            return
+        case .chats:
+            try await handleChatsCommand(for: event)
+            return
+        case .thread:
+            try await handleThreadCommand(for: event)
+            return
+        case .threads:
+            try await handleThreadsCommand(for: event)
             return
         case .stats:
             try await handleStatsCommand(for: event)
@@ -473,6 +494,136 @@ public actor DaemonSupervisor {
         }
     }
 
+    private func handleThreadsCommand(for event: InboundConnectorEvent) async throws {
+        let threadIDs = try await router.listThreadIDs(for: event.conversation)
+        guard !threadIDs.isEmpty else {
+            try await send(text: "No threads yet in this chat. Use `/new` to start one.", for: event)
+            return
+        }
+
+        let summaries = try persistence.listThreads(limit: 500)
+        let summaryByID = Dictionary(uniqueKeysWithValues: summaries.map { ($0.id, $0) })
+        let activeThreadID = try await router.resolveConversation(
+            for: event.conversation,
+            externalUserID: event.externalUserID,
+            createThread: { [persistence] in try persistence.createThread(now: Date()) }
+        ).threadID
+
+        let lines = threadIDs.prefix(12).enumerated().map { index, threadID in
+            let summary = summaryByID[threadID]
+            let suffix = threadID == activeThreadID ? " ← current" : ""
+            let state = summary?.latestRunState?.rawValue ?? "idle"
+            let count = summary?.messageCount ?? 0
+            return "\(index + 1). `\(threadID.uuidString.prefix(8))` • \(state) • \(count) msg\(suffix)"
+        }
+
+        try await send(
+            text: """
+            Threads in this chat:
+            \(lines.joined(separator: "\n"))
+
+            Use `/thread N` to switch or `/new` for a fresh chat.
+            """,
+            for: event
+        )
+    }
+
+    private func handleThreadCommand(for event: InboundConnectorEvent) async throws {
+        let parts = event.text.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
+        guard parts.count == 2, let index = Int(parts[1].trimmingCharacters(in: .whitespacesAndNewlines)), index > 0 else {
+            try await send(text: "Usage: `/thread 2`", for: event)
+            return
+        }
+
+        let hasActiveRuns = await runStore.hasActiveRuns()
+        guard !hasActiveRuns else {
+            try await send(text: "Ash is busy right now. Use `/stop` before switching threads.", for: event)
+            return
+        }
+
+        let threadIDs = try await router.listThreadIDs(for: event.conversation)
+        guard threadIDs.indices.contains(index - 1) else {
+            try await send(text: "Thread `\(index)` does not exist in this chat. Use `/threads` first.", for: event)
+            return
+        }
+
+        let mapping = try await router.switchConversation(
+            for: event.conversation,
+            to: threadIDs[index - 1],
+            externalUserID: event.externalUserID
+        )
+        try await send(
+            text: "Switched to thread `\(index)` (`\(mapping.threadID.uuidString.prefix(8))`).",
+            for: event
+        )
+    }
+
+    private func handleTasksCommand(for event: InboundConnectorEvent) async throws {
+        let activeRuns = await runStore.listActiveRuns()
+            .filter { $0.conversation.connectorKind == event.conversation.connectorKind }
+
+        guard !activeRuns.isEmpty else {
+            try await send(text: "There are no active tasks right now.", for: event)
+            return
+        }
+
+        let lines = activeRuns.prefix(12).enumerated().map { index, snapshot in
+            let status = snapshot.status.awaitingApproval ? "awaiting approval" : "running"
+            let prompt = compactPrompt(snapshot.status.prompt)
+            return "\(index + 1). chat `\(snapshot.conversation.externalConversationID)` • \(status) • thread `\(snapshot.status.threadID.uuidString.prefix(8))` • \(prompt)"
+        }
+
+        try await send(
+            text: """
+            Active tasks:
+            \(lines.joined(separator: "\n"))
+
+            Use `/status` inside a chat for full detail, or `/stop` in that same chat to cancel it.
+            """,
+            for: event
+        )
+    }
+
+    private func handleChatsCommand(for event: InboundConnectorEvent) async throws {
+        let mappings = try await router.listConversations(connectorKind: event.conversation.connectorKind)
+        guard !mappings.isEmpty else {
+            try await send(text: "No Telegram chats are known yet.", for: event)
+            return
+        }
+
+        let activeByConversation = Dictionary(
+            uniqueKeysWithValues: await runStore.listActiveRuns().map { ($0.conversation, $0.status) }
+        )
+        let threadSummaries = try persistence.listThreads(limit: 500)
+        let summaryByID = Dictionary(uniqueKeysWithValues: threadSummaries.map { ($0.id, $0) })
+
+        let lines = mappings.prefix(12).enumerated().map { index, mapping in
+            let reference = ConnectorConversationReference(
+                connectorKind: mapping.connectorKind,
+                connectorID: mapping.connectorID,
+                externalConversationID: mapping.externalConversationID
+            )
+            let active = activeByConversation[reference]
+            let runState = active?.awaitingApproval == true
+                ? "awaiting approval"
+                : active != nil
+                    ? "running"
+                    : summaryByID[mapping.threadID]?.latestRunState?.rawValue ?? "idle"
+            let current = mapping.externalConversationID == event.conversation.externalConversationID ? " ← current chat" : ""
+            return "\(index + 1). chat `\(mapping.externalConversationID)` • user `\(mapping.externalUserID ?? "?")` • \(runState) • thread `\(mapping.threadID.uuidString.prefix(8))`\((current))"
+        }
+
+        try await send(
+            text: """
+            Known chats:
+            \(lines.joined(separator: "\n"))
+
+            Open that Telegram chat to continue there. In the current chat, use `/threads` and `/thread N` to switch threads.
+            """,
+            for: event
+        )
+    }
+
     private func handleModelsCommand(for event: InboundConnectorEvent) async throws {
         guard let modelControl else {
             try await send(text: "Model listing is not available in this daemon build.", for: event)
@@ -510,6 +661,22 @@ public actor DaemonSupervisor {
                 for: event
             )
         }
+    }
+
+    private func identityMessage(for event: InboundConnectorEvent) -> String {
+        let userID = event.externalUserID ?? "<unknown>"
+        return """
+        Telegram IDs for this chat:
+        Chat ID: `\(event.conversation.externalConversationID)`
+        User ID: `\(userID)`
+        """
+    }
+
+    private func compactPrompt(_ prompt: String, limit: Int = 60) -> String {
+        let normalized = prompt.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard normalized.count > limit else { return normalized }
+        let end = normalized.index(normalized.startIndex, offsetBy: limit)
+        return String(normalized[..<end]).trimmingCharacters(in: .whitespacesAndNewlines) + "..."
     }
 
     private func decorateReplyIfNeeded(
