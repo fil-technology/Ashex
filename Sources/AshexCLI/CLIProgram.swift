@@ -101,7 +101,13 @@ struct AshexCLI {
                 print("[patch-plan] goals: \(objectives.joined(separator: " | "))")
             }
         case .status(_, let message):
-            print("[status] \(message)")
+            if message.lowercased().contains("thinking") {
+                print("[thinking] \(message)")
+            } else if message.lowercased().hasPrefix("reasoning summary:") {
+                print("[reasoning] \(message)")
+            } else {
+                print("[status] \(message)")
+            }
         case .messageAppended(_, _, let role):
             print("[message] appended \(role.rawValue)")
         case .approvalRequested(_, let toolName, let summary, let reason, let risk):
@@ -323,7 +329,8 @@ struct CLIConfiguration {
             persistence: persistence,
             approvalPolicy: approvalPolicy,
             shellExecutionPolicy: shellExecutionPolicy,
-            workspaceSnapshot: workspaceSnapshot
+            workspaceSnapshot: workspaceSnapshot,
+            reasoningSummaryDebugEnabled: userConfig.debug.reasoningSummaries
         )
     }
 

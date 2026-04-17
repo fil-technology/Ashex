@@ -2,6 +2,46 @@ import Foundation
 
 public typealias JSONObject = [String: JSONValue]
 
+public enum InputAttachmentKind: String, Codable, Sendable {
+    case image
+    case audio
+}
+
+public struct InputAttachment: Codable, Sendable, Equatable {
+    public let kind: InputAttachmentKind
+    public let localPath: String
+    public let originalFilename: String?
+    public let mimeType: String?
+    public let caption: String?
+    public let durationSeconds: Double?
+    public let fileSizeBytes: Int?
+    public let metadata: JSONObject
+
+    public init(
+        kind: InputAttachmentKind,
+        localPath: String,
+        originalFilename: String? = nil,
+        mimeType: String? = nil,
+        caption: String? = nil,
+        durationSeconds: Double? = nil,
+        fileSizeBytes: Int? = nil,
+        metadata: JSONObject = [:]
+    ) {
+        self.kind = kind
+        self.localPath = localPath
+        self.originalFilename = originalFilename
+        self.mimeType = mimeType
+        self.caption = caption
+        self.durationSeconds = durationSeconds
+        self.fileSizeBytes = fileSizeBytes
+        self.metadata = metadata
+    }
+
+    public var fileURL: URL {
+        URL(fileURLWithPath: localPath)
+    }
+}
+
 public enum JSONValue: Codable, Sendable, Equatable {
     case string(String)
     case number(Double)
@@ -54,6 +94,11 @@ public enum JSONValue: Codable, Sendable, Equatable {
 
     public var intValue: Int? {
         if case .number(let value) = self { return Int(value) }
+        return nil
+    }
+
+    public var numberValue: Double? {
+        if case .number(let value) = self { return value }
         return nil
     }
 

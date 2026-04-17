@@ -38,6 +38,7 @@ public actor DaemonSupervisor {
     private let remoteApprovalInbox: RemoteApprovalInbox
     private let modelControl: DaemonModelControl?
     private var activeTasks: [ConnectorConversationReference: Task<Void, Never>] = [:]
+    private var latestReasoningSummaryByConversation: [ConnectorConversationReference: String] = [:]
     private var activeProvider: String
     private var activeModel: String
 
@@ -125,6 +126,9 @@ public actor DaemonSupervisor {
             /stats [on|off] - show or toggle token/savings stats for this chat
             /statson - enable token/savings stats for this chat
             /statsoff - disable token/savings stats for this chat
+            /reasoning [on|off] - show or toggle safe reasoning summaries for this chat
+            /reasoningon - enable safe reasoning summaries for this chat
+            /reasoningoff - disable safe reasoning summaries for this chat
             /model [name] - show or switch the active daemon model
             /models - list available models for the active provider
             /stop - stop the current reply or pending run
@@ -156,6 +160,15 @@ public actor DaemonSupervisor {
             return
         case .statsOff:
             try await handleStatsCommand(for: event, forcedState: false)
+            return
+        case .reasoning:
+            try await handleReasoningCommand(for: event)
+            return
+        case .reasoningOn:
+            try await handleReasoningCommand(for: event, forcedState: true)
+            return
+        case .reasoningOff:
+            try await handleReasoningCommand(for: event, forcedState: false)
             return
         case .model:
             try await handleModelCommand(for: event)
@@ -206,6 +219,7 @@ public actor DaemonSupervisor {
             _ = await runStore.cancelRun(for: event.conversation)
             activeTasks[event.conversation]?.cancel()
             activeTasks[event.conversation] = nil
+            latestReasoningSummaryByConversation[event.conversation] = nil
             await runStore.clearRun(for: event.conversation)
             let mapping = try await router.resetConversation(for: event.conversation)
             await logger.log(.info, subsystem: "daemon.router", message: "Conversation reset", metadata: [
@@ -262,6 +276,7 @@ public actor DaemonSupervisor {
                     threadID: mapping.threadID,
                     maxIterations: self.config.maxIterations,
                     mode: intent == .directChat ? .directChat : .agent,
+                    attachments: event.attachments,
                     cancellationToken: cancellationToken,
                     onEvent: { [weak self] runtimeEvent in
                         guard let self else { return }
@@ -284,6 +299,7 @@ public actor DaemonSupervisor {
 
             await self.registry.endActivity(.typing, for: event.conversation, connectorID: event.connectorID)
             await self.runStore.clearRun(for: event.conversation)
+            await self.clearReasoningSummary(for: event.conversation)
             await self.clearActiveTask(for: event.conversation)
         }
         activeTasks[event.conversation] = task
@@ -301,6 +317,11 @@ public actor DaemonSupervisor {
         switch event.payload {
         case .runStarted(_, let runID):
             await runStore.bind(runID: runID, to: conversation)
+            latestReasoningSummaryByConversation[conversation] = nil
+        case .status(_, let message):
+            if let summary = extractReasoningSummary(from: message) {
+                latestReasoningSummaryByConversation[conversation] = summary
+            }
         case .approvalRequested(let runID, let toolName, let summary, let reason, let risk):
             await runStore.setAwaitingApproval(true, for: runID)
             await registry.endActivity(.typing, for: conversation, connectorID: connectorID)
@@ -392,12 +413,14 @@ public actor DaemonSupervisor {
             ? "Ash is waiting for approval on run \(status.runID?.uuidString ?? "<pending>")"
             : "Ash is running \(status.runID?.uuidString ?? "<starting>")"
         let statsState = statsEnabled(for: conversation) ? "enabled" : "disabled"
+        let reasoningState = reasoningEnabled(for: conversation) ? "enabled" : "disabled"
         return """
         \(stateLine)
         Thread: \(status.threadID.uuidString)
         Prompt: \(status.prompt)
         Model: \(activeModel) via \(activeProvider)
         Stats: \(statsState)
+        Reasoning summaries: \(reasoningState)
 
         Use `/stop` to cancel the run\(status.awaitingApproval ? ", `/approve`, or `/deny`." : ".")
         """
@@ -450,6 +473,38 @@ public actor DaemonSupervisor {
         let stateLabel = enabled ? "enabled" : "disabled"
         try await send(
             text: "Token stats are \(stateLabel) for this chat. Use `/stats on` or `/stats off` any time.",
+            for: event
+        )
+    }
+
+    private func handleReasoningCommand(for event: InboundConnectorEvent, forcedState: Bool? = nil) async throws {
+        let desiredState: Bool?
+        if let forcedState {
+            desiredState = forcedState
+        } else {
+            let lowered = event.text.lowercased()
+            if lowered.contains(" on") || lowered.contains(" enable") {
+                desiredState = true
+            } else if lowered.contains(" off") || lowered.contains(" disable") {
+                desiredState = false
+            } else {
+                desiredState = nil
+            }
+        }
+
+        if let desiredState {
+            try persistence.upsertSetting(
+                namespace: reasoningNamespace(for: event.conversation),
+                key: "enabled",
+                value: .bool(desiredState),
+                now: Date()
+            )
+        }
+
+        let enabled = reasoningEnabled(for: event.conversation)
+        let stateLabel = enabled ? "enabled" : "disabled"
+        try await send(
+            text: "Safe reasoning summaries are \(stateLabel) for this chat. Use `/reasoning on` or `/reasoning off` any time.",
             for: event
         )
     }
@@ -684,23 +739,29 @@ public actor DaemonSupervisor {
         runID: UUID?,
         conversation: ConnectorConversationReference
     ) async throws -> String {
+        var decorated = reply
+
+        if reasoningEnabled(for: conversation), let summary = latestReasoningSummaryByConversation[conversation], !summary.isEmpty {
+            decorated += "\n\nReasoning: \(summary)"
+        }
+
         guard statsEnabled(for: conversation), let runID else {
-            return reply
+            return decorated
         }
         let inspector = SessionInspector(persistence: persistence)
         switch TokenSavingsEstimator.costPresentationMode(provider: activeProvider) {
         case .savings:
             guard let usage = try inspector.loadTokenUsage(runID: runID) else {
-                return reply
+                return decorated
             }
             let statsBlock = "\n\nSaved: run \(formatTokenCount(usage.currentRun.usedTokenCount))/\(formatSavedMoney(usage.currentRun.usedTokenCount)) • today \(formatTokenCount(usage.today.usedTokenCount)) • session \(formatTokenCount(usage.session.usedTokenCount)) • total \(formatTokenCount(usage.total.usedTokenCount))"
-            return reply + statsBlock
+            return decorated + statsBlock
         case .usage:
             guard let usage = try inspector.loadTokenUsage(runID: runID) else {
-                return reply
+                return decorated
             }
             let statsBlock = "\n\nUsed: run \(formatTokenCount(usage.currentRun.usedTokenCount))/\(formatUsedMoney(usage.currentRun.usedTokenCount)) • today \(formatTokenCount(usage.today.usedTokenCount)) • session \(formatTokenCount(usage.session.usedTokenCount)) • total \(formatTokenCount(usage.total.usedTokenCount))"
-            return reply + statsBlock
+            return decorated + statsBlock
         }
     }
 
@@ -711,6 +772,26 @@ public actor DaemonSupervisor {
 
     private func statsNamespace(for conversation: ConnectorConversationReference) -> String {
         "connectors.telegram.stats.\(conversation.connectorID).\(conversation.externalConversationID)"
+    }
+
+    private func reasoningEnabled(for conversation: ConnectorConversationReference) -> Bool {
+        let setting = try? persistence.fetchSetting(namespace: reasoningNamespace(for: conversation), key: "enabled")
+        return setting?.value.boolValue ?? false
+    }
+
+    private func reasoningNamespace(for conversation: ConnectorConversationReference) -> String {
+        "connectors.telegram.reasoning.\(conversation.connectorID).\(conversation.externalConversationID)"
+    }
+
+    private func extractReasoningSummary(from message: String) -> String? {
+        let prefix = "Reasoning summary:"
+        guard message.hasPrefix(prefix) else { return nil }
+        let summary = message.replacingOccurrences(of: prefix, with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return summary.isEmpty ? nil : summary
+    }
+
+    private func clearReasoningSummary(for conversation: ConnectorConversationReference) {
+        latestReasoningSummaryByConversation[conversation] = nil
     }
 
     private func formatTokenCount(_ count: Int) -> String {

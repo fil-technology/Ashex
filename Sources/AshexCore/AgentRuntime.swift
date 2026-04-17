@@ -10,6 +10,7 @@ public struct RunRequest: Sendable {
     public let maxIterations: Int
     public let threadID: UUID?
     public let mode: Mode
+    public let attachments: [InputAttachment]
     public let executionControl: ExecutionControl?
     public let cancellationToken: CancellationToken?
 
@@ -18,6 +19,7 @@ public struct RunRequest: Sendable {
         maxIterations: Int = 8,
         threadID: UUID? = nil,
         mode: Mode = .agent,
+        attachments: [InputAttachment] = [],
         executionControl: ExecutionControl? = nil,
         cancellationToken: CancellationToken? = nil
     ) {
@@ -25,6 +27,7 @@ public struct RunRequest: Sendable {
         self.maxIterations = maxIterations
         self.threadID = threadID
         self.mode = mode
+        self.attachments = attachments
         self.executionControl = executionControl
         self.cancellationToken = cancellationToken
     }
@@ -42,6 +45,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
     private let clock: @Sendable () -> Date
     private let toolExecutor: ToolExecutor
     private let workspaceSnapshot: WorkspaceSnapshot?
+    private let reasoningSummaryDebugEnabled: Bool
 
     public init(
         modelAdapter: any ModelAdapter,
@@ -50,6 +54,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         approvalPolicy: any ApprovalPolicy = TrustedApprovalPolicy(),
         shellExecutionPolicy: ShellExecutionPolicy? = nil,
         workspaceSnapshot: WorkspaceSnapshot? = nil,
+        reasoningSummaryDebugEnabled: Bool = false,
         clock: @escaping @Sendable () -> Date = Date.init
     ) throws {
         self.modelAdapter = modelAdapter
@@ -57,6 +62,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         self.persistence = persistence
         self.approvalPolicy = approvalPolicy
         self.workspaceSnapshot = workspaceSnapshot
+        self.reasoningSummaryDebugEnabled = reasoningSummaryDebugEnabled
         self.clock = clock
         self.toolExecutor = ToolExecutor(
             toolRegistry: toolRegistry,
@@ -124,6 +130,17 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
 
             let userMessage = try persistence.appendMessage(threadID: thread.id, runID: run.id, role: .user, content: request.prompt, now: clock())
             try emitter.emit(.messageAppended(runID: run.id, messageID: userMessage.id, role: .user), runID: run.id)
+
+            if !request.attachments.isEmpty {
+                let attachmentMessage = try persistence.appendMessage(
+                    threadID: thread.id,
+                    runID: run.id,
+                    role: .system,
+                    content: Self.attachmentContextMessage(for: request.attachments),
+                    now: clock()
+                )
+                try emitter.emit(.messageAppended(runID: run.id, messageID: attachmentMessage.id, role: .system), runID: run.id)
+            }
 
             if request.mode == .directChat {
                 try await executeDirectChatRun(thread: thread, run: run, request: request, emitter: emitter)
@@ -277,6 +294,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                         run: run,
                         stepPrompt: stepMessage,
                         stepTitle: step.title,
+                        attachments: request.attachments,
                         taskKind: taskKind,
                         stepPhase: step.phase,
                         explorationPlan: explorationPlan,
@@ -407,13 +425,40 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         Do not inspect the workspace, do not call tools, and do not mention internal runtime mechanics unless the user asks.
         Keep answers concise unless the user asks for more detail.
         """
-        let reply = try await adapter.directReply(history: history, systemPrompt: systemPrompt)
-        let assistantMessage = try persistence.appendMessage(threadID: thread.id, runID: run.id, role: .assistant, content: reply, now: clock())
+        try emitter.emit(.status(runID: run.id, message: "Thinking about the reply"), runID: run.id)
+        let replyEnvelope = try await adapter.directReplyEnvelope(history: history, systemPrompt: systemPrompt, attachments: request.attachments)
+        if reasoningSummaryDebugEnabled, let summary = replyEnvelope.reasoningSummary, !summary.isEmpty {
+            try emitter.emit(.status(runID: run.id, message: "Reasoning summary: \(summary)"), runID: run.id)
+        }
+        let assistantMessage = try persistence.appendMessage(threadID: thread.id, runID: run.id, role: .assistant, content: replyEnvelope.text, now: clock())
         try emitter.emit(.messageAppended(runID: run.id, messageID: assistantMessage.id, role: .assistant), runID: run.id)
-        try emitter.emit(.finalAnswer(runID: run.id, messageID: assistantMessage.id, text: reply), runID: run.id)
+        try emitter.emit(.finalAnswer(runID: run.id, messageID: assistantMessage.id, text: replyEnvelope.text), runID: run.id)
         try persistence.transitionRun(runID: run.id, to: .completed, reason: nil, now: clock())
         try emitter.emit(.runStateChanged(runID: run.id, state: .completed, reason: nil), runID: run.id)
         try emitter.emit(.runFinished(runID: run.id, state: .completed), runID: run.id)
+    }
+
+    private static func attachmentContextMessage(for attachments: [InputAttachment]) -> String {
+        let lines = attachments.enumerated().map { index, attachment in
+            var line = "\(index + 1). \(attachment.kind.rawValue) at \(attachment.localPath)"
+            if let name = attachment.originalFilename, !name.isEmpty {
+                line += " (\(name))"
+            }
+            if let mimeType = attachment.mimeType, !mimeType.isEmpty {
+                line += " [\(mimeType)]"
+            }
+            if let caption = attachment.caption?.trimmingCharacters(in: .whitespacesAndNewlines), !caption.isEmpty {
+                line += " caption: \(caption)"
+            }
+            return line
+        }
+
+        return """
+        Attachments available for this run:
+        \(lines.joined(separator: "\n"))
+
+        Tools can use the normalized attachment context directly instead of inferring attachments from prompt text.
+        """
     }
 
     private static func shouldDelegateStep(
@@ -657,6 +702,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         run: RunRecord,
         stepPrompt: String,
         stepTitle: String,
+        attachments: [InputAttachment],
         taskKind: TaskKind,
         stepPhase: PlannedStepPhase,
         explorationPlan: ExplorationPlan,
@@ -681,7 +727,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                 return .init(summary: "Skipped current step", changedFiles: [], validationNotes: [], remainingItems: [])
             }
 
-            try emitter.emit(.status(runID: run.id, message: "Iteration \(iteration + 1): requesting next model action"), runID: run.id)
+            try emitter.emit(.status(runID: run.id, message: "Thinking about the next action (iteration \(iteration + 1))"), runID: run.id)
 
             let messages = try persistence.fetchMessages(threadID: thread.id)
             let refreshedRun = try persistence.fetchRun(runID: run.id) ?? run
@@ -834,6 +880,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                     call: call,
                     threadID: thread.id,
                     runID: run.id,
+                    attachments: attachments,
                     preconditions: .init(hasPriorInspection: workflowState.hasPriorInspection, phase: stepPhase),
                     cancellation: cancellation,
                     emitter: emitter
@@ -881,7 +928,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                         emitter: emitter
                     )
                     if !newChanges.isEmpty {
-                        try emitter.emit(.changedFilesTracked(runID: run.id, paths: newChanges.map(\.path)), runID: run.id)
+                        try emitter.emit(.changedFilesTracked(runID: run.id, paths: newChanges.map { $0.path }), runID: run.id)
                     }
                     if noProgressIterations >= 3 {
                         try emitter.emit(.status(runID: run.id, message: "Tool activity is no longer making useful progress. Ending the step with a recoverable summary."), runID: run.id)
@@ -954,7 +1001,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
 
         for iteration in 0..<maxIterations {
             try await cancellation.checkCancellation()
-            try emitter.emit(.status(runID: run.id, message: "Subagent iteration \(iteration + 1): working on \(stepTitle)"), runID: run.id)
+            try emitter.emit(.status(runID: run.id, message: "Subagent thinking about \(stepTitle) (iteration \(iteration + 1))"), runID: run.id)
 
             let refreshedRun = try persistence.fetchRun(runID: run.id) ?? run
             let workspaceSnapshotRecord = try persistence.fetchWorkspaceSnapshot(runID: run.id)
@@ -1086,6 +1133,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                     call: call,
                     threadID: thread.id,
                     runID: run.id,
+                    attachments: [],
                     preconditions: .init(hasPriorInspection: workflowState.hasPriorInspection, phase: stepPhase),
                     cancellation: cancellation,
                     emitter: emitter
@@ -1295,6 +1343,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                     call: action.call,
                     threadID: thread.id,
                     runID: run.id,
+                    attachments: [],
                     preconditions: .init(hasPriorInspection: true, phase: .validation),
                     cancellation: cancellation,
                     emitter: emitter

@@ -213,6 +213,87 @@ private final class RecordingExecutionRuntime: ExecutionRuntime, @unchecked Send
     #expect(sawFinalAnswer)
 }
 
+@Test func runtimePassesNormalizedAttachmentsIntoToolContext() async throws {
+    let fileManager = FileManager.default
+    let root = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let dbURL = root.appendingPathComponent(".ashex/test.sqlite")
+    try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+    let attachmentURL = root.appendingPathComponent("image.png")
+    try Data([0x89, 0x50, 0x4E, 0x47]).write(to: attachmentURL)
+    let tool = AttachmentProbeTool()
+
+    let runtime = try AgentRuntime(
+        modelAdapter: SequencedModelAdapter(actions: [
+            .toolCall(.init(toolName: "attachment_probe", arguments: [:])),
+            .finalAnswer("done"),
+        ]),
+        toolRegistry: ToolRegistry(tools: [
+            tool,
+        ]),
+        persistence: SQLitePersistenceStore(databaseURL: dbURL)
+    )
+
+    for await _ in runtime.run(RunRequest(
+        prompt: "Inspect the attachment",
+        attachments: [
+            .init(
+                kind: .image,
+                localPath: attachmentURL.path,
+                originalFilename: "image.png",
+                mimeType: "image/png",
+                caption: "What is in this image?"
+            )
+        ]
+    )) {}
+
+    #expect(await tool.recordedPaths() == [attachmentURL.path])
+}
+
+@Test func directChatRunEmitsThinkingStatus() async throws {
+    let fileManager = FileManager.default
+    let root = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let dbURL = root.appendingPathComponent(".ashex/test.sqlite")
+    try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+
+    let runtime = try AgentRuntime(
+        modelAdapter: MockModelAdapter(),
+        toolRegistry: ToolRegistry(tools: []),
+        persistence: SQLitePersistenceStore(databaseURL: dbURL)
+    )
+
+    var sawThinkingStatus = false
+    for await event in runtime.run(RunRequest(prompt: "How are you?", mode: .directChat)) {
+        if case .status(_, let message) = event.payload, message.localizedCaseInsensitiveContains("thinking about the reply") {
+            sawThinkingStatus = true
+        }
+    }
+
+    #expect(sawThinkingStatus)
+}
+
+@Test func directChatRunEmitsReasoningSummaryWhenDebugModeIsEnabled() async throws {
+    let fileManager = FileManager.default
+    let root = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let dbURL = root.appendingPathComponent(".ashex/test.sqlite")
+    try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+
+    let runtime = try AgentRuntime(
+        modelAdapter: ReasoningSummaryDirectChatAdapter(),
+        toolRegistry: ToolRegistry(tools: []),
+        persistence: SQLitePersistenceStore(databaseURL: dbURL),
+        reasoningSummaryDebugEnabled: true
+    )
+
+    var sawReasoningSummary = false
+    for await event in runtime.run(RunRequest(prompt: "How are you?", mode: .directChat)) {
+        if case .status(_, let message) = event.payload, message.localizedCaseInsensitiveContains("reasoning summary: analyzed the request") {
+            sawReasoningSummary = true
+        }
+    }
+
+    #expect(sawReasoningSummary)
+}
+
 @Test func buildToolRunsTypedSwiftAndXcodeCommands() async throws {
     let fileManager = FileManager.default
     let root = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -1049,5 +1130,42 @@ private actor PlannedSequencedModelAdapter: TaskPlanningModelAdapter {
             throw AshexError.model("No more actions")
         }
         return actions.removeFirst()
+    }
+}
+
+private actor ReasoningSummaryDirectChatAdapter: DirectChatModelAdapter {
+    let name = "reasoning-summary-direct-chat"
+    let providerID = "test"
+    let modelID = "reasoning-summary-direct-chat"
+
+    func nextAction(for context: ModelContext) async throws -> ModelAction {
+        .finalAnswer("unused")
+    }
+
+    func directReply(history: [MessageRecord], systemPrompt: String) async throws -> String {
+        "I'm doing well."
+    }
+
+    func directReplyEnvelope(history: [MessageRecord], systemPrompt: String, attachments: [InputAttachment]) async throws -> DirectChatReplyEnvelope {
+        .init(text: "I'm doing well.", reasoningSummary: "Analyzed the request and considered what to inspect or use.")
+    }
+}
+
+private actor AttachmentProbeTool: Tool {
+    let name = "attachment_probe"
+    let description = "Reports normalized attachment context"
+    private var lastPaths: [String] = []
+
+    func execute(arguments: JSONObject, context: ToolContext) async throws -> ToolContent {
+        let paths = context.attachments.map(\.localPath)
+        lastPaths = paths
+        return .structured(.object([
+            "summary": .string(paths.isEmpty ? "No attachments" : "Attachments: \(paths.joined(separator: ", "))"),
+            "paths": .array(paths.map(JSONValue.string)),
+        ]))
+    }
+
+    func recordedPaths() -> [String] {
+        lastPaths
     }
 }

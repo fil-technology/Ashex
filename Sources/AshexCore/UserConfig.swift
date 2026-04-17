@@ -2,6 +2,7 @@ import Foundation
 
 public struct AshexUserConfig: Codable, Sendable {
     public var version: Int
+    public var debug: DebugConfig
     public var sandbox: SandboxPolicyConfig
     public var network: NetworkPolicyConfig
     public var shell: ShellCommandPolicyConfig
@@ -14,6 +15,7 @@ public struct AshexUserConfig: Codable, Sendable {
 
     public init(
         version: Int = 1,
+        debug: DebugConfig = .default,
         sandbox: SandboxPolicyConfig = .default,
         network: NetworkPolicyConfig = .default,
         shell: ShellCommandPolicyConfig = .default,
@@ -25,6 +27,7 @@ public struct AshexUserConfig: Codable, Sendable {
         logging: LoggingConfig = .default
     ) {
         self.version = version
+        self.debug = debug
         self.sandbox = sandbox
         self.network = network
         self.shell = shell
@@ -40,6 +43,7 @@ public struct AshexUserConfig: Codable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case version
+        case debug
         case sandbox
         case network
         case shell
@@ -54,6 +58,7 @@ public struct AshexUserConfig: Codable, Sendable {
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         version = try container.decodeIfPresent(Int.self, forKey: .version) ?? 1
+        debug = try container.decodeIfPresent(DebugConfig.self, forKey: .debug) ?? .default
         sandbox = try container.decodeIfPresent(SandboxPolicyConfig.self, forKey: .sandbox) ?? .default
         network = try container.decodeIfPresent(NetworkPolicyConfig.self, forKey: .network) ?? .default
         shell = try container.decodeIfPresent(ShellCommandPolicyConfig.self, forKey: .shell) ?? .default
@@ -63,6 +68,25 @@ public struct AshexUserConfig: Codable, Sendable {
         dflash = try container.decodeIfPresent(DFlashConfig.self, forKey: .dflash) ?? .default
         optimization = try container.decodeIfPresent(OptimizationConfig.self, forKey: .optimization) ?? .default
         logging = try container.decodeIfPresent(LoggingConfig.self, forKey: .logging) ?? .default
+    }
+}
+
+public struct DebugConfig: Codable, Sendable {
+    public var reasoningSummaries: Bool
+
+    public init(reasoningSummaries: Bool = false) {
+        self.reasoningSummaries = reasoningSummaries
+    }
+
+    public static let `default` = DebugConfig()
+
+    private enum CodingKeys: String, CodingKey {
+        case reasoningSummaries
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        reasoningSummaries = try container.decodeIfPresent(Bool.self, forKey: .reasoningSummaries) ?? false
     }
 }
 

@@ -31,6 +31,9 @@ public enum ConnectorCommand: String, Sendable, Codable {
     case stats
     case statsOn = "statson"
     case statsOff = "statsoff"
+    case reasoning
+    case reasoningOn = "reasoningon"
+    case reasoningOff = "reasoningoff"
     case model
     case models
     case chunks
@@ -46,6 +49,7 @@ public struct InboundConnectorEvent: Sendable, Codable {
     public let externalUserID: String?
     public let text: String
     public let command: ConnectorCommand?
+    public let attachments: [InputAttachment]
     public let metadata: JSONObject
 
     public init(
@@ -56,6 +60,7 @@ public struct InboundConnectorEvent: Sendable, Codable {
         externalUserID: String?,
         text: String,
         command: ConnectorCommand?,
+        attachments: [InputAttachment] = [],
         metadata: JSONObject = [:]
     ) {
         self.connectorKind = connectorKind
@@ -65,6 +70,7 @@ public struct InboundConnectorEvent: Sendable, Codable {
         self.externalUserID = externalUserID
         self.text = text
         self.command = command
+        self.attachments = attachments
         self.metadata = metadata
     }
 }

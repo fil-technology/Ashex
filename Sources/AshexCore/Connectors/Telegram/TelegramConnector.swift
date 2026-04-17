@@ -190,6 +190,7 @@ public actor TelegramConnector: Connector, ConnectorActivityControlling {
             externalUserID: userID,
             text: normalized.text,
             command: command,
+            attachments: normalized.attachments,
             metadata: metadata
         )
     }
@@ -229,6 +230,12 @@ public actor TelegramConnector: Connector, ConnectorActivityControlling {
         }
         if raw == "statsoff" {
             return .statsOff
+        }
+        if raw == "reasoningon" {
+            return .reasoningOn
+        }
+        if raw == "reasoningoff" {
+            return .reasoningOff
         }
         if raw == "thread" {
             return .thread
@@ -308,9 +315,9 @@ public actor TelegramConnector: Connector, ConnectorActivityControlling {
         """
     }
 
-    private func normalizeMessageContent(_ message: TelegramMessage) async throws -> (text: String, metadata: JSONObject)? {
+    private func normalizeMessageContent(_ message: TelegramMessage) async throws -> (text: String, attachments: [InputAttachment], metadata: JSONObject)? {
         if let text = message.text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty {
-            return (text, [:])
+            return (text, [], [:])
         }
 
         if let photo = message.photo?.max(by: { lhs, rhs in
@@ -394,7 +401,7 @@ public actor TelegramConnector: Connector, ConnectorActivityControlling {
         chatID: String,
         messageID: Int64,
         extraMetadata: JSONObject
-    ) async throws -> (text: String, metadata: JSONObject) {
+    ) async throws -> (text: String, attachments: [InputAttachment], metadata: JSONObject) {
         let remoteFile = try await client.getFile(token: token, fileID: fileID)
         guard let remotePath = remoteFile.filePath, !remotePath.isEmpty else {
             throw AshexError.model("Telegram getFile did not return a file path")
@@ -425,7 +432,17 @@ public actor TelegramConnector: Connector, ConnectorActivityControlling {
             lines.append("Caption: \(trimmedCaption)")
         }
         lines.append("Use the attachment context in your reply. If the current provider cannot directly inspect \(kind) files, say so clearly and suggest the next best step.")
-        return (lines.joined(separator: "\n"), metadata)
+        let attachment = InputAttachment(
+            kind: kind == "image" ? .image : .audio,
+            localPath: destinationURL.path,
+            originalFilename: sourceName,
+            mimeType: extraMetadata["mime_type"]?.stringValue,
+            caption: trimmedCaption,
+            durationSeconds: extraMetadata["duration_seconds"]?.numberValue,
+            fileSizeBytes: extraMetadata["size_bytes"]?.intValue,
+            metadata: metadata
+        )
+        return (lines.joined(separator: "\n"), [attachment], metadata)
     }
 
     private static func sanitizedFilename(_ value: String) -> String {

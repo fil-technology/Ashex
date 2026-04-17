@@ -89,6 +89,70 @@ struct OpenAIResponsesModelAdapterTests {
         #expect(reply == "I'm doing well. How can I help?")
     }
 
+    @Test func directReplyStripsThinkBlocksFromPlainTextOutput() async throws {
+        let session = makeStubbedSession(statusCode: 200, body: """
+        {
+          "output": [
+            {
+              "content": [
+                {
+                  "type": "output_text",
+                  "text": "<think>I should reason privately first.</think>I'm doing well. How can I help?"
+                }
+              ]
+            }
+          ]
+        }
+        """)
+
+        let adapter = OpenAIResponsesModelAdapter(
+            configuration: .init(apiKey: "test-key", model: "gpt-5.4-mini", baseURL: URL(string: "https://example.com/v1/responses")!),
+            session: session
+        )
+
+        let reply = try await adapter.directReply(
+            history: [
+                .init(id: UUID(), threadID: UUID(), runID: UUID(), role: .user, content: "How are you?", createdAt: Date())
+            ],
+            systemPrompt: "You are helpful."
+        )
+
+        #expect(reply == "I'm doing well. How can I help?")
+    }
+
+    @Test func directReplyEnvelopeIncludesSanitizedReasoningSummary() async throws {
+        let session = makeStubbedSession(statusCode: 200, body: """
+        {
+          "output": [
+            {
+              "content": [
+                {
+                  "type": "output_text",
+                  "text": "<think>I should inspect the repo and plan a reply first.</think>{\\"reply\\":\\"I'm doing well. How can I help?\\"}"
+                }
+              ]
+            }
+          ]
+        }
+        """)
+
+        let adapter = OpenAIResponsesModelAdapter(
+            configuration: .init(apiKey: "test-key", model: "gpt-5.4-mini", baseURL: URL(string: "https://example.com/v1/responses")!),
+            session: session
+        )
+
+        let envelope = try await adapter.directReplyEnvelope(
+            history: [
+                .init(id: UUID(), threadID: UUID(), runID: UUID(), role: .user, content: "How are you?", createdAt: Date())
+            ],
+            systemPrompt: "You are helpful.",
+            attachments: []
+        )
+
+        #expect(envelope.text == "I'm doing well. How can I help?")
+        #expect(envelope.reasoningSummary == "Analyzed the request, considered what to inspect or use, and formed a short approach.")
+    }
+
     @Test func directReplyRetriesWhenStructuredReplyIsEmpty() async throws {
         let session = makeStubbedSession(responses: [
             (

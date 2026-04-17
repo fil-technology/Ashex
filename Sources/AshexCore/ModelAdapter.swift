@@ -71,6 +71,16 @@ public enum ModelAction: Codable, Sendable, Equatable {
     case toolCall(ToolCallRequest)
 }
 
+public struct DirectChatReplyEnvelope: Sendable, Equatable {
+    public let text: String
+    public let reasoningSummary: String?
+
+    public init(text: String, reasoningSummary: String? = nil) {
+        self.text = text
+        self.reasoningSummary = reasoningSummary
+    }
+}
+
 public protocol ModelAdapter: Sendable {
     var name: String { get }
     var providerID: String { get }
@@ -80,6 +90,19 @@ public protocol ModelAdapter: Sendable {
 
 public protocol DirectChatModelAdapter: ModelAdapter {
     func directReply(history: [MessageRecord], systemPrompt: String) async throws -> String
+    func directReply(history: [MessageRecord], systemPrompt: String, attachments: [InputAttachment]) async throws -> String
+    func directReplyEnvelope(history: [MessageRecord], systemPrompt: String, attachments: [InputAttachment]) async throws -> DirectChatReplyEnvelope
+}
+
+public extension DirectChatModelAdapter {
+    func directReply(history: [MessageRecord], systemPrompt: String, attachments: [InputAttachment]) async throws -> String {
+        try await directReply(history: history, systemPrompt: systemPrompt)
+    }
+
+    func directReplyEnvelope(history: [MessageRecord], systemPrompt: String, attachments: [InputAttachment]) async throws -> DirectChatReplyEnvelope {
+        let reply = try await directReply(history: history, systemPrompt: systemPrompt, attachments: attachments)
+        return .init(text: reply, reasoningSummary: nil)
+    }
 }
 
 public protocol AudioTranscriber: Sendable {
@@ -357,10 +380,19 @@ public struct OpenAIResponsesModelAdapter: ModelAdapter {
 
 extension OpenAIResponsesModelAdapter: DirectChatModelAdapter {
     public func directReply(history: [MessageRecord], systemPrompt: String) async throws -> String {
+        try await directReplyEnvelope(history: history, systemPrompt: systemPrompt, attachments: []).text
+    }
+
+    public func directReply(history: [MessageRecord], systemPrompt: String, attachments: [InputAttachment]) async throws -> String {
+        try await directReplyEnvelope(history: history, systemPrompt: systemPrompt, attachments: attachments).text
+    }
+
+    public func directReplyEnvelope(history: [MessageRecord], systemPrompt: String, attachments: [InputAttachment]) async throws -> DirectChatReplyEnvelope {
         let multimodalInput = try await DirectChatMultimodalBuilder.openAIInput(
             history: history,
             systemPrompt: systemPrompt,
             model: configuration.model,
+            attachments: attachments,
             audioTranscriber: audioTranscriber
         )
         do {
@@ -375,7 +407,7 @@ extension OpenAIResponsesModelAdapter: DirectChatModelAdapter {
     private func requestDirectReply(
         input: JSONValue,
         repair: Bool
-    ) async throws -> String {
+    ) async throws -> DirectChatReplyEnvelope {
         let repairSuffix = repair
             ? "\n\nYour previous reply was empty. Reply again with a non-empty `reply` string."
             : ""
@@ -420,7 +452,7 @@ extension OpenAIResponsesModelAdapter: DirectChatModelAdapter {
         else {
             throw AshexError.model("OpenAI direct chat did not return a reply")
         }
-        return reply
+        return .init(text: reply, reasoningSummary: ReasoningSummaryExtractor.summary(fromExposedThinkingIn: outputText))
     }
 }
 
@@ -562,6 +594,10 @@ public struct DFlashServerModelAdapter: ModelAdapter {
 
 extension DFlashServerModelAdapter: DirectChatModelAdapter {
     public func directReply(history: [MessageRecord], systemPrompt: String) async throws -> String {
+        try await directReplyEnvelope(history: history, systemPrompt: systemPrompt, attachments: []).text
+    }
+
+    public func directReplyEnvelope(history: [MessageRecord], systemPrompt: String, attachments _: [InputAttachment]) async throws -> DirectChatReplyEnvelope {
         do {
             return try await requestDirectReply(history: history, systemPrompt: systemPrompt, repair: false)
         } catch let error as AshexError {
@@ -575,7 +611,7 @@ extension DFlashServerModelAdapter: DirectChatModelAdapter {
         history: [MessageRecord],
         systemPrompt: String,
         repair: Bool
-    ) async throws -> String {
+    ) async throws -> DirectChatReplyEnvelope {
         let repairInstruction = repair
             ? "\n\nYour previous reply was empty or included internal reasoning. Reply again with only the final user-facing answer."
             : ""
@@ -606,7 +642,7 @@ extension DFlashServerModelAdapter: DirectChatModelAdapter {
         else {
             throw AshexError.model("DFlash direct chat did not return a reply")
         }
-        return reply
+        return .init(text: reply, reasoningSummary: ReasoningSummaryExtractor.summary(fromExposedThinkingIn: content))
     }
 }
 
@@ -720,21 +756,30 @@ public struct OllamaChatModelAdapter: ModelAdapter {
 
 extension OllamaChatModelAdapter: DirectChatModelAdapter {
     public func directReply(history: [MessageRecord], systemPrompt: String) async throws -> String {
+        try await directReplyEnvelope(history: history, systemPrompt: systemPrompt, attachments: []).text
+    }
+
+    public func directReply(history: [MessageRecord], systemPrompt: String, attachments: [InputAttachment]) async throws -> String {
+        try await directReplyEnvelope(history: history, systemPrompt: systemPrompt, attachments: attachments).text
+    }
+
+    public func directReplyEnvelope(history: [MessageRecord], systemPrompt: String, attachments: [InputAttachment]) async throws -> DirectChatReplyEnvelope {
         do {
-            return try await requestDirectReply(history: history, systemPrompt: systemPrompt, repair: false)
+            return try await requestDirectReply(history: history, systemPrompt: systemPrompt, attachments: attachments, repair: false)
         } catch let error as AshexError {
             guard shouldRetryStructuredOutput(for: error) || error.localizedDescription.lowercased().contains("did not return a reply") else {
                 throw error
             }
-            return try await requestDirectReply(history: history, systemPrompt: systemPrompt, repair: true)
+            return try await requestDirectReply(history: history, systemPrompt: systemPrompt, attachments: attachments, repair: true)
         }
     }
 
     private func requestDirectReply(
         history: [MessageRecord],
         systemPrompt: String,
+        attachments: [InputAttachment],
         repair: Bool
-    ) async throws -> String {
+    ) async throws -> DirectChatReplyEnvelope {
         let repairInstruction = repair
             ? " Your previous reply was empty. Reply again with a non-empty `reply` string."
             : ""
@@ -744,6 +789,7 @@ extension OllamaChatModelAdapter: DirectChatModelAdapter {
                 from: history,
                 systemPrompt: systemPrompt + repairInstruction,
                 model: configuration.model,
+                attachments: attachments,
                 audioTranscriber: audioTranscriber
             ),
             format: [
@@ -781,7 +827,7 @@ extension OllamaChatModelAdapter: DirectChatModelAdapter {
         guard let reply = DirectChatReplyParser.parseReply(from: content) else {
             throw AshexError.model("Ollama direct chat did not return a reply")
         }
-        return reply
+        return .init(text: reply, reasoningSummary: ReasoningSummaryExtractor.summary(fromExposedThinkingIn: content))
     }
 }
 
@@ -905,6 +951,10 @@ public struct AnthropicMessagesModelAdapter: ModelAdapter {
 
 extension AnthropicMessagesModelAdapter: DirectChatModelAdapter {
     public func directReply(history: [MessageRecord], systemPrompt: String) async throws -> String {
+        try await directReplyEnvelope(history: history, systemPrompt: systemPrompt, attachments: []).text
+    }
+
+    public func directReplyEnvelope(history: [MessageRecord], systemPrompt: String, attachments _: [InputAttachment]) async throws -> DirectChatReplyEnvelope {
         do {
             return try await requestDirectReply(history: history, systemPrompt: systemPrompt, repair: false)
         } catch let error as AshexError {
@@ -918,7 +968,7 @@ extension AnthropicMessagesModelAdapter: DirectChatModelAdapter {
         history: [MessageRecord],
         systemPrompt: String,
         repair: Bool
-    ) async throws -> String {
+    ) async throws -> DirectChatReplyEnvelope {
         let repairInstruction = repair
             ? "\n\nYour previous reply was empty. Reply again with a non-empty `reply` string."
             : ""
@@ -953,7 +1003,7 @@ extension AnthropicMessagesModelAdapter: DirectChatModelAdapter {
         guard let reply = DirectChatReplyParser.parseReply(from: content) else {
             throw AshexError.model("Anthropic direct chat did not return a reply")
         }
-        return reply
+        return .init(text: reply, reasoningSummary: ReasoningSummaryExtractor.summary(fromExposedThinkingIn: content))
     }
 }
 
@@ -1314,9 +1364,10 @@ private enum DirectChatMultimodalBuilder {
         history: [MessageRecord],
         systemPrompt: String,
         model: String,
+        attachments: [InputAttachment],
         audioTranscriber: (any AudioTranscriber)?
     ) async throws -> JSONValue {
-        let latestAttachment = AttachmentContext.extract(from: history)
+        let latestAttachment = AttachmentContext.extract(from: attachments, history: history)
         let transcript = OpenAIResponsesModelAdapter.directChatTranscript(from: history)
         let conversationText = "\(systemPrompt)\n\nConversation:\n\(transcript)\n\nReply naturally to the latest user message. Do not call tools or emit JSON."
 
@@ -1394,9 +1445,10 @@ private enum DirectChatMultimodalBuilder {
         from history: [MessageRecord],
         systemPrompt: String,
         model: String,
+        attachments: [InputAttachment],
         audioTranscriber: (any AudioTranscriber)?
     ) async throws -> [OllamaChatRequest.Message] {
-        let attachment = AttachmentContext.extract(from: history)
+        let attachment = AttachmentContext.extract(from: attachments, history: history)
         let baseMessages: [OllamaChatRequest.Message] = [
             .init(role: "system", content: systemPrompt)
         ] + history.suffix(12).map { message in
@@ -1514,7 +1566,16 @@ private struct AttachmentContext {
         return "data:\(mimeType);base64,\(data.base64EncodedString())"
     }
 
-    static func extract(from history: [MessageRecord]) -> AttachmentContext? {
+    static func extract(from attachments: [InputAttachment], history: [MessageRecord]) -> AttachmentContext? {
+        if let latest = attachments.last {
+            let prompt = latest.caption?.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty ?? latest.kind.defaultPrompt
+            return .init(
+                kind: latest.kind == .image ? .image : .audio,
+                fileURL: URL(fileURLWithPath: latest.localPath),
+                originalMessage: prompt
+            )
+        }
+
         guard let latestUser = history.last(where: { $0.role == .user }) else { return nil }
         let lowered = latestUser.content.lowercased()
         let kind: Kind?
@@ -1550,6 +1611,21 @@ private struct AttachmentContext {
             return "image/jpeg"
         }
     }
+}
+
+private extension InputAttachmentKind {
+    var defaultPrompt: String {
+        switch self {
+        case .image:
+            return "Please inspect the attached image and answer the user's request."
+        case .audio:
+            return "Please use the attached audio and answer the user's request."
+        }
+    }
+}
+
+private extension String {
+    var nonEmpty: String? { isEmpty ? nil : self }
 }
 
 private struct OpenAIResponsesRequest: Encodable {
@@ -1756,7 +1832,7 @@ private struct ModelActionEnvelope: Codable {
 
 private enum DirectChatReplyParser {
     static func parseReply(from content: String) -> String? {
-        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = stripThinkingBlocks(from: content).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
 
         if let candidate = extractJSONObjectString(from: trimmed),
@@ -1797,7 +1873,7 @@ private enum DirectChatReplyParser {
     }
 
     static func extractJSONObjectString(from content: String) -> String? {
-        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = stripThinkingBlocks(from: content).trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.hasPrefix("{"), trimmed.hasSuffix("}") {
             return trimmed
         }
@@ -1824,6 +1900,74 @@ private enum DirectChatReplyParser {
         let candidate = String(trimmed[start...end]).trimmingCharacters(in: .whitespacesAndNewlines)
         return candidate.hasPrefix("{") && candidate.hasSuffix("}") ? candidate : nil
     }
+
+    private static func stripThinkingBlocks(from content: String) -> String {
+        content.replacingOccurrences(
+            of: #"<think>[\s\S]*?</think>"#,
+            with: "",
+            options: .regularExpression
+        )
+    }
+}
+
+enum ReasoningSummaryExtractor {
+    static func summary(fromExposedThinkingIn content: String) -> String? {
+        let blocks = thinkBlocks(in: content)
+        guard !blocks.isEmpty else { return nil }
+        let combined = blocks.joined(separator: "\n").lowercased()
+
+        var fragments: [String] = ["analyzed the request"]
+        if containsAny(of: ["tool", "inspect", "search", "browse", "read"], in: combined) {
+            fragments.append("considered what to inspect or use")
+        }
+        if containsAny(of: ["image", "audio", "attachment", "photo", "voice"], in: combined) {
+            fragments.append("accounted for attachment context")
+        }
+        if containsAny(of: ["plan", "step", "approach", "first", "next"], in: combined) {
+            fragments.append("formed a short approach")
+        }
+        if containsAny(of: ["validate", "test", "correct", "error", "bug", "fix"], in: combined) {
+            fragments.append("checked for correctness")
+        }
+        if containsAny(of: ["repo", "github", "readme", "file", "directory"], in: combined) {
+            fragments.append("reviewed repository context")
+        }
+
+        var seen: Set<String> = []
+        let unique = fragments.filter { seen.insert($0).inserted }
+        let limited = Array(unique.prefix(3))
+        guard !limited.isEmpty else { return nil }
+
+        if limited.count == 1 {
+            return sentenceCase(limited[0]) + "."
+        }
+        if limited.count == 2 {
+            return sentenceCase(limited[0]) + ", " + limited[1] + ", and prepared the reply."
+        }
+        return sentenceCase(limited[0]) + ", " + limited[1] + ", and " + limited[2] + "."
+    }
+
+    private static func thinkBlocks(in content: String) -> [String] {
+        guard let regex = try? NSRegularExpression(pattern: #"<think>([\s\S]*?)</think>"#) else {
+            return []
+        }
+        let range = NSRange(content.startIndex..<content.endIndex, in: content)
+        return regex.matches(in: content, range: range).compactMap { match in
+            guard match.numberOfRanges > 1,
+                  let range = Range(match.range(at: 1), in: content) else { return nil }
+            let text = String(content[range]).trimmingCharacters(in: .whitespacesAndNewlines)
+            return text.isEmpty ? nil : text
+        }
+    }
+
+    private static func containsAny(of markers: [String], in content: String) -> Bool {
+        markers.contains { content.contains($0) }
+    }
+
+    private static func sentenceCase(_ text: String) -> String {
+        guard let first = text.first else { return text }
+        return String(first).uppercased() + text.dropFirst()
+    }
 }
 
 private struct TaskPlanEnvelope: Codable {
@@ -1837,7 +1981,9 @@ private struct TaskPlanEnvelope: Codable {
 
 private enum TaskPlanParser {
     static func parsePlan(from content: String, fallbackTaskKind: TaskKind) throws -> TaskPlan? {
-        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = content
+            .replacingOccurrences(of: #"<think>[\s\S]*?</think>"#, with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         let candidate = DirectChatReplyParser.extractJSONObjectString(from: trimmed) ?? trimmed
         let envelope = try JSONDecoder().decode(TaskPlanEnvelope.self, from: Data(candidate.utf8))

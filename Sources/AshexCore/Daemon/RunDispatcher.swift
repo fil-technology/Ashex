@@ -23,8 +23,8 @@ public actor RunDispatcher {
         self.runtime = runtime
     }
 
-    public func dispatch(prompt: String, threadID: UUID, maxIterations: Int) async throws -> RunDispatchResult {
-        try await dispatch(prompt: prompt, threadID: threadID, maxIterations: maxIterations, mode: .agent)
+    public func dispatch(prompt: String, threadID: UUID, maxIterations: Int, attachments: [InputAttachment] = []) async throws -> RunDispatchResult {
+        try await dispatch(prompt: prompt, threadID: threadID, maxIterations: maxIterations, mode: .agent, attachments: attachments)
     }
 
     public func dispatch(
@@ -32,6 +32,7 @@ public actor RunDispatcher {
         threadID: UUID,
         maxIterations: Int,
         mode: RunRequest.Mode,
+        attachments: [InputAttachment] = [],
         cancellationToken: CancellationToken? = nil,
         onEvent: (@Sendable (RuntimeEvent) async -> Void)? = nil
     ) async throws -> RunDispatchResult {
@@ -44,6 +45,7 @@ public actor RunDispatcher {
             maxIterations: maxIterations,
             threadID: threadID,
             mode: mode,
+            attachments: attachments,
             cancellationToken: cancellationToken
         )) {
             if let onEvent {

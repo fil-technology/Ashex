@@ -100,6 +100,10 @@ public struct EshBackedModelAdapter: ModelAdapter {
 
 extension EshBackedModelAdapter: DirectChatModelAdapter {
     public func directReply(history: [MessageRecord], systemPrompt: String) async throws -> String {
+        try await directReplyEnvelope(history: history, systemPrompt: systemPrompt, attachments: []).text
+    }
+
+    public func directReplyEnvelope(history: [MessageRecord], systemPrompt: String, attachments _: [InputAttachment]) async throws -> DirectChatReplyEnvelope {
         let latestUserMessage = history.last(where: { $0.role == .user })?.content ?? "Continue the conversation."
         let priorHistory = dropTrailingUserMessageIfPresent(from: history)
 
@@ -112,14 +116,14 @@ extension EshBackedModelAdapter: DirectChatModelAdapter {
                 taskPrompt: latestUserMessage
             )
             if let parsed = EshBridgeReplyParser.parseReply(from: reply) {
-                return parsed
+                return .init(text: parsed, reasoningSummary: ReasoningSummaryExtractor.summary(fromExposedThinkingIn: reply))
             }
             throw AshexError.model("esh direct chat reply was empty")
         } catch {
             guard let fallback = fallback as? any DirectChatModelAdapter else {
                 throw error
             }
-            return try await fallback.directReply(history: history, systemPrompt: systemPrompt)
+            return try await fallback.directReplyEnvelope(history: history, systemPrompt: systemPrompt, attachments: [])
         }
     }
 }

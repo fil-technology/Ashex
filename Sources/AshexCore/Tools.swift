@@ -2,11 +2,18 @@ import Foundation
 
 public struct ToolContext: Sendable {
     public let runID: UUID
+    public let attachments: [InputAttachment]
     public let emit: RuntimeEventHandler
     public let cancellation: CancellationToken
 
-    public init(runID: UUID, emit: @escaping RuntimeEventHandler, cancellation: CancellationToken) {
+    public init(
+        runID: UUID,
+        attachments: [InputAttachment] = [],
+        emit: @escaping RuntimeEventHandler,
+        cancellation: CancellationToken
+    ) {
         self.runID = runID
+        self.attachments = attachments
         self.emit = emit
         self.cancellation = cancellation
     }

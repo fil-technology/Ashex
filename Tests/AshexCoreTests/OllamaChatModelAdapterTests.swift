@@ -163,6 +163,30 @@ struct OllamaChatModelAdapterTests {
         #expect(reply == "I'm doing well, thanks for asking.")
     }
 
+    @Test func directReplyStripsThinkBlocksFromPlainTextContent() async throws {
+        let session = makeOllamaStubbedSession(statusCode: 200, body: """
+        {
+          "message": {
+            "content": "<think>I should keep this private.</think>I'm doing well, thanks for asking."
+          }
+        }
+        """)
+
+        let adapter = OllamaChatModelAdapter(
+            configuration: .init(model: "llama3.2", baseURL: URL(string: "http://localhost:11434/api/chat")!),
+            session: session
+        )
+
+        let reply = try await adapter.directReply(
+            history: [
+                .init(id: UUID(), threadID: UUID(), runID: UUID(), role: .user, content: "How are you?", createdAt: Date())
+            ],
+            systemPrompt: "You are helpful."
+        )
+
+        #expect(reply == "I'm doing well, thanks for asking.")
+    }
+
     @Test func directReplyRetriesWhenStructuredReplyIsEmpty() async throws {
         let session = makeOllamaStubbedSession(responses: [
             (

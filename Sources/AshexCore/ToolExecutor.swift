@@ -29,6 +29,7 @@ struct ToolExecutor: Sendable {
         call: ToolCallRequest,
         threadID: UUID,
         runID: UUID,
+        attachments: [InputAttachment],
         preconditions: ToolExecutionPreconditions,
         cancellation: CancellationToken,
         emitter: EventEmitter
@@ -110,6 +111,7 @@ struct ToolExecutor: Sendable {
 
         let toolContext = ToolContext(
             runID: runID,
+            attachments: attachments,
             emit: { event in
                 var payload = event.payload
                 if case .toolOutput(_, _, let stream, let chunk) = payload {

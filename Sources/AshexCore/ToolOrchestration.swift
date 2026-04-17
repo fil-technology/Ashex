@@ -207,7 +207,7 @@ private struct OllamaToolSchemaAdapter: ProviderToolSchemaAdapter {
 
 enum ToolInvocationParser {
     static func parseAction(from content: String) throws -> ModelAction {
-        let normalized = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalized = stripThinkingBlocks(from: content).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalized.isEmpty else {
             throw AshexError.model("Model returned an empty action payload")
         }
@@ -218,7 +218,7 @@ enum ToolInvocationParser {
     }
 
     private static func extractJSONObjectString(from content: String) -> String? {
-        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = stripThinkingBlocks(from: content).trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.hasPrefix("{"), trimmed.hasSuffix("}") {
             return trimmed
         }
@@ -244,6 +244,14 @@ enum ToolInvocationParser {
         }
         let candidate = String(trimmed[start...end]).trimmingCharacters(in: .whitespacesAndNewlines)
         return candidate.hasPrefix("{") && candidate.hasSuffix("}") ? candidate : nil
+    }
+
+    private static func stripThinkingBlocks(from content: String) -> String {
+        content.replacingOccurrences(
+            of: #"<think>[\s\S]*?</think>"#,
+            with: "",
+            options: .regularExpression
+        )
     }
 }
 

@@ -48,6 +48,7 @@ final class TUIApp {
         case provider = "Provider"
         case model = "Model"
         case apiKey = "API Key"
+        case reasoningDebug = "Reasoning Debug"
         case telegramEnabled = "Telegram Enabled"
         case telegramToken = "Telegram Token"
         case telegramAccess = "Telegram Access"
@@ -914,6 +915,13 @@ final class TUIApp {
             apiKeyInput = ""
             focus = .input
             statusLine = "Enter API key and press Enter to save"
+        case .reasoningDebug:
+            sessionUserConfig.debug.reasoningSummaries.toggle()
+            persistUserConfig()
+            refreshSessionRuntime()
+            statusLine = sessionUserConfig.debug.reasoningSummaries
+                ? "Reasoning summaries enabled"
+                : "Reasoning summaries disabled"
         case .telegramEnabled:
             sessionUserConfig.telegram.enabled.toggle()
             persistUserConfig()
@@ -1899,6 +1907,25 @@ final class TUIApp {
 
     private func summarizeStatusMessage(_ message: String) -> [String] {
         if let iteration = parseIterationNumber(from: message),
+           message.localizedCaseInsensitiveContains("thinking about the next action") {
+            return ["[thinking] Thinking about the next step (iteration \(iteration))"]
+        }
+
+        if message.localizedCaseInsensitiveContains("thinking about the reply") {
+            return ["[thinking] Thinking about the reply"]
+        }
+
+        if let iteration = parseIterationNumber(from: message),
+           message.localizedCaseInsensitiveContains("subagent thinking") {
+            return ["[thinking] Subagent reasoning on the current step (iteration \(iteration))"]
+        }
+
+        if message.localizedCaseInsensitiveContains("reasoning summary:") {
+            let summary = message.replacingOccurrences(of: "Reasoning summary:", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+            return ["[reasoning] \(summary)"]
+        }
+
+        if let iteration = parseIterationNumber(from: message),
            message.localizedCaseInsensitiveContains("requesting next model action") {
             return ["[agent] Thinking about the next step (iteration \(iteration))"]
         }
@@ -2382,6 +2409,8 @@ final class TUIApp {
                 value = sessionModel
             case .apiKey:
                 value = apiKeyStatusLabel(for: sessionProvider)
+            case .reasoningDebug:
+                value = sessionUserConfig.debug.reasoningSummaries ? "Enabled (safe summary only)" : "Disabled"
             case .telegramEnabled:
                 value = sessionUserConfig.telegram.enabled ? "Enabled" : "Disabled"
             case .telegramToken:
@@ -4406,7 +4435,8 @@ final class TUIApp {
             persistence: persistence,
             approvalPolicy: approvalPolicy,
             shellExecutionPolicy: shellExecutionPolicy,
-            workspaceSnapshot: WorkspaceSnapshotBuilder.capture(workspaceRoot: sessionWorkspaceRoot)
+            workspaceSnapshot: WorkspaceSnapshotBuilder.capture(workspaceRoot: sessionWorkspaceRoot),
+            reasoningSummaryDebugEnabled: sessionUserConfig.debug.reasoningSummaries
         )
     }
 

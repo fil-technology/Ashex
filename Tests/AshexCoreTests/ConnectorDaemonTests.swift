@@ -160,8 +160,11 @@ import Testing
     #expect(event?.command == nil)
     #expect(event?.text.contains("Telegram image attachment") == true)
     #expect(event?.text.contains("Caption: What is in this image?") == true)
+    #expect(event?.attachments.count == 1)
+    #expect(event?.attachments.first?.kind == .image)
     #expect(event?.metadata["telegram_media_kind"]?.stringValue == "image")
     let localPath = try #require(event?.metadata["local_path"]?.stringValue)
+    #expect(event?.attachments.first?.localPath == localPath)
     #expect(FileManager.default.fileExists(atPath: localPath))
 }
 
@@ -210,9 +213,12 @@ import Testing
 
     #expect(event?.command == nil)
     #expect(event?.text.contains("Telegram audio attachment") == true)
+    #expect(event?.attachments.count == 1)
+    #expect(event?.attachments.first?.kind == .audio)
     #expect(event?.metadata["telegram_media_kind"]?.stringValue == "audio")
     #expect(event?.metadata["duration_seconds"]?.intValue == 4)
     let localPath = try #require(event?.metadata["local_path"]?.stringValue)
+    #expect(event?.attachments.first?.localPath == localPath)
     #expect(FileManager.default.fileExists(atPath: localPath))
 }
 
@@ -834,6 +840,145 @@ import Testing
     #expect(statsOffEvent?.command == .statsOff)
 }
 
+@Test func telegramConnectorNormalizesReasoningAliases() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let persistence = SQLitePersistenceStore(databaseURL: root.appendingPathComponent("ashex.sqlite"))
+    try persistence.initialize()
+
+    let connector = TelegramConnector(
+        token: "test-token",
+        config: TelegramConfig(enabled: true),
+        client: MockTelegramBotClient(),
+        persistence: persistence
+    )
+
+    let reasoningEvent = try await connector.normalize(update: TelegramUpdate(
+        updateID: 80,
+        message: TelegramMessage(
+            messageID: 14,
+            from: TelegramUser(id: 22, isBot: false, firstName: "Sam", username: "sam"),
+            chat: TelegramChat(id: 33, type: "private"),
+            date: 0,
+            text: "/reasoning"
+        )
+    ))
+    let reasoningOnEvent = try await connector.normalize(update: TelegramUpdate(
+        updateID: 81,
+        message: TelegramMessage(
+            messageID: 15,
+            from: TelegramUser(id: 22, isBot: false, firstName: "Sam", username: "sam"),
+            chat: TelegramChat(id: 33, type: "private"),
+            date: 0,
+            text: "/reasoningon"
+        )
+    ))
+    let reasoningOffEvent = try await connector.normalize(update: TelegramUpdate(
+        updateID: 82,
+        message: TelegramMessage(
+            messageID: 16,
+            from: TelegramUser(id: 22, isBot: false, firstName: "Sam", username: "sam"),
+            chat: TelegramChat(id: 33, type: "private"),
+            date: 0,
+            text: "/reasoningoff"
+        )
+    ))
+
+    #expect(reasoningEvent?.command == .reasoning)
+    #expect(reasoningOnEvent?.command == .reasoningOn)
+    #expect(reasoningOffEvent?.command == .reasoningOff)
+}
+
+@Test func daemonSupervisorReasoningCommandPersistsPerChatToggle() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let persistence = SQLitePersistenceStore(databaseURL: root.appendingPathComponent("ashex.sqlite"))
+    try persistence.initialize()
+
+    let supervisor = DaemonSupervisor(
+        registry: ConnectorRegistry(connectors: [RecordingConnector()]),
+        router: ConversationRouter(mappingStore: ConnectorConversationMappingStore(persistence: persistence)),
+        dispatcher: RunDispatcher(runtime: BlockingRuntime()),
+        persistence: persistence,
+        logger: DaemonLogger(minimumLevel: .error),
+        runStore: DaemonConversationRunStore(),
+        remoteApprovalInbox: RemoteApprovalInbox(persistence: persistence),
+        config: .init(maxIterations: 2, connectorLabel: "telegram")
+    )
+
+    let conversation = ConnectorConversationReference(
+        connectorKind: "telegram",
+        connectorID: "telegram",
+        externalConversationID: "chat-101"
+    )
+
+    try await supervisor.handle(.init(
+        connectorKind: "telegram",
+        connectorID: "telegram",
+        messageID: "2101",
+        conversation: conversation,
+        externalUserID: "44",
+        text: "/reasoning on",
+        command: .reasoning
+    ))
+
+    let setting = try persistence.fetchSetting(namespace: "connectors.telegram.reasoning.telegram.chat-101", key: "enabled")
+    #expect(setting?.value.boolValue == true)
+}
+
+@Test func daemonSupervisorAppendsReasoningSummaryWhenEnabled() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let persistence = SQLitePersistenceStore(databaseURL: root.appendingPathComponent("ashex.sqlite"))
+    try persistence.initialize()
+
+    let connector = RecordingConnector()
+    let supervisor = DaemonSupervisor(
+        registry: ConnectorRegistry(connectors: [connector]),
+        router: ConversationRouter(mappingStore: ConnectorConversationMappingStore(persistence: persistence)),
+        dispatcher: RunDispatcher(runtime: ReasoningRuntime()),
+        persistence: persistence,
+        logger: DaemonLogger(minimumLevel: .error),
+        runStore: DaemonConversationRunStore(),
+        remoteApprovalInbox: RemoteApprovalInbox(persistence: persistence),
+        config: .init(maxIterations: 2, connectorLabel: "telegram", provider: "ollama", model: "gemma4:latest")
+    )
+
+    let conversation = ConnectorConversationReference(
+        connectorKind: "telegram",
+        connectorID: "telegram",
+        externalConversationID: "chat-reasoning"
+    )
+
+    try persistence.upsertSetting(
+        namespace: "connectors.telegram.reasoning.telegram.chat-reasoning",
+        key: "enabled",
+        value: .bool(true),
+        now: Date()
+    )
+    try persistence.upsertSetting(
+        namespace: "connectors.telegram.stats.telegram.chat-reasoning",
+        key: "enabled",
+        value: .bool(false),
+        now: Date()
+    )
+
+    try await supervisor.handle(.init(
+        connectorKind: "telegram",
+        connectorID: "telegram",
+        messageID: "2201",
+        conversation: conversation,
+        externalUserID: "44",
+        text: "How are you?",
+        command: nil
+    ))
+
+    try await Task.sleep(nanoseconds: 150_000_000)
+
+    let sentMessages = await connector.recordedMessages()
+    #expect(sentMessages.contains { $0.text.contains("Final reply") })
+    #expect(sentMessages.contains { $0.text.contains("Reasoning: analyzed the request") })
+}
+
 @Test func daemonTelegramFailureFormatterExplainsModelTimeouts() {
     let error = NSError(domain: NSURLErrorDomain, code: NSURLErrorTimedOut)
     let message = DaemonTelegramFailureFormatter.message(for: error)
@@ -923,6 +1068,20 @@ private struct BlockingRuntime: RuntimeStreaming, Sendable {
                     try? await Task.sleep(nanoseconds: 25_000_000)
                 }
             }
+        }
+    }
+}
+
+private struct ReasoningRuntime: RuntimeStreaming, Sendable {
+    func run(_ request: RunRequest) -> AsyncStream<RuntimeEvent> {
+        AsyncStream { continuation in
+            let threadID = request.threadID ?? UUID()
+            let runID = UUID()
+            continuation.yield(.init(payload: .runStarted(threadID: threadID, runID: runID)))
+            continuation.yield(.init(payload: .status(runID: runID, message: "Thinking about the reply")))
+            continuation.yield(.init(payload: .status(runID: runID, message: "Reasoning summary: analyzed the request, considered what to inspect or use, and formed a short approach.")))
+            continuation.yield(.init(payload: .finalAnswer(runID: runID, messageID: UUID(), text: "Final reply")))
+            continuation.finish()
         }
     }
 }
