@@ -232,6 +232,7 @@ struct CLIConfiguration {
     }
 
     func makeModelAdapter(provider: String, model: String) throws -> any ModelAdapter {
+        let audioTranscriber = try makeAudioTranscriberIfAvailable()
         let baseAdapter: any ModelAdapter
         switch provider {
         case "mock":
@@ -241,7 +242,8 @@ struct CLIConfiguration {
                 throw AshexError.model("OPENAI_API_KEY is required when --provider openai is used")
             }
             baseAdapter = OpenAIResponsesModelAdapter(
-                configuration: .init(apiKey: apiKey, model: model)
+                configuration: .init(apiKey: apiKey, model: model),
+                audioTranscriber: audioTranscriber
             )
         case "anthropic":
             guard let apiKey = try resolvedAPIKey(for: "anthropic"), !apiKey.isEmpty else {
@@ -266,7 +268,8 @@ struct CLIConfiguration {
                     model: model,
                     baseURL: URL(string: ProcessInfo.processInfo.environment["OLLAMA_BASE_URL"] ?? "http://localhost:11434/api/chat")!,
                     requestTimeoutSeconds: Self.ollamaRequestTimeoutSeconds(config: userConfig.ollama)
-                )
+                ),
+                audioTranscriber: audioTranscriber
             )
         default:
             throw AshexError.model("Unsupported provider '\(provider)'. Supported: mock, openai, anthropic, ollama, dflash")
@@ -469,6 +472,13 @@ struct CLIConfiguration {
         }
 
         return nil
+    }
+
+    private func makeAudioTranscriberIfAvailable() throws -> (any AudioTranscriber)? {
+        guard let apiKey = try resolvedAPIKey(for: "openai"), !apiKey.isEmpty else {
+            return nil
+        }
+        return OpenAIAudioTranscriber(apiKey: apiKey)
     }
 
     static func environmentAPIKeyName(for provider: String) -> String {

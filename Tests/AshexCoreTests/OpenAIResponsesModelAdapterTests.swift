@@ -143,6 +143,54 @@ struct OpenAIResponsesModelAdapterTests {
         #expect(StubURLProtocol.state.requestCount == 2)
     }
 
+    @Test func directReplySendsImageAttachmentAsInputImage() async throws {
+        let session = makeStubbedSession(statusCode: 200, body: """
+        {
+          "output": [
+            {
+              "content": [
+                {
+                  "type": "output_text",
+                  "text": "{\\"reply\\":\\"I can see the image.\\"}"
+                }
+              ]
+            }
+          ]
+        }
+        """)
+
+        let imageURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".png")
+        try Data([0x89, 0x50, 0x4E, 0x47]).write(to: imageURL)
+
+        let adapter = OpenAIResponsesModelAdapter(
+            configuration: .init(apiKey: "test-key", model: "gpt-5.4-mini", baseURL: URL(string: "https://example.com/v1/responses")!),
+            session: session
+        )
+
+        _ = try await adapter.directReply(
+            history: [
+                .init(
+                    id: UUID(),
+                    threadID: UUID(),
+                    runID: UUID(),
+                    role: .user,
+                    content: """
+                    The user sent a Telegram image attachment.
+                    Local file: \(imageURL.path)
+                    Caption: What is in this image?
+                    Use the attachment context in your reply.
+                    """,
+                    createdAt: Date()
+                )
+            ],
+            systemPrompt: "You are helpful."
+        )
+
+        let body = try #require(StubURLProtocol.state.lastRequestBodyString)
+        #expect(body.contains("\"type\":\"input_image\""))
+        #expect(body.contains("data:image"))
+    }
+
     @Test func parsesStructuredTaskPlanOutput() async throws {
         let session = makeStubbedSession(statusCode: 200, body: """
         {
@@ -214,6 +262,7 @@ private final class StubURLProtocol: URLProtocol, @unchecked Sendable {
     }
 
     override func startLoading() {
+        Self.state.record(body: Self.requestBody(from: request))
         let current = Self.state.snapshot()
         let response = HTTPURLResponse(
             url: request.url ?? URL(string: "https://example.com")!,
@@ -228,17 +277,40 @@ private final class StubURLProtocol: URLProtocol, @unchecked Sendable {
     }
 
     override func stopLoading() {}
+
+    private static func requestBody(from request: URLRequest) -> Data? {
+        if let body = request.httpBody {
+            return body
+        }
+        guard let stream = request.httpBodyStream else {
+            return nil
+        }
+        stream.open()
+        defer { stream.close() }
+        let bufferSize = 4096
+        let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: bufferSize)
+        defer { buffer.deallocate() }
+        var data = Data()
+        while stream.hasBytesAvailable {
+            let read = stream.read(buffer, maxLength: bufferSize)
+            if read <= 0 { break }
+            data.append(buffer, count: read)
+        }
+        return data.isEmpty ? nil : data
+    }
 }
 
 private final class StubResponseState: @unchecked Sendable {
     private let lock = NSLock()
     private var responses: [(statusCode: Int, body: String)] = [(200, "")]
     private(set) var requestCount = 0
+    private(set) var lastRequestBody: Data?
 
     func setResponses(_ responses: [(Int, String)]) {
         lock.lock()
         self.responses = responses.map { (statusCode: $0.0, body: $0.1) }
         self.requestCount = 0
+        self.lastRequestBody = nil
         lock.unlock()
     }
 
@@ -249,5 +321,18 @@ private final class StubResponseState: @unchecked Sendable {
         let response = responses[index]
         requestCount += 1
         return response
+    }
+
+    func record(body: Data?) {
+        lock.lock()
+        lastRequestBody = body
+        lock.unlock()
+    }
+
+    var lastRequestBodyString: String? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let lastRequestBody else { return nil }
+        return String(data: lastRequestBody, encoding: .utf8)
     }
 }

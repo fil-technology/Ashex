@@ -82,6 +82,10 @@ public protocol DirectChatModelAdapter: ModelAdapter {
     func directReply(history: [MessageRecord], systemPrompt: String) async throws -> String
 }
 
+public protocol AudioTranscriber: Sendable {
+    func transcribeAudio(fileURL: URL) async throws -> String
+}
+
 public protocol TaskPlanningModelAdapter: ModelAdapter {
     func taskPlan(for prompt: String, taskKind: TaskKind) async throws -> TaskPlan?
 }
@@ -290,16 +294,19 @@ public struct OpenAIResponsesModelAdapter: ModelAdapter {
     private let session: URLSession
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
+    private let audioTranscriber: (any AudioTranscriber)?
 
     public init(
         configuration: OpenAIModelConfiguration,
-        session: URLSession = .shared
+        session: URLSession = .shared,
+        audioTranscriber: (any AudioTranscriber)? = nil
     ) {
         self.configuration = configuration
         self.session = session
         self.name = "openai-responses:\(configuration.model)"
         self.encoder = JSONEncoder()
         self.decoder = JSONDecoder()
+        self.audioTranscriber = audioTranscriber
     }
 
     fileprivate static func directChatTranscript(from history: [MessageRecord]) -> String {
@@ -313,7 +320,7 @@ public struct OpenAIResponsesModelAdapter: ModelAdapter {
         let responseSchema = ModelPromptRenderer.responseSchema(for: context.availableTools)
         let requestBody = OpenAIResponsesRequest(
             model: configuration.model,
-            input: assembly.combinedPrompt,
+            input: .string(assembly.combinedPrompt),
             store: false,
             text: .init(format: .init(
                 type: "json_schema",
@@ -350,19 +357,23 @@ public struct OpenAIResponsesModelAdapter: ModelAdapter {
 
 extension OpenAIResponsesModelAdapter: DirectChatModelAdapter {
     public func directReply(history: [MessageRecord], systemPrompt: String) async throws -> String {
-        let transcript = Self.directChatTranscript(from: history)
+        let multimodalInput = try await DirectChatMultimodalBuilder.openAIInput(
+            history: history,
+            systemPrompt: systemPrompt,
+            model: configuration.model,
+            audioTranscriber: audioTranscriber
+        )
         do {
-            return try await requestDirectReply(transcript: transcript, systemPrompt: systemPrompt, repair: false)
+            return try await requestDirectReply(input: multimodalInput, repair: false)
         } catch let error as AshexError {
             let message = error.localizedDescription.lowercased()
             guard message.contains("did not return a reply") else { throw error }
-            return try await requestDirectReply(transcript: transcript, systemPrompt: systemPrompt, repair: true)
+            return try await requestDirectReply(input: multimodalInput, repair: true)
         }
     }
 
     private func requestDirectReply(
-        transcript: String,
-        systemPrompt: String,
+        input: JSONValue,
         repair: Bool
     ) async throws -> String {
         let repairSuffix = repair
@@ -370,7 +381,7 @@ extension OpenAIResponsesModelAdapter: DirectChatModelAdapter {
             : ""
         let requestBody = OpenAIResponsesRequest(
             model: configuration.model,
-            input: "\(systemPrompt)\n\nConversation:\n\(transcript)\n\nReply naturally to the latest user message. Do not call tools or emit JSON.\(repairSuffix)",
+            input: DirectChatMultimodalBuilder.openAIRepairAdjustedInput(input, repairSuffix: repairSuffix),
             store: false,
             text: .init(format: .init(
                 type: "json_schema",
@@ -417,7 +428,7 @@ extension OpenAIResponsesModelAdapter: TaskPlanningModelAdapter {
     public func taskPlan(for prompt: String, taskKind: TaskKind) async throws -> TaskPlan? {
         let requestBody = OpenAIResponsesRequest(
             model: configuration.model,
-            input: """
+            input: .string("""
             You are planning a software task for an agent.
             Break the request into a short, concrete ordered task list.
             Return 2 to 6 steps only when the work is genuinely multi-step.
@@ -427,7 +438,7 @@ extension OpenAIResponsesModelAdapter: TaskPlanningModelAdapter {
 
             User request:
             \(prompt)
-            """,
+            """),
             store: false,
             text: .init(format: .init(
                 type: "json_schema",
@@ -608,16 +619,19 @@ public struct OllamaChatModelAdapter: ModelAdapter {
     private let session: URLSession
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
+    private let audioTranscriber: (any AudioTranscriber)?
 
     public init(
         configuration: OllamaModelConfiguration,
-        session: URLSession = .shared
+        session: URLSession = .shared,
+        audioTranscriber: (any AudioTranscriber)? = nil
     ) {
         self.configuration = configuration
         self.session = session
         self.name = "ollama-chat:\(configuration.model)"
         self.encoder = JSONEncoder()
         self.decoder = JSONDecoder()
+        self.audioTranscriber = audioTranscriber
     }
 
     fileprivate static func directChatMessages(from history: [MessageRecord], systemPrompt: String) -> [OllamaChatRequest.Message] {
@@ -726,9 +740,11 @@ extension OllamaChatModelAdapter: DirectChatModelAdapter {
             : ""
         let requestBody = OllamaChatRequest(
             model: configuration.model,
-            messages: Self.directChatMessages(
+            messages: try await DirectChatMultimodalBuilder.ollamaMessages(
                 from: history,
-                systemPrompt: systemPrompt + repairInstruction
+                systemPrompt: systemPrompt + repairInstruction,
+                model: configuration.model,
+                audioTranscriber: audioTranscriber
             ),
             format: [
                 "type": .string("object"),
@@ -1230,9 +1246,315 @@ extension MockModelAdapter: TaskPlanningModelAdapter {
     }
 }
 
+public struct OpenAIAudioTranscriber: AudioTranscriber {
+    private let apiKey: String
+    private let session: URLSession
+    private let endpoint: URL
+    private let model: String
+
+    public init(
+        apiKey: String,
+        model: String = "gpt-4o-mini-transcribe",
+        endpoint: URL = URL(string: "https://api.openai.com/v1/audio/transcriptions")!,
+        session: URLSession = .shared
+    ) {
+        self.apiKey = apiKey
+        self.session = session
+        self.endpoint = endpoint
+        self.model = model
+    }
+
+    public func transcribeAudio(fileURL: URL) async throws -> String {
+        let boundary = "AshexBoundary-\(UUID().uuidString)"
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try multipartBody(fileURL: fileURL, boundary: boundary)
+
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw AshexError.model("OpenAI transcription request did not return an HTTP response")
+        }
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            let apiError = try? JSONDecoder().decode(OpenAIErrorEnvelope.self, from: data)
+            throw AshexError.model(apiError?.error.message ?? "OpenAI transcription failed with status \(httpResponse.statusCode)")
+        }
+        let envelope = try JSONDecoder().decode(OpenAITranscriptionResponse.self, from: data)
+        return envelope.text
+    }
+
+    private func multipartBody(fileURL: URL, boundary: String) throws -> Data {
+        var data = Data()
+        let filename = fileURL.lastPathComponent
+        let mimeType = OpenAITranscriptionResponse.mimeType(for: fileURL)
+        let fileData = try Data(contentsOf: fileURL)
+
+        func append(_ string: String) {
+            data.append(Data(string.utf8))
+        }
+
+        append("--\(boundary)\r\n")
+        append("Content-Disposition: form-data; name=\"model\"\r\n\r\n")
+        append("\(model)\r\n")
+
+        append("--\(boundary)\r\n")
+        append("Content-Disposition: form-data; name=\"file\"; filename=\"\(filename)\"\r\n")
+        append("Content-Type: \(mimeType)\r\n\r\n")
+        data.append(fileData)
+        append("\r\n")
+
+        append("--\(boundary)--\r\n")
+        return data
+    }
+}
+
+private enum DirectChatMultimodalBuilder {
+    static func openAIInput(
+        history: [MessageRecord],
+        systemPrompt: String,
+        model: String,
+        audioTranscriber: (any AudioTranscriber)?
+    ) async throws -> JSONValue {
+        let latestAttachment = AttachmentContext.extract(from: history)
+        let transcript = OpenAIResponsesModelAdapter.directChatTranscript(from: history)
+        let conversationText = "\(systemPrompt)\n\nConversation:\n\(transcript)\n\nReply naturally to the latest user message. Do not call tools or emit JSON."
+
+        guard let attachment = latestAttachment else {
+            return .string(conversationText)
+        }
+
+        var content: [JSONValue] = [
+            .object([
+                "type": .string("input_text"),
+                "text": .string(conversationText + "\n\n" + attachment.modelFacingInstruction),
+            ])
+        ]
+
+        switch attachment.kind {
+        case .image:
+            guard AttachmentCapability.supportsImages(provider: "openai", model: model),
+                  let dataURL = try attachment.dataURL() else {
+                return .string(conversationText + "\n\n" + attachment.fallbackInstruction)
+            }
+            content.append(.object([
+                "type": .string("input_image"),
+                "image_url": .string(dataURL),
+                "detail": .string("auto"),
+            ]))
+        case .audio:
+            if let audioTranscriber,
+               let transcription = try await transcribedText(for: attachment, transcriber: audioTranscriber) {
+                content[0] = .object([
+                    "type": .string("input_text"),
+                    "text": .string(conversationText + "\n\nAudio transcription:\n\(transcription)")
+                ])
+            } else {
+                return .string(conversationText + "\n\n" + attachment.fallbackInstruction)
+            }
+        }
+
+        return .array([
+            .object([
+                "role": .string("user"),
+                "content": .array(content),
+            ])
+        ])
+    }
+
+    static func openAIRepairAdjustedInput(_ input: JSONValue, repairSuffix: String) -> JSONValue {
+        guard !repairSuffix.isEmpty else { return input }
+        switch input {
+        case .string(let text):
+            return .string(text + repairSuffix)
+        case .array(var items):
+            if let lastIndex = items.indices.last,
+               case .object(var message) = items[lastIndex],
+               case .array(var content) = message["content"] {
+                if let textIndex = content.firstIndex(where: { item in
+                    guard case .object(let object) = item else { return false }
+                    return object["type"]?.stringValue == "input_text"
+                }),
+                   case .object(var textItem) = content[textIndex],
+                   let text = textItem["text"]?.stringValue {
+                    textItem["text"] = .string(text + repairSuffix)
+                    content[textIndex] = .object(textItem)
+                    message["content"] = .array(content)
+                    items[lastIndex] = .object(message)
+                    return .array(items)
+                }
+            }
+            return input
+        default:
+            return input
+        }
+    }
+
+    static func ollamaMessages(
+        from history: [MessageRecord],
+        systemPrompt: String,
+        model: String,
+        audioTranscriber: (any AudioTranscriber)?
+    ) async throws -> [OllamaChatRequest.Message] {
+        let attachment = AttachmentContext.extract(from: history)
+        let baseMessages: [OllamaChatRequest.Message] = [
+            .init(role: "system", content: systemPrompt)
+        ] + history.suffix(12).map { message in
+            .init(
+                role: message.role == .assistant ? "assistant" : "user",
+                content: message.content
+            )
+        }
+
+        guard let attachment,
+              let lastUserIndex = baseMessages.lastIndex(where: { $0.role == "user" }) else {
+            return baseMessages
+        }
+
+        var messages = baseMessages
+        switch attachment.kind {
+        case .image:
+            guard AttachmentCapability.supportsImages(provider: "ollama", model: model),
+                  let base64 = try attachment.base64EncodedData() else {
+                messages[lastUserIndex] = .init(role: "user", content: attachment.cleanedPromptWithFallback, images: nil)
+                return messages
+            }
+            messages[lastUserIndex] = .init(role: "user", content: attachment.cleanedPrompt, images: [base64])
+        case .audio:
+            if let audioTranscriber,
+               let transcription = try await transcribedText(for: attachment, transcriber: audioTranscriber) {
+                messages[lastUserIndex] = .init(
+                    role: "user",
+                    content: attachment.cleanedPrompt + "\n\nAudio transcription:\n\(transcription)",
+                    images: nil
+                )
+            } else {
+                messages[lastUserIndex] = .init(role: "user", content: attachment.cleanedPromptWithFallback, images: nil)
+            }
+        }
+        return messages
+    }
+
+    private static func transcribedText(
+        for attachment: AttachmentContext,
+        transcriber: any AudioTranscriber
+    ) async throws -> String? {
+        guard attachment.kind == .audio, let fileURL = attachment.fileURL else { return nil }
+        let text = try await transcriber.transcribeAudio(fileURL: fileURL).trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? nil : text
+    }
+}
+
+private enum AttachmentCapability {
+    static func supportsImages(provider: String, model: String) -> Bool {
+        let loweredProvider = provider.lowercased()
+        let loweredModel = model.lowercased()
+        switch loweredProvider {
+        case "openai":
+            return true
+        case "ollama":
+            let markers = ["vision", "llava", "gemma3", "gemma4", "minicpm-v", "qwen2.5vl", "qwen2-vl", "bakllava", "moondream"]
+            return markers.contains { loweredModel.contains($0) }
+        default:
+            return false
+        }
+    }
+}
+
+private struct AttachmentContext {
+    enum Kind {
+        case image
+        case audio
+    }
+
+    let kind: Kind
+    let fileURL: URL?
+    let originalMessage: String
+
+    var cleanedPrompt: String {
+        let lines = originalMessage.components(separatedBy: .newlines).filter { line in
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            return !trimmed.hasPrefix("Local file:") && !trimmed.hasPrefix("Use the attachment context")
+        }
+        return lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var modelFacingInstruction: String {
+        switch kind {
+        case .image:
+            return "An image attachment is included with the latest user message. Use it to answer the user."
+        case .audio:
+            return "An audio attachment was provided. Use any supplied transcription to answer the user."
+        }
+    }
+
+    var fallbackInstruction: String {
+        switch kind {
+        case .image:
+            return cleanedPrompt + "\n\nThe current provider/model cannot inspect image attachments directly. Tell the user that clearly and ask for a text description if needed."
+        case .audio:
+            return cleanedPrompt + "\n\nThe current provider/model cannot inspect audio attachments directly and no transcription backend is configured. Tell the user that clearly and ask for text or enable transcription."
+        }
+    }
+
+    var cleanedPromptWithFallback: String {
+        fallbackInstruction
+    }
+
+    func base64EncodedData() throws -> String? {
+        guard let fileURL else { return nil }
+        let data = try Data(contentsOf: fileURL)
+        return data.base64EncodedString()
+    }
+
+    func dataURL() throws -> String? {
+        guard let fileURL else { return nil }
+        let data = try Data(contentsOf: fileURL)
+        let mimeType = Self.mimeType(for: fileURL)
+        return "data:\(mimeType);base64,\(data.base64EncodedString())"
+    }
+
+    static func extract(from history: [MessageRecord]) -> AttachmentContext? {
+        guard let latestUser = history.last(where: { $0.role == .user }) else { return nil }
+        let lowered = latestUser.content.lowercased()
+        let kind: Kind?
+        if lowered.contains("telegram image attachment") {
+            kind = .image
+        } else if lowered.contains("telegram audio attachment") {
+            kind = .audio
+        } else {
+            kind = nil
+        }
+        guard let kind else { return nil }
+        let fileURL = latestUser.content
+            .components(separatedBy: .newlines)
+            .compactMap { line -> URL? in
+                let prefix = "Local file:"
+                guard line.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix(prefix) else { return nil }
+                let path = line.trimmingCharacters(in: .whitespacesAndNewlines).dropFirst(prefix.count).trimmingCharacters(in: .whitespacesAndNewlines)
+                return path.isEmpty ? nil : URL(fileURLWithPath: path)
+            }
+            .first
+        return .init(kind: kind, fileURL: fileURL, originalMessage: latestUser.content)
+    }
+
+    private static func mimeType(for url: URL) -> String {
+        switch url.pathExtension.lowercased() {
+        case "png":
+            return "image/png"
+        case "webp":
+            return "image/webp"
+        case "gif":
+            return "image/gif"
+        default:
+            return "image/jpeg"
+        }
+    }
+}
+
 private struct OpenAIResponsesRequest: Encodable {
     let model: String
-    let input: String
+    let input: JSONValue
     let store: Bool
     let text: TextConfiguration
 
@@ -1258,6 +1580,13 @@ private struct OllamaChatRequest: Encodable {
     struct Message: Encodable {
         let role: String
         let content: String
+        let images: [String]?
+
+        init(role: String, content: String, images: [String]? = nil) {
+            self.role = role
+            self.content = content
+            self.images = images
+        }
     }
 }
 
@@ -1289,6 +1618,25 @@ private struct DFlashChatCompletionsRequest: Encodable {
     struct Message: Encodable {
         let role: String
         let content: String
+    }
+}
+
+private struct OpenAITranscriptionResponse: Decodable {
+    let text: String
+
+    static func mimeType(for url: URL) -> String {
+        switch url.pathExtension.lowercased() {
+        case "mp3":
+            return "audio/mpeg"
+        case "wav":
+            return "audio/wav"
+        case "m4a":
+            return "audio/mp4"
+        case "ogg", "oga":
+            return "audio/ogg"
+        default:
+            return "application/octet-stream"
+        }
     }
 }
 

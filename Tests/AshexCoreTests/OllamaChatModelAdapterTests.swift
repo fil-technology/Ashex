@@ -202,6 +202,87 @@ struct OllamaChatModelAdapterTests {
         #expect(reply == "It looks like an ASO skills repository for app-store optimization workflows.")
         #expect(OllamaStubURLProtocol.state.requestCount == 2)
     }
+
+    @Test func directReplySendsImageAttachmentThroughOllamaImages() async throws {
+        let session = makeOllamaStubbedSession(statusCode: 200, body: """
+        {
+          "message": {
+            "content": "{\\"reply\\":\\"I can inspect the image.\\"}"
+          }
+        }
+        """)
+
+        let imageURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".jpg")
+        try Data([0xFF, 0xD8, 0xFF]).write(to: imageURL)
+
+        let adapter = OllamaChatModelAdapter(
+            configuration: .init(model: "gemma4:latest", baseURL: URL(string: "http://localhost:11434/api/chat")!),
+            session: session
+        )
+
+        _ = try await adapter.directReply(
+            history: [
+                .init(
+                    id: UUID(),
+                    threadID: UUID(),
+                    runID: UUID(),
+                    role: .user,
+                    content: """
+                    The user sent a Telegram image attachment.
+                    Local file: \(imageURL.path)
+                    Caption: Describe this image.
+                    Use the attachment context in your reply.
+                    """,
+                    createdAt: Date()
+                )
+            ],
+            systemPrompt: "You are helpful."
+        )
+
+        let body = try #require(OllamaStubURLProtocol.state.lastRequestBodyString)
+        #expect(body.contains("\"images\":["))
+        #expect(body.contains("/9j/") || body.contains("\\/9j\\/"))
+    }
+
+    @Test func directReplyInjectsAudioTranscriptionForOllama() async throws {
+        let session = makeOllamaStubbedSession(statusCode: 200, body: """
+        {
+          "message": {
+            "content": "{\\"reply\\":\\"I used the transcription.\\"}"
+          }
+        }
+        """)
+
+        let audioURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".ogg")
+        try Data([0x4F, 0x67, 0x67]).write(to: audioURL)
+
+        let adapter = OllamaChatModelAdapter(
+            configuration: .init(model: "gemma4:latest", baseURL: URL(string: "http://localhost:11434/api/chat")!),
+            session: session,
+            audioTranscriber: FixedAudioTranscriber(text: "hello from audio")
+        )
+
+        _ = try await adapter.directReply(
+            history: [
+                .init(
+                    id: UUID(),
+                    threadID: UUID(),
+                    runID: UUID(),
+                    role: .user,
+                    content: """
+                    The user sent a Telegram audio attachment.
+                    Local file: \(audioURL.path)
+                    Use the attachment context in your reply.
+                    """,
+                    createdAt: Date()
+                )
+            ],
+            systemPrompt: "You are helpful."
+        )
+
+        let body = try #require(OllamaStubURLProtocol.state.lastRequestBodyString)
+        #expect(body.contains("Audio transcription:\\nhello from audio"))
+    }
 }
 
 private func sampleModelContext() -> ModelContext {
@@ -247,6 +328,7 @@ private final class OllamaStubURLProtocol: URLProtocol, @unchecked Sendable {
 
     override func startLoading() {
         Self.state.record(timeoutInterval: request.timeoutInterval)
+        Self.state.record(body: Self.requestBody(from: request))
         let current = Self.state.snapshot()
         let response = HTTPURLResponse(
             url: request.url ?? URL(string: "http://localhost:11434/api/chat")!,
@@ -261,6 +343,27 @@ private final class OllamaStubURLProtocol: URLProtocol, @unchecked Sendable {
     }
 
     override func stopLoading() {}
+
+    private static func requestBody(from request: URLRequest) -> Data? {
+        if let body = request.httpBody {
+            return body
+        }
+        guard let stream = request.httpBodyStream else {
+            return nil
+        }
+        stream.open()
+        defer { stream.close() }
+        let bufferSize = 4096
+        let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: bufferSize)
+        defer { buffer.deallocate() }
+        var data = Data()
+        while stream.hasBytesAvailable {
+            let read = stream.read(buffer, maxLength: bufferSize)
+            if read <= 0 { break }
+            data.append(buffer, count: read)
+        }
+        return data.isEmpty ? nil : data
+    }
 }
 
 private final class OllamaStubResponseState: @unchecked Sendable {
@@ -268,12 +371,14 @@ private final class OllamaStubResponseState: @unchecked Sendable {
     private var responses: [(statusCode: Int, body: String)] = [(200, "")]
     private(set) var requestCount = 0
     private(set) var lastRequestTimeout: TimeInterval = 0
+    private(set) var lastRequestBody: Data?
 
     func setResponses(_ responses: [(Int, String)]) {
         lock.lock()
         self.responses = responses.map { (statusCode: $0.0, body: $0.1) }
         self.requestCount = 0
         self.lastRequestTimeout = 0
+        self.lastRequestBody = nil
         lock.unlock()
     }
 
@@ -290,5 +395,26 @@ private final class OllamaStubResponseState: @unchecked Sendable {
         lock.lock()
         lastRequestTimeout = timeoutInterval
         lock.unlock()
+    }
+
+    func record(body: Data?) {
+        lock.lock()
+        lastRequestBody = body
+        lock.unlock()
+    }
+
+    var lastRequestBodyString: String? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let lastRequestBody else { return nil }
+        return String(data: lastRequestBody, encoding: .utf8)
+    }
+}
+
+private struct FixedAudioTranscriber: AudioTranscriber {
+    let text: String
+
+    func transcribeAudio(fileURL: URL) async throws -> String {
+        text
     }
 }
