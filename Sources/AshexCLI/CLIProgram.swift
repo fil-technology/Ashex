@@ -79,6 +79,19 @@ struct AshexCLI {
             print("[plan] step \(index)/\(total) started - \(title)")
         case .taskStepFinished(_, let index, let total, let title, let outcome):
             print("[plan] step \(index)/\(total) \(outcome) - \(title)")
+        case .explorationPlanUpdated(_, let targets, let pendingTargets, let rejectedTargets, let suggestedQueries):
+            if !targets.isEmpty {
+                print("[explore] targets: \(targets.joined(separator: ", "))")
+            }
+            if !pendingTargets.isEmpty {
+                print("[explore] next: \(pendingTargets.joined(separator: ", "))")
+            }
+            if !rejectedTargets.isEmpty {
+                print("[explore] deprioritized: \(rejectedTargets.joined(separator: ", "))")
+            }
+            if !suggestedQueries.isEmpty {
+                print("[explore] queries: \(suggestedQueries.joined(separator: ", "))")
+            }
         case .subagentAssigned(_, let title, let role, let goal):
             print("[subagent] assigned \(role) - \(title)")
             print(goal)

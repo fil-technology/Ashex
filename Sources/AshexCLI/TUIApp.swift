@@ -152,6 +152,9 @@ final class TUIApp {
     private var terminalTask: Task<Void, Never>?
     private var terminalCancellation = CancellationToken()
     private var currentRunPhase: String?
+    private var currentExplorationTargets: [String] = []
+    private var currentPendingExplorationTargets: [String] = []
+    private var currentRejectedExplorationTargets: [String] = []
     private var currentChangedFiles: [String] = []
     private var currentPlannedFiles: [String] = []
     private var currentPatchObjectives: [String] = []
@@ -1611,7 +1614,12 @@ final class TUIApp {
         runStartedAt = Date()
         workingFrameIndex = 0
         currentRunPhase = nil
+        currentExplorationTargets = []
+        currentPendingExplorationTargets = []
+        currentRejectedExplorationTargets = []
         currentChangedFiles = []
+        currentPlannedFiles = []
+        currentPatchObjectives = []
         promptText = ""
         inputMode = .prompt
         showSettings = false
@@ -1728,11 +1736,18 @@ final class TUIApp {
             activeRunID = runID
             refreshTokenEconomicsSnapshot(runID: runID)
             currentRunPhase = nil
+            currentExplorationTargets = []
+            currentPendingExplorationTargets = []
+            currentRejectedExplorationTargets = []
             currentChangedFiles = []
             currentPlannedFiles = []
             currentPatchObjectives = []
         case .workflowPhaseChanged(_, let phase, _):
             currentRunPhase = phase
+        case .explorationPlanUpdated(_, let targets, let pendingTargets, let rejectedTargets, _):
+            currentExplorationTargets = targets
+            currentPendingExplorationTargets = pendingTargets
+            currentRejectedExplorationTargets = rejectedTargets
         case .contextPrepared(let runID, _, _, _, _, _):
             activeRunID = runID
             refreshTokenEconomicsSnapshot(runID: runID)
@@ -1804,6 +1819,21 @@ final class TUIApp {
             return ["[plan] Step \(index) of \(total): \(title)"]
         case .taskStepFinished(_, let index, let total, let title, let outcome):
             return ["[plan] Step \(index) of \(total) \(friendlyOutcome(outcome)): \(title)"]
+        case .explorationPlanUpdated(_, let targets, let pendingTargets, let rejectedTargets, let suggestedQueries):
+            var lines: [String] = []
+            if !targets.isEmpty {
+                lines.append("[explore] Focus: " + targets.joined(separator: ", "))
+            }
+            if !pendingTargets.isEmpty {
+                lines.append("[explore] Next: " + pendingTargets.joined(separator: ", "))
+            }
+            if !rejectedTargets.isEmpty {
+                lines.append("[explore] Deprioritized: " + rejectedTargets.joined(separator: ", "))
+            }
+            if !suggestedQueries.isEmpty {
+                lines.append("[explore] Queries: " + suggestedQueries.joined(separator: ", "))
+            }
+            return lines
         case .subagentAssigned(_, let title, let role, let goal):
             return ["[subagent] assigned \(role) - \(title)"] + goal.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         case .subagentStarted(_, let title, let maxIterations):
@@ -2076,7 +2106,12 @@ final class TUIApp {
         let phaseLabel = currentRunPhase.map { "\($0)" } ?? (runFinished ? "idle" : "starting")
         let phase = "\(TerminalUIStyle.faint)phase\(TerminalUIStyle.reset) \(TerminalUIStyle.cyan)\(phaseLabel)\(TerminalUIStyle.reset)"
         let rightSummary: String
-        if !currentPlannedFiles.isEmpty {
+        if phaseLabel.lowercased() == "exploration", !currentPendingExplorationTargets.isEmpty || !currentExplorationTargets.isEmpty {
+            let previewSource = currentPendingExplorationTargets.isEmpty ? currentExplorationTargets : currentPendingExplorationTargets
+            let preview = previewSource.prefix(3).joined(separator: ", ")
+            let suffix = previewSource.count > 3 ? " +\(previewSource.count - 3)" : ""
+            rightSummary = "\(TerminalUIStyle.faint)explore\(TerminalUIStyle.reset) \(TerminalUIStyle.blue)\(preview)\(suffix)\(TerminalUIStyle.reset)"
+        } else if !currentPlannedFiles.isEmpty {
             let preview = currentPlannedFiles.prefix(3).joined(separator: ", ")
             let suffix = currentPlannedFiles.count > 3 ? " +\(currentPlannedFiles.count - 3)" : ""
             rightSummary = "\(TerminalUIStyle.faint)plan\(TerminalUIStyle.reset) \(TerminalUIStyle.amber)\(preview)\(suffix)\(TerminalUIStyle.reset)"
@@ -4124,6 +4159,9 @@ final class TUIApp {
             if let memory, !memory.pendingExplorationTargets.isEmpty {
                 lines.append("[history] pending exploration \(memory.pendingExplorationTargets.count)")
             }
+            if let memory, !memory.rejectedExplorationTargets.isEmpty {
+                lines.append("[history] deprioritized \(memory.rejectedExplorationTargets.count)")
+            }
             if let memory, !memory.unresolvedItems.isEmpty {
                 lines.append("[history] unresolved \(memory.unresolvedItems.count)")
             }
@@ -4160,6 +4198,13 @@ final class TUIApp {
             runLines = []
             transcriptScrollOffset = 0
             runFinished = true
+            currentRunPhase = nil
+            currentExplorationTargets = []
+            currentPendingExplorationTargets = []
+            currentRejectedExplorationTargets = []
+            currentChangedFiles = []
+            currentPlannedFiles = []
+            currentPatchObjectives = []
             showHistory = false
             focus = .input
             inputMode = .prompt
@@ -4224,6 +4269,9 @@ final class TUIApp {
                 if !memory.pendingExplorationTargets.isEmpty {
                     runLines.append("  pending \(memory.pendingExplorationTargets.joined(separator: ", "))")
                 }
+                if !memory.rejectedExplorationTargets.isEmpty {
+                    runLines.append("  deprioritized \(memory.rejectedExplorationTargets.joined(separator: ", "))")
+                }
                 if !memory.inspectedPaths.isEmpty {
                     runLines.append("  inspected \(memory.inspectedPaths.joined(separator: ", "))")
                 }
@@ -4281,6 +4329,9 @@ final class TUIApp {
             }
             runLines.append(contentsOf: events.flatMap { renderLines(for: $0.payload) })
             currentRunPhase = memory?.currentPhase
+            currentExplorationTargets = memory?.explorationTargets ?? []
+            currentPendingExplorationTargets = memory?.pendingExplorationTargets ?? []
+            currentRejectedExplorationTargets = memory?.rejectedExplorationTargets ?? []
             currentChangedFiles = memory?.changedPaths ?? []
             currentPlannedFiles = memory?.plannedChangeSet ?? []
             currentPatchObjectives = memory?.patchObjectives ?? []

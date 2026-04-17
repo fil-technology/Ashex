@@ -160,6 +160,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                 currentPhase: nil,
                 explorationTargets: initialExplorationPlan.targetPaths,
                 pendingExplorationTargets: initialExplorationPlan.targetPaths,
+                rejectedExplorationTargets: initialExplorationPlan.deprioritizedPaths,
                 inspectedPaths: [],
                 changedPaths: [],
                 recentFindings: [],
@@ -222,6 +223,16 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                 try persistence.transitionRunStep(stepID: stepRecords[index].id, to: .running, summary: nil, now: clock())
                 try emitter.emit(.workflowPhaseChanged(runID: run.id, phase: step.phase.rawValue, title: step.title), runID: run.id)
                 if step.phase == .exploration {
+                    try emitter.emit(
+                        .explorationPlanUpdated(
+                            runID: run.id,
+                            targets: explorationPlan.targetPaths,
+                            pendingTargets: explorationPlan.targetPaths,
+                            rejectedTargets: explorationPlan.deprioritizedPaths,
+                            suggestedQueries: explorationPlan.suggestedQueries
+                        ),
+                        runID: run.id
+                    )
                     try emitter.emit(.status(runID: run.id, message: "Exploration plan: \(explorationPlan.recommendations.first ?? explorationPlan.summary)"), runID: run.id)
                 }
                 try persistWorkingMemory(
@@ -1381,8 +1392,10 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         overrideSuggestions: [String]? = nil,
         carryForwardNotes: [String] = []
     ) throws {
+        let workingMemory = try persistence.fetchWorkingMemory(runID: runID)
         let explorationTargets = explorationPlan?.targetPaths ?? workflowState?.explorationTargets ?? []
         let pendingExplorationTargets = workflowState?.pendingExplorationTargets ?? explorationTargets
+        let rejectedExplorationTargets = explorationPlan?.deprioritizedPaths ?? workingMemory?.rejectedExplorationTargets ?? []
         let inspectedPaths = workflowState.map { Array($0.inspectedArtifacts).sorted() } ?? []
         let changedPaths = Self.orderedUniqueChanges(from: changedFiles).map(\.path)
         let recentFindings = workflowState?.recentFindings ?? []
@@ -1409,6 +1422,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
             currentPhase: currentPhase?.rawValue,
             explorationTargets: explorationTargets,
             pendingExplorationTargets: pendingExplorationTargets,
+            rejectedExplorationTargets: rejectedExplorationTargets,
             inspectedPaths: inspectedPaths,
             changedPaths: changedPaths,
             recentFindings: recentFindings,

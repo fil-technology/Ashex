@@ -27,10 +27,12 @@ Recent architecture learnings we are now folding in:
 
 ## Current Refinement Status
 
-- Phase 1 has started:
+- Phase 1 is now completed:
   - exploration targets are now persisted in working memory
   - pending exploration targets are tracked as files and roots are inspected
+  - deprioritized exploration paths are now persisted so the harness can remember what not to widen into without new evidence
   - history and prompts now surface that exploration state
+  - the CLI/TUI now surface structured exploration updates instead of relying only on raw transcript lines
   - workspace snapshots now persist project markers plus likely source/test roots so exploration is anchored to repo shape instead of only broad top-level entries
 - Phase 2 has started:
   - validation can now proactively execute checks instead of only gating completion
@@ -55,6 +57,8 @@ Recent architecture learnings we are now folding in:
 - The remaining refinement work below is still active
 
 ## Refinement Phase 1: Deeper Exploration And File Targeting
+
+Status: completed
 
 Goal: make Ashex inspect the right parts of a codebase before mutating anything.
 

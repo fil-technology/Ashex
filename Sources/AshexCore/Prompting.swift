@@ -496,6 +496,9 @@ public enum PromptBuilder {
         if !memory.pendingExplorationTargets.isEmpty {
             lines.append("Still worth inspecting: \(memory.pendingExplorationTargets.joined(separator: ", "))")
         }
+        if !memory.rejectedExplorationTargets.isEmpty {
+            lines.append("Deprioritized paths: \(memory.rejectedExplorationTargets.joined(separator: ", "))")
+        }
         if !memory.inspectedPaths.isEmpty {
             lines.append("Inspected paths: \(memory.inspectedPaths.joined(separator: ", "))")
         }

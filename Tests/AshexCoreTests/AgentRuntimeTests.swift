@@ -112,7 +112,8 @@ private final class RecordingExecutionRuntime: ExecutionRuntime, @unchecked Send
         toolRegistry: ToolRegistry(tools: [
             FileSystemTool(workspaceGuard: WorkspaceGuard(rootURL: root)),
         ]),
-        persistence: SQLitePersistenceStore(databaseURL: dbURL)
+        persistence: SQLitePersistenceStore(databaseURL: dbURL),
+        workspaceSnapshot: WorkspaceSnapshotBuilder.capture(workspaceRoot: root)
     )
 
     var plannedSteps: [String] = []
@@ -141,7 +142,7 @@ private final class RecordingExecutionRuntime: ExecutionRuntime, @unchecked Send
         id: UUID(),
         runID: UUID(),
         workspaceRootPath: "/tmp/project",
-        topLevelEntries: ["Sources/", "Tests/", "README.md"],
+        topLevelEntries: ["Sources/", "Tests/", "README.md", "docs/"],
         instructionFiles: ["README.md"],
         projectMarkers: ["Package.swift"],
         sourceRoots: ["Sources"],
@@ -165,7 +166,50 @@ private final class RecordingExecutionRuntime: ExecutionRuntime, @unchecked Send
     #expect(plan.targetPaths.contains("Sources/AshexCore/ModelAdapter.swift"))
     #expect(plan.targetPaths.contains("Package.swift"))
     #expect(plan.targetPaths.contains("Tests"))
+    #expect(plan.deprioritizedPaths.contains("docs/"))
     #expect(plan.suggestedQueries.contains { $0.contains("OpenAIModelAdapter") })
+}
+
+@Test func runtimeEmitsStructuredExplorationPlanUpdates() async throws {
+    let fileManager = FileManager.default
+    let root = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let dbURL = root.appendingPathComponent(".ashex/test.sqlite")
+    try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+    try "swift-tools-version: 6.0".write(to: root.appendingPathComponent("Package.swift"), atomically: true, encoding: .utf8)
+    try "# Demo".write(to: root.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
+    try fileManager.createDirectory(at: root.appendingPathComponent("docs"), withIntermediateDirectories: true)
+    try fileManager.createDirectory(at: root.appendingPathComponent("Sources"), withIntermediateDirectories: true)
+    try fileManager.createDirectory(at: root.appendingPathComponent("Tests"), withIntermediateDirectories: true)
+
+    let runtime = try AgentRuntime(
+        modelAdapter: PlannedSequencedModelAdapter(
+            plan: TaskPlan(
+                steps: [
+                    PlannedStep(title: "Inspect the current implementation", phase: .exploration),
+                ],
+                taskKind: .feature
+            ),
+            actions: [
+                .finalAnswer("Explored the implementation."),
+            ]
+        ),
+        toolRegistry: ToolRegistry(tools: [
+            FileSystemTool(workspaceGuard: WorkspaceGuard(rootURL: root)),
+        ]),
+        persistence: SQLitePersistenceStore(databaseURL: dbURL)
+    )
+
+    var sawExplorationEvent = false
+    var sawSuggestedQueries = false
+    for await event in runtime.run(RunRequest(prompt: "Implement provider settings for the runtime")) {
+        if case .explorationPlanUpdated(_, let targets, let pendingTargets, _, let suggestedQueries) = event.payload {
+            sawExplorationEvent = !targets.isEmpty && !pendingTargets.isEmpty
+            sawSuggestedQueries = !suggestedQueries.isEmpty
+        }
+    }
+
+    #expect(sawExplorationEvent)
+    #expect(sawSuggestedQueries)
 }
 
 @Test func workspaceSnapshotBuilderDetectsRepoProfileMarkersAndRoots() throws {
@@ -939,6 +983,7 @@ private final class RecordingExecutionRuntime: ExecutionRuntime, @unchecked Send
         currentPhase: "exploration",
         explorationTargets: ["Sources/AshexCore/Prompting.swift", "Tests/AshexCoreTests/AgentRuntimeTests.swift"],
         pendingExplorationTargets: ["Tests/AshexCoreTests/AgentRuntimeTests.swift"],
+        rejectedExplorationTargets: ["README.md"],
         inspectedPaths: ["Sources/AshexCore/Prompting.swift"],
         changedPaths: ["README.md"],
         recentFindings: ["Inspected Prompting.swift and found compaction entry points."],
@@ -965,6 +1010,7 @@ private final class RecordingExecutionRuntime: ExecutionRuntime, @unchecked Send
     #expect(memory?.currentPhase == "exploration")
     #expect(memory?.explorationTargets == ["Sources/AshexCore/Prompting.swift", "Tests/AshexCoreTests/AgentRuntimeTests.swift"])
     #expect(memory?.pendingExplorationTargets == ["Tests/AshexCoreTests/AgentRuntimeTests.swift"])
+    #expect(memory?.rejectedExplorationTargets == ["README.md"])
     #expect(memory?.inspectedPaths == ["Sources/AshexCore/Prompting.swift"])
     #expect(memory?.changedPaths == ["README.md"])
     #expect(memory?.recentFindings == ["Inspected Prompting.swift and found compaction entry points."])

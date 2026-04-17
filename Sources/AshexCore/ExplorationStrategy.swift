@@ -4,12 +4,20 @@ public struct ExplorationPlan: Sendable, Equatable {
     public let summary: String
     public let recommendations: [String]
     public let targetPaths: [String]
+    public let deprioritizedPaths: [String]
     public let suggestedQueries: [String]
 
-    public init(summary: String, recommendations: [String], targetPaths: [String] = [], suggestedQueries: [String] = []) {
+    public init(
+        summary: String,
+        recommendations: [String],
+        targetPaths: [String] = [],
+        deprioritizedPaths: [String] = [],
+        suggestedQueries: [String] = []
+    ) {
         self.summary = summary
         self.recommendations = recommendations
         self.targetPaths = targetPaths
+        self.deprioritizedPaths = deprioritizedPaths
         self.suggestedQueries = suggestedQueries
     }
 
@@ -34,6 +42,11 @@ public enum ExplorationStrategy {
             focus: focus,
             snapshot: workspaceSnapshot,
             searchRoots: searchRoots
+        )
+        let deprioritizedPaths = deprioritizedPaths(
+            taskKind: taskKind,
+            snapshot: workspaceSnapshot,
+            prioritizedTargets: targetPaths
         )
         let suggestedQueries = prioritizedQueries(taskKind: taskKind, focus: focus, snapshot: workspaceSnapshot)
 
@@ -94,13 +107,22 @@ public enum ExplorationStrategy {
         if !targetPaths.isEmpty {
             recommendations.append("Prioritize these likely targets first: \(targetPaths.joined(separator: ", ")).")
         }
+        if !deprioritizedPaths.isEmpty {
+            recommendations.append("Deprioritize these paths unless new evidence points there: \(deprioritizedPaths.joined(separator: ", ")).")
+        }
         if !suggestedQueries.isEmpty {
             recommendations.append("Use these search queries early: \(suggestedQueries.joined(separator: ", ")).")
         }
 
         var seen: Set<String> = []
         let deduped = recommendations.filter { seen.insert($0).inserted }
-        return ExplorationPlan(summary: summary, recommendations: deduped, targetPaths: targetPaths, suggestedQueries: suggestedQueries)
+        return ExplorationPlan(
+            summary: summary,
+            recommendations: deduped,
+            targetPaths: targetPaths,
+            deprioritizedPaths: deprioritizedPaths,
+            suggestedQueries: suggestedQueries
+        )
     }
 
     private static func preferredSearchRoots(for taskKind: TaskKind, snapshot: WorkspaceSnapshotRecord?) -> [String] {
@@ -149,6 +171,7 @@ public enum ExplorationStrategy {
             targets.append(contentsOf: snapshot.instructionFiles)
         }
         targets.append(contentsOf: focus.fileLikeTerms)
+        targets.append(contentsOf: likelyEntryPoints(for: taskKind, snapshot: snapshot))
 
         switch taskKind {
         case .bugFix, .feature, .refactor, .analysis, .general:
@@ -173,6 +196,41 @@ public enum ExplorationStrategy {
             .filter { seen.insert($0.lowercased()).inserted }
             .prefix(8)
             .map { $0 }
+    }
+
+    private static func deprioritizedPaths(
+        taskKind: TaskKind,
+        snapshot: WorkspaceSnapshotRecord?,
+        prioritizedTargets: [String]
+    ) -> [String] {
+        guard let snapshot else { return [] }
+
+        let prioritized = Set(prioritizedTargets.map(normalizedExplorationPath))
+        let candidates = orderedUnique(
+            snapshot.topLevelEntries
+                + snapshot.instructionFiles
+                + snapshot.projectMarkers
+                + snapshot.sourceRoots
+                + snapshot.testRoots
+        )
+
+        let filtered = candidates.filter { candidate in
+            let normalized = normalizedExplorationPath(candidate)
+            guard !normalized.isEmpty, !prioritized.contains(normalized) else { return false }
+
+            switch taskKind {
+            case .docs:
+                return snapshot.sourceRoots.contains(candidate) || snapshot.testRoots.contains(candidate)
+            case .git:
+                return snapshot.sourceRoots.contains(candidate) || snapshot.testRoots.contains(candidate) || snapshot.instructionFiles.contains(candidate)
+            case .shell:
+                return snapshot.instructionFiles.contains(candidate) && candidate.lowercased().contains("readme")
+            case .bugFix, .feature, .refactor, .analysis, .general:
+                return snapshot.instructionFiles.contains(candidate) || candidate.lowercased().contains("docs")
+            }
+        }
+
+        return Array(filtered.prefix(6))
     }
 
     private static func prioritizedQueries(
@@ -200,9 +258,41 @@ public enum ExplorationStrategy {
             .map { $0 }
     }
 
+    private static func likelyEntryPoints(for taskKind: TaskKind, snapshot: WorkspaceSnapshotRecord?) -> [String] {
+        guard let snapshot else { return [] }
+
+        var candidates: [String] = []
+        switch taskKind {
+        case .bugFix:
+            candidates.append(contentsOf: snapshot.testRoots)
+            candidates.append(contentsOf: snapshot.sourceRoots)
+        case .feature, .refactor, .analysis, .general:
+            candidates.append(contentsOf: snapshot.projectMarkers)
+            candidates.append(contentsOf: snapshot.sourceRoots)
+            candidates.append(contentsOf: snapshot.testRoots)
+        case .docs:
+            candidates.append(contentsOf: snapshot.instructionFiles)
+            candidates.append("README.md")
+        case .git:
+            candidates.append(contentsOf: snapshot.projectMarkers)
+            candidates.append(".git")
+        case .shell:
+            candidates.append(".")
+            candidates.append(contentsOf: snapshot.projectMarkers)
+        }
+        return orderedUnique(candidates)
+    }
+
     private static func orderedUnique(_ values: [String]) -> [String] {
         var seen: Set<String> = []
         return values.filter { seen.insert($0.lowercased()).inserted }
+    }
+
+    private static func normalizedExplorationPath(_ value: String) -> String {
+        value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            .lowercased()
     }
 }
 

@@ -93,6 +93,7 @@ public final class SQLitePersistenceStore: PersistenceStore, @unchecked Sendable
                 current_phase TEXT,
                 exploration_targets_json TEXT NOT NULL DEFAULT '[]',
                 pending_exploration_targets_json TEXT NOT NULL DEFAULT '[]',
+                rejected_exploration_targets_json TEXT NOT NULL DEFAULT '[]',
                 inspected_paths_json TEXT NOT NULL,
                 changed_paths_json TEXT NOT NULL,
                 recent_findings_json TEXT NOT NULL DEFAULT '[]',
@@ -134,6 +135,7 @@ public final class SQLitePersistenceStore: PersistenceStore, @unchecked Sendable
             try ensureColumnExists(table: "workspace_snapshots", column: "test_roots_json", definition: "TEXT NOT NULL DEFAULT '[]'")
             try ensureColumnExists(table: "working_memory", column: "exploration_targets_json", definition: "TEXT NOT NULL DEFAULT '[]'")
             try ensureColumnExists(table: "working_memory", column: "pending_exploration_targets_json", definition: "TEXT NOT NULL DEFAULT '[]'")
+            try ensureColumnExists(table: "working_memory", column: "rejected_exploration_targets_json", definition: "TEXT NOT NULL DEFAULT '[]'")
             try ensureColumnExists(table: "working_memory", column: "recent_findings_json", definition: "TEXT NOT NULL DEFAULT '[]'")
             try ensureColumnExists(table: "working_memory", column: "completed_steps_json", definition: "TEXT NOT NULL DEFAULT '[]'")
             try ensureColumnExists(table: "working_memory", column: "unresolved_items_json", definition: "TEXT NOT NULL DEFAULT '[]'")
@@ -357,6 +359,7 @@ public final class SQLitePersistenceStore: PersistenceStore, @unchecked Sendable
         currentPhase: String?,
         explorationTargets: [String],
         pendingExplorationTargets: [String],
+        rejectedExplorationTargets: [String],
         inspectedPaths: [String],
         changedPaths: [String],
         recentFindings: [String],
@@ -378,6 +381,7 @@ public final class SQLitePersistenceStore: PersistenceStore, @unchecked Sendable
                 currentPhase: currentPhase,
                 explorationTargets: explorationTargets,
                 pendingExplorationTargets: pendingExplorationTargets,
+                rejectedExplorationTargets: rejectedExplorationTargets,
                 inspectedPaths: inspectedPaths,
                 changedPaths: changedPaths,
                 recentFindings: recentFindings,
@@ -393,8 +397,8 @@ public final class SQLitePersistenceStore: PersistenceStore, @unchecked Sendable
             try exec(
                 """
                 INSERT OR REPLACE INTO working_memory
-                (id, run_id, current_task, current_phase, exploration_targets_json, pending_exploration_targets_json, inspected_paths_json, changed_paths_json, recent_findings_json, completed_steps_json, unresolved_items_json, validation_suggestions_json, planned_change_set_json, patch_objectives_json, carry_forward_notes_json, summary, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, run_id, current_task, current_phase, exploration_targets_json, pending_exploration_targets_json, rejected_exploration_targets_json, inspected_paths_json, changed_paths_json, recent_findings_json, completed_steps_json, unresolved_items_json, validation_suggestions_json, planned_change_set_json, patch_objectives_json, carry_forward_notes_json, summary, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 bind: [
                     .text(record.id.uuidString),
@@ -403,6 +407,7 @@ public final class SQLitePersistenceStore: PersistenceStore, @unchecked Sendable
                     .text(record.currentPhase),
                     .text(try encodeJSONString(record.explorationTargets)),
                     .text(try encodeJSONString(record.pendingExplorationTargets)),
+                    .text(try encodeJSONString(record.rejectedExplorationTargets)),
                     .text(try encodeJSONString(record.inspectedPaths)),
                     .text(try encodeJSONString(record.changedPaths)),
                     .text(try encodeJSONString(record.recentFindings)),
@@ -780,7 +785,7 @@ public final class SQLitePersistenceStore: PersistenceStore, @unchecked Sendable
 
     private func fetchWorkingMemoryLocked(runID: UUID) throws -> WorkingMemoryRecord? {
         let sql = """
-        SELECT id, current_task, current_phase, exploration_targets_json, pending_exploration_targets_json, inspected_paths_json, changed_paths_json, recent_findings_json, completed_steps_json, unresolved_items_json, validation_suggestions_json, planned_change_set_json, patch_objectives_json, carry_forward_notes_json, summary, updated_at
+        SELECT id, current_task, current_phase, exploration_targets_json, pending_exploration_targets_json, rejected_exploration_targets_json, inspected_paths_json, changed_paths_json, recent_findings_json, completed_steps_json, unresolved_items_json, validation_suggestions_json, planned_change_set_json, patch_objectives_json, carry_forward_notes_json, summary, updated_at
         FROM working_memory
         WHERE run_id = ?
         LIMIT 1
@@ -797,17 +802,18 @@ public final class SQLitePersistenceStore: PersistenceStore, @unchecked Sendable
             currentPhase: columnNullableText(statement, index: 2),
             explorationTargets: try decodeStringArrayJSON(columnText(statement, index: 3)),
             pendingExplorationTargets: try decodeStringArrayJSON(columnText(statement, index: 4)),
-            inspectedPaths: try decodeStringArrayJSON(columnText(statement, index: 5)),
-            changedPaths: try decodeStringArrayJSON(columnText(statement, index: 6)),
-            recentFindings: try decodeStringArrayJSON(columnText(statement, index: 7)),
-            completedStepSummaries: try decodeStringArrayJSON(columnText(statement, index: 8)),
-            unresolvedItems: try decodeStringArrayJSON(columnText(statement, index: 9)),
-            validationSuggestions: try decodeStringArrayJSON(columnText(statement, index: 10)),
-            plannedChangeSet: try decodeStringArrayJSON(columnText(statement, index: 11)),
-            patchObjectives: try decodeStringArrayJSON(columnText(statement, index: 12)),
-            carryForwardNotes: try decodeStringArrayJSON(columnText(statement, index: 13)),
-            summary: columnText(statement, index: 14),
-            updatedAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 15))
+            rejectedExplorationTargets: try decodeStringArrayJSON(columnText(statement, index: 5)),
+            inspectedPaths: try decodeStringArrayJSON(columnText(statement, index: 6)),
+            changedPaths: try decodeStringArrayJSON(columnText(statement, index: 7)),
+            recentFindings: try decodeStringArrayJSON(columnText(statement, index: 8)),
+            completedStepSummaries: try decodeStringArrayJSON(columnText(statement, index: 9)),
+            unresolvedItems: try decodeStringArrayJSON(columnText(statement, index: 10)),
+            validationSuggestions: try decodeStringArrayJSON(columnText(statement, index: 11)),
+            plannedChangeSet: try decodeStringArrayJSON(columnText(statement, index: 12)),
+            patchObjectives: try decodeStringArrayJSON(columnText(statement, index: 13)),
+            carryForwardNotes: try decodeStringArrayJSON(columnText(statement, index: 14)),
+            summary: columnText(statement, index: 15),
+            updatedAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 16))
         )
     }
 

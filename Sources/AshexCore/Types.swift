@@ -321,6 +321,7 @@ public struct WorkingMemoryRecord: Codable, Sendable, Equatable {
     public let currentPhase: String?
     public let explorationTargets: [String]
     public let pendingExplorationTargets: [String]
+    public let rejectedExplorationTargets: [String]
     public let inspectedPaths: [String]
     public let changedPaths: [String]
     public let recentFindings: [String]
@@ -340,6 +341,7 @@ public struct WorkingMemoryRecord: Codable, Sendable, Equatable {
         currentPhase: String?,
         explorationTargets: [String],
         pendingExplorationTargets: [String],
+        rejectedExplorationTargets: [String],
         inspectedPaths: [String],
         changedPaths: [String],
         recentFindings: [String],
@@ -358,6 +360,7 @@ public struct WorkingMemoryRecord: Codable, Sendable, Equatable {
         self.currentPhase = currentPhase
         self.explorationTargets = explorationTargets
         self.pendingExplorationTargets = pendingExplorationTargets
+        self.rejectedExplorationTargets = rejectedExplorationTargets
         self.inspectedPaths = inspectedPaths
         self.changedPaths = changedPaths
         self.recentFindings = recentFindings

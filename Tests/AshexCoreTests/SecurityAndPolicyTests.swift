@@ -314,6 +314,7 @@ import Testing
         currentPhase: "exploration",
         explorationTargets: ["Sources/App.swift"],
         pendingExplorationTargets: [],
+        rejectedExplorationTargets: ["README.md"],
         inspectedPaths: ["Sources/App.swift"],
         changedPaths: [],
         recentFindings: ["entry point found"],

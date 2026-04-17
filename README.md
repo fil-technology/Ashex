@@ -434,7 +434,9 @@ The workflow layer is now more deliberate than a generic loop:
 - exploration and validation guidance changes by task kind
 - exploration steps now carry a concrete recommended inspect/search/read sequence based on the task and workspace snapshot
 - exploration targeting now persists likely files, roots, and search queries so history and resumed runs can see what the harness thought was worth inspecting
+- exploration targeting now also persists deprioritized paths so the harness can keep low-signal areas out of the active search cone until new evidence appears
 - exploration targeting now also uses persisted project markers and source/test roots instead of only broad top-level folder guesses
+- exploration updates are now surfaced as first-class CLI/TUI state instead of only raw transcript lines
 - patch planning now persists an explicit planned file set and patch objectives before and during mutation-heavy work
 - the runtime carries those hints into the phased execution flow so coding tasks explore and validate more intentionally
 
@@ -484,7 +486,6 @@ This keeps the current single-agent runtime small while creating clean seams for
 
 Ashex is now a serious local coding-agent foundation, but it is still not at Codex/Claude Code production maturity yet. The biggest remaining gaps are:
 
-- deeper automatic exploration and file targeting for large coding tasks
 - stronger validation execution and check selection beyond the current gating and suggestion layer
 - richer patch planning and multi-file edit workflows
 - even stronger longer-session memory quality and thread continuation behavior
