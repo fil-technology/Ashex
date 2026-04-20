@@ -22,7 +22,7 @@ Use the helper script from this repository root:
 ```bash
 ./scripts/render_homebrew_formula.sh \
   --version v0.2.0 \
-  --source-url https://github.com/fil-technology/Ashex/releases/download/v0.2.0/ashex-v0.2.0-source.tar.gz \
+  --source-url https://github.com/fil-technology/homebrew-tap/releases/download/ashex-v0.2.0/ashex-v0.2.0-source.tar.gz \
   --sha256 <source-tarball-sha256> \
   --output packaging/homebrew/ashex.rb
 ```

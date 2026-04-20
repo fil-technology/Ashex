@@ -54,7 +54,7 @@ class Ashex < Formula
   depends_on "swift" => :build
 
   def install
-    bin_path = shell_output("swift build -c release --product ashex --show-bin-path").strip
+    bin_path = Utils.safe_popen_read("swift", "build", "-c", "release", "--product", "ashex", "--show-bin-path").strip
     bin.install "#{bin_path}/ashex" => "ashex"
     pkgshare.install "README.md", "LICENSE"
   end
