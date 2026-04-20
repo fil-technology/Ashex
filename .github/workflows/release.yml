@@ -44,6 +44,17 @@ jobs:
       - name: Package release archive
         run: ./scripts/package_release.sh "${GITHUB_REF_NAME}"
 
+      - name: Smoke test packaged binary
+        run: |
+          VERSION_NO_V="${GITHUB_REF_NAME#v}"
+          ARCH="$(uname -m)"
+          TAR_PATH=".dist/ashex-${VERSION_NO_V}-macos-${ARCH}.tar.gz"
+          TMP_DIR="$(mktemp -d)"
+          trap 'rm -rf "$TMP_DIR"' EXIT
+
+          tar -xzf "$TAR_PATH" -C "$TMP_DIR"
+          "$TMP_DIR/ashex-${VERSION_NO_V}-macos-${ARCH}/bin/ashex" --help
+
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
@@ -78,7 +89,7 @@ jobs:
         run: |
           VERSION_NO_V="${GITHUB_REF_NAME#v}"
           ARCH="$(uname -m)"
-      
+
           ./scripts/render_homebrew_formula.sh \
             --version "${GITHUB_REF_NAME}" \
             --binary-url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/ashex-${VERSION_NO_V}-macos-${ARCH}.tar.gz" \
