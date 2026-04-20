@@ -6,7 +6,7 @@ This checklist tracks the remaining work between Ashex's current production-shap
 
 - [x] Stronger real-project validation execution
 - [x] Safer parallel delegated exploration and validation
-- [ ] Smarter repo preflight and file targeting
+- [x] Smarter repo preflight and file targeting
 - [ ] Richer multi-file patch coordination on real code changes
 - [ ] Stronger long-session continuity on messy tasks
 - [ ] More mature managed multi-agent coordination
@@ -18,7 +18,7 @@ This checklist tracks the remaining work between Ashex's current production-shap
 - [x] Surface repo profile details in prompts and history
 - [x] Bias exploration toward source roots, test roots, markers, and instruction files
 - [ ] Prefer framework-aware entry points more aggressively on larger repos
-- [ ] Track rejected or exhausted targets so repeated scans are reduced
+- [x] Track rejected or exhausted targets so repeated scans are reduced
 
 ## Stronger Validation Quality
 
@@ -55,3 +55,11 @@ This checklist tracks the remaining work between Ashex's current production-shap
 - [x] Add workspace sandbox modes and network policy
 - [ ] Increase execution-time sandbox isolation beyond policy enforcement
 - [ ] Improve visibility of why commands were allowed, prompted, or denied
+
+## Public Release Metadata
+
+- [ ] Add an explicit project license
+- [x] Add contributing guidance
+- [x] Add a code of conduct
+- [x] Add a changelog
+- [x] Organize long-form documentation into a dedicated docs tree
