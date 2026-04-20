@@ -68,12 +68,13 @@ class Ashex < Formula
   end
 
   def install
-    bin.install "bin/ashex"
-    pkgshare.install "share/doc/ashex/README.md", "share/doc/ashex/LICENSE"
+    dir = Dir["ashex-*"].first || "."
+    bin.install "\#{dir}/bin/ashex" => "ashex"
+    pkgshare.install "\#{dir}/share/doc/ashex/README.md", "\#{dir}/share/doc/ashex/LICENSE"
   end
 
   test do
-    output = shell_output("#{bin}/ashex --help")
+    output = shell_output("\#{bin}/ashex --help")
     assert_match "ashex", output
   end
 end
@@ -99,12 +100,13 @@ class Ashex < Formula
   end
 
   def install
-    bin.install "bin/ashex"
-    pkgshare.install "share/doc/ashex/README.md", "share/doc/ashex/LICENSE"
+    dir = Dir["ashex-*"].first || "."
+    bin.install "\#{dir}/bin/ashex" => "ashex"
+    pkgshare.install "\#{dir}/share/doc/ashex/README.md", "\#{dir}/share/doc/ashex/LICENSE"
   end
 
   test do
-    output = shell_output("#{bin}/ashex --help")
+    output = shell_output("\#{bin}/ashex --help")
     assert_match "ashex", output
   end
 end
