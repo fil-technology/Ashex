@@ -76,11 +76,14 @@ jobs:
       - name: Generate Homebrew formula
         if: env.HOMEBREW_TAP_TOKEN != ''
         run: |
+          VERSION_NO_V="${GITHUB_REF_NAME#v}"
+          ARCH="$(uname -m)"
+      
           ./scripts/render_homebrew_formula.sh \
             --version "${GITHUB_REF_NAME}" \
-            --binary-url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/ashex-${GITHUB_REF_NAME#v}-macos-$(uname -m).tar.gz" \
-            --sha256 "$(cat ".dist/ashex-${GITHUB_REF_NAME#v}-macos-$(uname -m).tar.gz.sha256")" \
-            --arch "$(uname -m)" \
+            --binary-url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/ashex-${VERSION_NO_V}-macos-${ARCH}.tar.gz" \
+            --sha256 "$(cat ".dist/ashex-${VERSION_NO_V}-macos-${ARCH}.tar.gz.sha256")" \
+            --arch "${ARCH}" \
             --homepage "https://github.com/${GITHUB_REPOSITORY}" \
             --output ".dist/ashex.rb"
 
