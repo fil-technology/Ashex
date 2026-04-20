@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
 
 jobs:
   test:
@@ -20,6 +21,9 @@ jobs:
     runs-on: macos-14
     permissions:
       contents: write
+    env:
+      HOMEBREW_TAP_REPO: fil-technology/homebrew-tap
+      HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -30,15 +34,6 @@ jobs:
       - name: Package release archive
         run: ./scripts/package_release.sh "${GITHUB_REF_NAME}"
 
-      - name: Generate Homebrew formula
-        run: |
-          ./scripts/render_homebrew_formula.sh \
-            --version "${GITHUB_REF_NAME}" \
-            --source-url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/ashex-${GITHUB_REF_NAME}-source.tar.gz" \
-            --sha256 "$(cat ".dist/ashex-${GITHUB_REF_NAME}-source.tar.gz.sha256")" \
-            --homepage "https://github.com/${GITHUB_REPOSITORY}" \
-            --output ".dist/ashex.rb"
-
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
@@ -46,4 +41,55 @@ jobs:
           files: |
             .dist/*.tar.gz
             .dist/*.sha256
-            .dist/ashex.rb
+
+      - name: Publish public Homebrew source release
+        if: env.HOMEBREW_TAP_TOKEN != ''
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          release_tag="ashex-${GITHUB_REF_NAME}"
+          if gh release view "$release_tag" --repo "$HOMEBREW_TAP_REPO" >/dev/null 2>&1; then
+            gh release upload "$release_tag" \
+              ".dist/ashex-${GITHUB_REF_NAME}-source.tar.gz" \
+              ".dist/ashex-${GITHUB_REF_NAME}-source.tar.gz.sha256" \
+              --clobber \
+              --repo "$HOMEBREW_TAP_REPO"
+          else
+            gh release create "$release_tag" \
+              ".dist/ashex-${GITHUB_REF_NAME}-source.tar.gz" \
+              ".dist/ashex-${GITHUB_REF_NAME}-source.tar.gz.sha256" \
+              --repo "$HOMEBREW_TAP_REPO" \
+              --title "Ashex ${GITHUB_REF_NAME} source" \
+              --notes "Public source asset for the Ashex Homebrew formula."
+          fi
+
+      - name: Generate Homebrew formula
+        if: env.HOMEBREW_TAP_TOKEN != ''
+        run: |
+          ./scripts/render_homebrew_formula.sh \
+            --version "${GITHUB_REF_NAME}" \
+            --source-url "https://github.com/${HOMEBREW_TAP_REPO}/releases/download/ashex-${GITHUB_REF_NAME}/ashex-${GITHUB_REF_NAME}-source.tar.gz" \
+            --sha256 "$(cat ".dist/ashex-${GITHUB_REF_NAME}-source.tar.gz.sha256")" \
+            --homepage "https://github.com/${GITHUB_REPOSITORY}" \
+            --output ".dist/ashex.rb"
+
+      - name: Publish Homebrew formula
+        if: env.HOMEBREW_TAP_TOKEN != ''
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          api_path="repos/${HOMEBREW_TAP_REPO}/contents/Formula/ashex.rb"
+          content="$(base64 < .dist/ashex.rb | tr -d '\n')"
+          current_sha="$(gh api "$api_path" --jq '.sha' 2>/dev/null || true)"
+          if [ -n "$current_sha" ]; then
+            gh api "$api_path" \
+              --method PUT \
+              -f message="Update Ashex formula to ${GITHUB_REF_NAME}" \
+              -f content="$content" \
+              -f sha="$current_sha"
+          else
+            gh api "$api_path" \
+              --method PUT \
+              -f message="Add Ashex formula" \
+              -f content="$content"
+          fi
