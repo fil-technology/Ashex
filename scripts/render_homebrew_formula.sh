@@ -70,8 +70,8 @@ class Ashex < Formula
 
   def install
     dir = Dir["ashex-*"].first || "."
-    bin.install "\#{dir}/bin/ashex" => "ashex"
-    pkgshare.install "\#{dir}/share/doc/ashex/README.md", "\#{dir}/share/doc/ashex/LICENSE"
+    bin.install "#{dir}/bin/ashex" => "ashex"
+    pkgshare.install "#{dir}/share/doc/ashex/README.md", "#{dir}/share/doc/ashex/LICENSE"
   end
 
   test do
@@ -103,8 +103,8 @@ class Ashex < Formula
 
   def install
     dir = Dir["ashex-*"].first || "."
-    bin.install "\#{dir}/bin/ashex" => "ashex"
-    pkgshare.install "\#{dir}/share/doc/ashex/README.md", "\#{dir}/share/doc/ashex/LICENSE"
+    bin.install "#{dir}/bin/ashex" => "ashex"
+    pkgshare.install "#{dir}/share/doc/ashex/README.md", "#{dir}/share/doc/ashex/LICENSE"
   end
 
   test do
