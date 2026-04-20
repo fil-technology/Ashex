@@ -364,15 +364,47 @@ private enum DaemonSignalTrap {
             let queue = DispatchQueue(label: "ashex.daemon.signals")
             let interruptSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: queue)
             let termSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: queue)
+            let trapState = SignalTrapState(
+                interruptSource: interruptSource,
+                termSource: termSource,
+                continuation: continuation
+            )
             let finish: @Sendable () -> Void = {
-                interruptSource.cancel()
-                termSource.cancel()
-                continuation.resume()
+                trapState.finish()
             }
             interruptSource.setEventHandler(handler: finish)
             termSource.setEventHandler(handler: finish)
             interruptSource.resume()
             termSource.resume()
+        }
+    }
+
+    private final class SignalTrapState: @unchecked Sendable {
+        private let interruptSource: DispatchSourceSignal
+        private let termSource: DispatchSourceSignal
+        private let lock = NSLock()
+        private var continuation: CheckedContinuation<Void, Error>?
+
+        init(
+            interruptSource: DispatchSourceSignal,
+            termSource: DispatchSourceSignal,
+            continuation: CheckedContinuation<Void, Error>
+        ) {
+            self.interruptSource = interruptSource
+            self.termSource = termSource
+            self.continuation = continuation
+        }
+
+        func finish() {
+            lock.lock()
+            let continuation = self.continuation
+            self.continuation = nil
+            lock.unlock()
+
+            guard let continuation else { return }
+            interruptSource.cancel()
+            termSource.cancel()
+            continuation.resume()
         }
     }
 }
