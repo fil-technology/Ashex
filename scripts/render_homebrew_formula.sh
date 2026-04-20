@@ -2,10 +2,11 @@
 set -euo pipefail
 
 VERSION=""
-SOURCE_URL=""
-SOURCE_SHA256=""
+BINARY_URL=""
+BINARY_SHA256=""
 HOMEPAGE="https://github.com/fil-technology/ashex"
 OUTPUT=""
+ARCH=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -13,12 +14,12 @@ while [[ $# -gt 0 ]]; do
       VERSION="${2:-}"
       shift 2
       ;;
-    --source-url)
-      SOURCE_URL="${2:-}"
+    --binary-url)
+      BINARY_URL="${2:-}"
       shift 2
       ;;
     --sha256)
-      SOURCE_SHA256="${2:-}"
+      BINARY_SHA256="${2:-}"
       shift 2
       ;;
     --homepage)
@@ -29,6 +30,10 @@ while [[ $# -gt 0 ]]; do
       OUTPUT="${2:-}"
       shift 2
       ;;
+    --arch)
+      ARCH="${2:-}"
+      shift 2
+      ;;
     *)
       echo "error: unknown argument: $1" >&2
       exit 1
@@ -36,28 +41,50 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "$VERSION" || -z "$SOURCE_URL" || -z "$SOURCE_SHA256" ]]; then
-  echo "usage: $0 --version v0.1.0 --source-url <tarball-url> --sha256 <sha256> [--homepage <url>] [--output <path>]" >&2
+if [[ -z "$VERSION" || -z "$BINARY_URL" || -z "$BINARY_SHA256" || -z "$ARCH" ]]; then
+  echo "usage: $0 --version v0.1.0 --binary-url <tarball-url> --sha256 <sha256> --arch <arm64|x86_64> [--homepage <url>] [--output <path>]" >&2
   exit 1
 fi
 
+VERSION_NO_V="${VERSION#v}"
+
+case "$ARCH" in
+  arm64)
+    ON_ARM='on_arm do'
+    ON_INTEL='on_intel do'
+    ;;
+  x86_64)
+    ON_ARM='on_arm do'
+    ON_INTEL='on_intel do'
+    ;;
+  *)
+    echo "error: unsupported arch: $ARCH" >&2
+    exit 1
+    ;;
+esac
+
+if [[ "$ARCH" == "arm64" ]]; then
 FORMULA=$(cat <<EOF
 class Ashex < Formula
   desc "Local-first Swift coding agent for macOS with a TUI, daemon, and typed tools"
   homepage "$HOMEPAGE"
-  url "$SOURCE_URL"
-  sha256 "$SOURCE_SHA256"
   license "MIT"
-  version "${VERSION#v}"
+  version "$VERSION_NO_V"
 
   depends_on :macos
-  depends_on "swift" => :build
+
+  on_arm do
+    url "$BINARY_URL"
+    sha256 "$BINARY_SHA256"
+  end
+
+  on_intel do
+    odie "Intel is not yet supported by this formula release. Install a matching x86_64 artifact or publish an Intel archive."
+  end
 
   def install
-    system "swift", "build", "-c", "release", "--product", "ashex"
-    bin_path = Utils.safe_popen_read("swift", "build", "-c", "release", "--product", "ashex", "--show-bin-path").strip
-    bin.install "#{bin_path}/ashex" => "ashex"
-    pkgshare.install "README.md", "LICENSE"
+    bin.install "bin/ashex"
+    pkgshare.install "share/doc/ashex/README.md", "share/doc/ashex/LICENSE"
   end
 
   test do
@@ -67,6 +94,38 @@ class Ashex < Formula
 end
 EOF
 )
+else
+FORMULA=$(cat <<EOF
+class Ashex < Formula
+  desc "Local-first Swift coding agent for macOS with a TUI, daemon, and typed tools"
+  homepage "$HOMEPAGE"
+  license "MIT"
+  version "$VERSION_NO_V"
+
+  depends_on :macos
+
+  on_arm do
+    odie "Apple Silicon is not yet supported by this formula release. Install a matching arm64 artifact or publish an Apple Silicon archive."
+  end
+
+  on_intel do
+    url "$BINARY_URL"
+    sha256 "$BINARY_SHA256"
+  end
+
+  def install
+    bin.install "bin/ashex"
+    pkgshare.install "share/doc/ashex/README.md", "share/doc/ashex/LICENSE"
+  end
+
+  test do
+    output = shell_output("#{bin}/ashex --help")
+    assert_match "ashex", output
+  end
+end
+EOF
+)
+fi
 
 if [[ -n "$OUTPUT" ]]; then
   printf "%s\n" "$FORMULA" > "$OUTPUT"
