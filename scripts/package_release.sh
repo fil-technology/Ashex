@@ -26,13 +26,20 @@ swift build -c release --product ashex
 
 BIN_DIR="$(swift build -c release --product ashex --show-bin-path)"
 BINARY_PATH="$BIN_DIR/ashex"
+RESOURCE_BUNDLE_PATH="$BIN_DIR/Ashex_AshexCore.bundle"
 
 if [[ ! -x "$BINARY_PATH" ]]; then
   echo "error: expected binary not found at $BINARY_PATH" >&2
   exit 1
 fi
 
+if [[ ! -d "$RESOURCE_BUNDLE_PATH" ]]; then
+  echo "error: expected resource bundle not found at $RESOURCE_BUNDLE_PATH" >&2
+  exit 1
+fi
+
 install -m 755 "$BINARY_PATH" "$STAGE_DIR/bin/ashex"
+cp -R "$RESOURCE_BUNDLE_PATH" "$STAGE_DIR/bin/Ashex_AshexCore.bundle"
 install -m 644 "$ROOT_DIR/README.md" "$STAGE_DIR/share/doc/ashex/README.md"
 install -m 644 "$ROOT_DIR/LICENSE" "$STAGE_DIR/share/doc/ashex/LICENSE"
 
