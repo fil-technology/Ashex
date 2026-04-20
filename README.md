@@ -1,85 +1,64 @@
 # Ashex
 
+[![Release](https://img.shields.io/github/v/release/fil-technology/Ashex?display_name=tag)](https://github.com/fil-technology/Ashex/releases)
+[![Homebrew Tap](https://img.shields.io/badge/Homebrew-fil--technology%2Ftap%2Fashex-8a6d3b)](https://github.com/fil-technology/homebrew-tap)
+[![Swift 6.2](https://img.shields.io/badge/Swift-6.2-F05138?logo=swift&logoColor=white)](https://www.swift.org/)
+
 Ashex is a local-first coding agent runtime for macOS, built as a Swift package with a reusable core runtime, a terminal TUI, and a connector-ready daemon.
 
 It is designed for people who want a transparent, hackable agent shell with typed tools, persistent runs, guarded execution, and room to evolve toward stronger coding-assistant behavior without turning into a black box.
 
-## What it includes
-
-- A real single-agent loop with max-iteration and cancellation guards
-- A connector-ready daemon path for long-running background operation
-- Telegram Bot API polling as the first reusable messaging connector
-- Telegram typing indicators and HTML-formatted replies for connector output
-- Telegram-triggered tool execution when the connector is set to `trusted_full_access`
-- Multiple local coding tools behind a typed runtime:
-  - `filesystem`
-  - `git`
-  - inspect and mutate repository state through typed git operations
-  - `build`
-  - `shell`
-  - `toolpack` scaffold support for installable tool manifests
-- Live streaming runtime events for CLI or future UI consumers
-- SQLite persistence for threads, messages, runs, tool calls, and append-only events
-- Generic SQLite-backed persisted settings for session defaults and future runtime preferences
-- Persistent connector conversation mappings and Telegram update checkpoints stored in the existing SQLite settings table
-- Restart normalization that marks previously running work as `interrupted`
-- A replaceable model boundary with `mock`, OpenAI, Anthropic, local Ollama-backed, and experimental DFlash-backed adapters
-- A terminal TUI with provider switching, workspace switching, local history browsing, side terminal, and guarded approvals
-- Bundled installable tool packs for `swiftpm`, `ios_xcode`, and `python`
-
-## Package layout
-
-- `Sources/AshexCore`: reusable runtime, tools, persistence, and typed event contracts
-- `Sources/AshexCLI`: command-line adapter that renders streamed runtime events
-- `Sources/CSQLite`: small SQLite system library bridge
-- `Tests/AshexCoreTests`: focused runtime and guardrail tests
-
-## Documentation
-
-Repository documentation is now grouped under `docs/` so the project root stays focused on code and release entrypoints.
-
-- `docs/README.md`: top-level documentation map
-- `docs/roadmap/implementation-phases.md`: original build-up phases from the MVP foundation
-- `docs/roadmap/production-milestones.md`: completed production-shaping milestones
-- `docs/roadmap/production-refinement-roadmap.md`: current phase-by-phase refinement plan
-- `docs/release/production-readiness-checklist.md`: production and shipping checklist
-- `docs/connectors/daemon-telegram-mvp.md`: daemon and Telegram connector architecture notes
-- `docs/providers/dflash-provider-plan.md`: DFlash integration plan and follow-up work
-- `docs/adoption/ash-optimization-adoption-plan.md`: Ash optimization adoption seam notes
-- `docs/adoption/ash-to-ashex-adoption-plan.md`: broader Ash-to-Ashex transfer plan
-- `docs/research/omlx-evaluation.md`: research notes for the oMLX evaluation
+Quick links: [Quick start](#quick-start) · [Install](#install) · [Use Ashex](#use-ashex) · [Providers](#providers) · [Daemon and Telegram](#daemon-and-telegram) · [Configuration](#configuration) · [Documentation](#documentation)
 
 ## Quick start
 
 ```bash
-swift build
-swift run ashex
-swift run ashex "list files"
-swift run ashex "read README.md"
-swift run ashex 'write notes/todo.txt :: buy milk'
-swift run ashex "swift build"
-swift run ashex 'shell: ls -la'
+brew install fil-technology/tap/ashex
+ashex
 ```
 
-Running `swift run ashex` with no prompt starts the interactive terminal TUI.
+If you want to run directly from source instead:
 
-Install once, then launch like a normal command:
+```bash
+swift build
+swift run ashex
+```
+
+Running `ashex` or `swift run ashex` with no prompt starts the interactive terminal TUI.
+
+## Install
+
+### Homebrew
+
+Homebrew is the recommended install path on macOS.
+
+```bash
+brew update
+brew install fil-technology/tap/ashex
+```
+
+Upgrade later with:
+
+```bash
+brew update
+brew upgrade ashex
+```
+
+This install path uses the published prebuilt release archive, so Homebrew installs the compiled `ashex` binary instead of building the project from source on the client machine.
+
+### Install from source
+
+If you are working from a local checkout and want a normal shell command:
 
 ```bash
 ./scripts/install.sh
 ~/.local/bin/ashex
 ```
 
-Single-command install and launch from the repo root:
+If `~/.local/bin` is already in your `PATH`, launch it with:
 
 ```bash
-./scripts/install.sh && ~/.local/bin/ashex
-```
-
-If `~/.local/bin` is already in your `PATH`, the one-liner becomes:
-
-```bash
-./scripts/install.sh && ashex
+ashex
 ```
 
 You can also install somewhere else:
@@ -88,69 +67,64 @@ You can also install somewhere else:
 ./scripts/install.sh /usr/local/bin
 ```
 
-Release packaging and Homebrew prep:
+### Run from source without installing
+
+This is the fastest way to try the current checkout while developing:
 
 ```bash
-./scripts/package_source_release.sh v0.2.1
-./scripts/package_release.sh v0.2.1
-./scripts/render_homebrew_formula.sh \
-  --version v0.2.1 \
-  --source-url https://github.com/fil-technology/homebrew-tap/releases/download/ashex-v0.2.1/ashex-v0.2.1-source.tar.gz \
-  --sha256 <release-source-tarball-sha256>
+swift run ashex
 ```
 
-Once the release asset and formula are published, the install path is:
+## Use Ashex
+
+Start the interactive TUI:
 
 ```bash
-brew install fil-technology/tap/ashex
+ashex
 ```
 
-TUI highlights:
-
-- Switch between `mock`, `ollama`, `dflash`, `openai`, and `anthropic` without restarting
-- Use `Assistant Setup` in the launcher to configure provider, Telegram, and daemon controls
-- Treat `Assistant Setup` like a short onboarding flow: provider first, then Telegram token, then daemon start
-- Edit the active model name from the TUI
-- Save provider API keys from the TUI settings screen
-- Save the Telegram bot token from the TUI into macOS Keychain
-- Enable Telegram, set safety mode, edit allowed chat IDs, test connectivity, and start/stop the daemon from the TUI
-- Choose DFlash in Provider Settings when you want Apple-Silicon-local direct chat through `dflash-serve`
-- Store provider API keys in macOS Keychain instead of SQLite settings
-- Persist provider/model defaults across launches
-- Switch the active workspace live from the TUI or with `:workspace /path`
-- Switch the active workspace live from the input bar with `/workspace /path`
-- Browse and switch recent workspaces from a dedicated Workspaces screen
-- Browse persisted thread/run history and load prior transcripts back into the viewer
-- Open a side terminal pane for quick workspace commands
-- Review guarded approval requests with shell/file previews before allowing execution
-- Apply local-model memory guardrails based on the Mac's available RAM and installed model sizes
-
-OpenAI-backed mode:
+Run a one-shot prompt:
 
 ```bash
-export OPENAI_API_KEY=your_key_here
-swift run ashex --provider openai --model gpt-5.4-mini "list the files in this workspace"
+ashex "list files"
+ashex "read README.md"
+ashex 'write notes/todo.txt :: buy milk'
+ashex "swift build"
+ashex 'shell: ls -la'
 ```
 
-Local Ollama-backed mode:
+If you are running from source, the same examples work with `swift run ashex ...`.
+
+### Common first commands
 
 ```bash
-ollama serve
-ollama pull llama3.2
-swift run ashex --provider ollama --model llama3.2 "list the files in this workspace"
+ashex "summarize this repository"
+ashex "find the release workflow"
+ashex --workspace /path/to/project "list the top-level files"
+ashex --approval-mode guarded
 ```
 
-Experimental DFlash-backed mode:
+### TUI highlights
 
-```bash
-dflash-serve --model Qwen/Qwen3.5-4B --port 8000
-export DFLASH_BASE_URL=http://127.0.0.1:8000
-swift run ashex --provider dflash --model Qwen/Qwen3.5-4B "say hello"
-```
+- Switch between `mock`, `ollama`, `dflash`, `openai`, and `anthropic` without restarting.
+- Use `Assistant Setup` in the launcher to configure provider, Telegram, and daemon controls.
+- Treat `Assistant Setup` like a short onboarding flow: provider first, then Telegram token, then daemon start.
+- Edit the active model name from the TUI.
+- Save provider API keys from the TUI settings screen.
+- Save the Telegram bot token from the TUI into macOS Keychain.
+- Enable Telegram, set safety mode, edit allowed chat IDs, test connectivity, and start or stop the daemon from the TUI.
+- Choose DFlash in Provider Settings when you want Apple-Silicon-local direct chat through `dflash-serve`.
+- Store provider API keys in macOS Keychain instead of SQLite settings.
+- Persist provider and model defaults across launches.
+- Switch the active workspace live from the TUI or with `:workspace /path`.
+- Switch the active workspace live from the input bar with `/workspace /path`.
+- Browse and switch recent workspaces from a dedicated Workspaces screen.
+- Browse persisted thread and run history and load prior transcripts back into the viewer.
+- Open a side terminal pane for quick workspace commands.
+- Review guarded approval requests with shell and file previews before allowing execution.
+- Apply local-model memory guardrails based on the Mac's available RAM and installed model sizes.
 
-DFlash is direct-chat only for now, so tool-calling stays on the other providers.
-
-CLI options:
+### CLI options
 
 - `--workspace PATH`: workspace root enforced by `WorkspaceGuard`
 - `--storage PATH`: persistence directory, default `WORKSPACE/.ashex`
@@ -158,6 +132,48 @@ CLI options:
 - `--provider mock|openai|anthropic|ollama|dflash`: model adapter selection
 - `--model MODEL`: model name for provider-backed mode
 - `--approval-mode trusted|guarded`: execution policy, default `trusted`
+
+## Providers
+
+### OpenAI
+
+```bash
+export OPENAI_API_KEY=your_key_here
+ashex --provider openai --model gpt-5.4-mini "list the files in this workspace"
+```
+
+### Ollama
+
+```bash
+ollama serve
+ollama pull llama3.2
+ashex --provider ollama --model llama3.2 "list the files in this workspace"
+```
+
+### DFlash
+
+```bash
+dflash-serve --model Qwen/Qwen3.5-4B --port 8000
+export DFLASH_BASE_URL=http://127.0.0.1:8000
+ashex --provider dflash --model Qwen/Qwen3.5-4B "say hello"
+```
+
+DFlash is direct-chat only for now, so tool-calling stays on the other providers.
+
+Provider environment variables:
+
+- `OPENAI_API_KEY`: required for `--provider openai`
+- `ANTHROPIC_API_KEY`: required for `--provider anthropic`
+- `OPENAI_MODEL`: optional default model for `openai`
+- `OLLAMA_MODEL`: optional default model for `ollama`
+- `OLLAMA_BASE_URL`: optional Ollama chat endpoint, default `http://localhost:11434/api/chat`
+- `OLLAMA_REQUEST_TIMEOUT_SECONDS`: optional Ollama request timeout override for slower agent-mode calls
+- `DFLASH_MODEL`: optional default model for `dflash`
+- `DFLASH_BASE_URL`: optional DFlash server endpoint, default `http://127.0.0.1:8000`
+- `ASHEX_ALLOW_LARGE_MODELS=1`: optional override if you intentionally want to bypass local-model memory guardrails
+- `ASHEX_TELEGRAM_BOT_TOKEN`: optional Telegram bot token override for daemon mode
+
+## Daemon and Telegram
 
 Daemon and Telegram commands:
 
@@ -174,14 +190,14 @@ Example:
 
 ```bash
 export ASHEX_TELEGRAM_BOT_TOKEN=123456:bot-token
-swift run ashex telegram test
-swift run ashex daemon run --provider openai --model gpt-5.4-mini
-swift run ashex cron add --id morning-brief --expr "0 7 * * 1-5" --tz "Asia/Jerusalem" --prompt "Summarize overnight repo updates and list urgent follow-ups."
+ashex telegram test
+ashex daemon run --provider openai --model gpt-5.4-mini
+ashex cron add --id morning-brief --expr "0 7 * * 1-5" --tz "Asia/Jerusalem" --prompt "Summarize overnight repo updates and list urgent follow-ups."
 ```
 
 TUI onboarding path:
 
-1. Launch `swift run ashex`
+1. Launch `ashex`
 2. Open `Assistant Setup` from the launcher
 3. Choose the provider and model you want for daemon runs
 4. Save the provider API key if needed
@@ -193,18 +209,7 @@ TUI onboarding path:
 After that, the bot should keep running until you stop the daemon from the same settings screen or by CLI.
 The daemon can also run with cron jobs only, even if Telegram is disabled, as long as at least one enabled cron job exists.
 
-Provider environment variables:
-
-- `OPENAI_API_KEY`: required for `--provider openai`
-- `ANTHROPIC_API_KEY`: required for `--provider anthropic`
-- `OPENAI_MODEL`: optional default model for `openai`
-- `OLLAMA_MODEL`: optional default model for `ollama`
-- `OLLAMA_BASE_URL`: optional Ollama chat endpoint, default `http://localhost:11434/api/chat`
-- `OLLAMA_REQUEST_TIMEOUT_SECONDS`: optional Ollama request timeout override for slower agent-mode calls
-- `DFLASH_MODEL`: optional default model for `dflash`
-- `DFLASH_BASE_URL`: optional DFlash server endpoint, default `http://127.0.0.1:8000`
-- `ASHEX_ALLOW_LARGE_MODELS=1`: optional override if you intentionally want to bypass local-model memory guardrails
-- `ASHEX_TELEGRAM_BOT_TOKEN`: optional Telegram bot token override for daemon mode
+## Configuration
 
 Shell policy config in `ashex.config.json`:
 
@@ -269,8 +274,8 @@ Provider secrets:
 Guarded mode examples:
 
 ```bash
-swift run ashex --approval-mode guarded 'shell: pwd'
-swift run ashex --approval-mode guarded
+ashex --approval-mode guarded 'shell: pwd'
+ashex --approval-mode guarded
 ```
 
 In guarded mode:
@@ -319,6 +324,72 @@ TUI controls:
 - `t`: toggle the side terminal pane
 - `x`: skip the current planned step
 - `y` / `n`: approve or deny guarded actions
+
+## Documentation
+
+Project documentation lives under [`docs/`](docs/README.md) so the repository root stays focused on code and release entry points.
+
+- [Documentation map](docs/README.md)
+- [Implementation phases](docs/roadmap/implementation-phases.md)
+- [Production milestones](docs/roadmap/production-milestones.md)
+- [Production refinement roadmap](docs/roadmap/production-refinement-roadmap.md)
+- [Production readiness checklist](docs/release/production-readiness-checklist.md)
+- [Upcoming release prep](docs/release/upcoming-release-prep.md)
+- [Daemon and Telegram MVP notes](docs/connectors/daemon-telegram-mvp.md)
+- [DFlash provider plan](docs/providers/dflash-provider-plan.md)
+- [Ash optimization adoption plan](docs/adoption/ash-optimization-adoption-plan.md)
+- [Ash to Ashex adoption plan](docs/adoption/ash-to-ashex-adoption-plan.md)
+- [oMLX evaluation](docs/research/omlx-evaluation.md)
+
+## What it includes
+
+- A real single-agent loop with max-iteration and cancellation guards
+- A connector-ready daemon path for long-running background operation
+- Telegram Bot API polling as the first reusable messaging connector
+- Telegram typing indicators and HTML-formatted replies for connector output
+- Telegram-triggered tool execution when the connector is set to `trusted_full_access`
+- Multiple local coding tools behind a typed runtime:
+  - `filesystem`
+  - `git`
+  - inspect and mutate repository state through typed git operations
+  - `build`
+  - `shell`
+  - `toolpack` scaffold support for installable tool manifests
+- Live streaming runtime events for CLI or future UI consumers
+- SQLite persistence for threads, messages, runs, tool calls, and append-only events
+- Generic SQLite-backed persisted settings for session defaults and future runtime preferences
+- Persistent connector conversation mappings and Telegram update checkpoints stored in the existing SQLite settings table
+- Restart normalization that marks previously running work as `interrupted`
+- A replaceable model boundary with `mock`, OpenAI, Anthropic, local Ollama-backed, and experimental DFlash-backed adapters
+- A terminal TUI with provider switching, workspace switching, local history browsing, side terminal, and guarded approvals
+- Bundled installable tool packs for `swiftpm`, `ios_xcode`, and `python`
+
+## Package layout
+
+- `Sources/AshexCore`: reusable runtime, tools, persistence, and typed event contracts
+- `Sources/AshexCLI`: command-line adapter that renders streamed runtime events
+- `Sources/CSQLite`: small SQLite system library bridge
+- `Tests/AshexCoreTests`: focused runtime and guardrail tests
+
+## Release maintenance
+
+Package release artifacts:
+
+```bash
+./scripts/package_source_release.sh v0.2.2
+./scripts/package_release.sh v0.2.2
+```
+
+Render the Homebrew formula for a published binary release asset:
+
+```bash
+./scripts/render_homebrew_formula.sh \
+  --version v0.2.2 \
+  --binary-url https://github.com/fil-technology/Ashex/releases/download/v0.2.2/ashex-0.2.2-macos-arm64.tar.gz \
+  --sha256 <binary-release-sha256> \
+  --arch arm64 \
+  --homepage https://github.com/fil-technology/Ashex
+```
 
 Live workspace commands in the running TUI:
 

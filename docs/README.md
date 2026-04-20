@@ -2,6 +2,17 @@
 
 This folder keeps the repository's long-form plans, research notes, and release material out of the project root.
 
+For installation, first-run usage, and CLI or TUI onboarding, start with the root [README](../README.md#quick-start).
+
+## Start Here
+
+- [Quick start](../README.md#quick-start)
+- [Install](../README.md#install)
+- [Use Ashex](../README.md#use-ashex)
+- [Providers](../README.md#providers)
+- [Daemon and Telegram](../README.md#daemon-and-telegram)
+- [Configuration](../README.md#configuration)
+
 ## Roadmaps
 
 - [`roadmap/implementation-phases.md`](roadmap/implementation-phases.md): original MVP and production-foundation buildout phases
