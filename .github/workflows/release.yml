@@ -6,6 +6,9 @@ on:
       - "v*"
   workflow_dispatch:
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   test:
     runs-on: macos-14
@@ -13,10 +16,13 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v6
 
-      - name: Verify Swift 6.2 toolchain
-        run: |
-          swift --version
-          swift --version | grep -F "Swift version 6.2"
+      - name: Set up Swift 6.2
+        uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: "6.2"
+
+      - name: Verify Swift version
+        run: swift --version
 
       - name: Run test suite
         run: swift test
@@ -33,10 +39,13 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v6
 
-      - name: Verify Swift 6.2 toolchain
-        run: |
-          swift --version
-          swift --version | grep -F "Swift version 6.2"
+      - name: Set up Swift 6.2
+        uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: "6.2"
+
+      - name: Verify Swift version
+        run: swift --version
 
       - name: Package source archive
         run: ./scripts/package_source_release.sh "${GITHUB_REF_NAME}"
