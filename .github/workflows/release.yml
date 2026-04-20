@@ -78,8 +78,9 @@ jobs:
         run: |
           ./scripts/render_homebrew_formula.sh \
             --version "${GITHUB_REF_NAME}" \
-            --source-url "https://github.com/${HOMEBREW_TAP_REPO}/releases/download/ashex-${GITHUB_REF_NAME}/ashex-${GITHUB_REF_NAME}-source.tar.gz" \
-            --sha256 "$(cat ".dist/ashex-${GITHUB_REF_NAME}-source.tar.gz.sha256")" \
+            --binary-url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/ashex-${GITHUB_REF_NAME#v}-macos-$(uname -m).tar.gz" \
+            --sha256 "$(cat ".dist/ashex-${GITHUB_REF_NAME#v}-macos-$(uname -m).tar.gz.sha256")" \
+            --arch "$(uname -m)" \
             --homepage "https://github.com/${GITHUB_REPOSITORY}" \
             --output ".dist/ashex.rb"
 
