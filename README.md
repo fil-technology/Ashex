@@ -32,6 +32,29 @@ Ashex is a minimal local agent runtime foundation for macOS, built as a small Sw
 - `Sources/CSQLite`: small SQLite system library bridge
 - `Tests/AshexCoreTests`: focused runtime and guardrail tests
 
+## Documentation
+
+Repository documentation is now grouped under `docs/` so the project root stays focused on code and release entrypoints.
+
+- `docs/README.md`: top-level documentation map
+- `docs/roadmap/implementation-phases.md`: original build-up phases from the MVP foundation
+- `docs/roadmap/production-milestones.md`: completed production-shaping milestones
+- `docs/roadmap/production-refinement-roadmap.md`: current phase-by-phase refinement plan
+- `docs/release/production-readiness-checklist.md`: production and shipping checklist
+- `docs/release/upcoming-release-prep.md`: draft release-prep notes for the next release
+- `docs/connectors/daemon-telegram-mvp.md`: daemon and Telegram connector architecture notes
+- `docs/providers/dflash-provider-plan.md`: DFlash integration plan and follow-up work
+- `docs/adoption/ash-optimization-adoption-plan.md`: Ash optimization adoption seam notes
+- `docs/adoption/ash-to-ashex-adoption-plan.md`: broader Ash-to-Ashex transfer plan
+- `docs/research/omlx-evaluation.md`: research notes for the oMLX evaluation
+
+For future Codex sessions and other agents, `.codex/` now contains a curated entrypoint:
+
+- `.codex/README.md`: where to start
+- `.codex/context/architecture.md`: runtime and daemon architecture map
+- `.codex/context/docs-map.md`: high-signal docs and source references
+- `.codex/release/release-prep.md`: release workflow and next-release prep pointers
+
 ## Quick start
 
 ```bash
@@ -360,7 +383,7 @@ Current MVP limitations:
 - no webhook deployment
 - remote approvals currently live inside the same Telegram conversation and are limited to one pending approval per chat
 
-Implementation notes and next-step recommendations live in [DAEMON_TELEGRAM_MVP.md](/Users/sviatoslavfil/Development/Fil.Technology/Codex-based/Agents/Eshex/Source/DAEMON_TELEGRAM_MVP.md).
+Implementation notes and next-step recommendations live in [`docs/connectors/daemon-telegram-mvp.md`](docs/connectors/daemon-telegram-mvp.md).
 - installable tool packs:
   - bundled now: `swiftpm`, `ios_xcode`, `python`
   - custom packs loaded from:
@@ -492,5 +515,5 @@ Ashex is now a serious local coding-agent foundation, but it is still not at Cod
 - even more reliable large-task execution under drift and weak planning
 - richer delegated-agent orchestration beyond the current bounded subtask flow
 
-The current next-stage roadmap for those areas lives in `PRODUCTION_REFINEMENT_ROADMAP.md`.
-The concrete remaining production-grade checklist lives in `PRODUCTION_READINESS_CHECKLIST.md`.
+The current next-stage roadmap for those areas lives in [`docs/roadmap/production-refinement-roadmap.md`](docs/roadmap/production-refinement-roadmap.md).
+The concrete remaining production-grade checklist lives in [`docs/release/production-readiness-checklist.md`](docs/release/production-readiness-checklist.md).

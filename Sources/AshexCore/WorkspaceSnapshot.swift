@@ -49,7 +49,16 @@ public enum WorkspaceSnapshotBuilder {
                 return url.lastPathComponent + (isDirectory ? "/" : "")
             } ?? []
 
-        let instructionCandidates = ["README.md", "AGENTS.md", "CLAUDE.md", "CONTRIBUTING.md", "IMPLEMENTATION_PHASES.md"]
+        let instructionCandidates = [
+            "README.md",
+            "AGENTS.md",
+            "CLAUDE.md",
+            "CONTRIBUTING.md",
+            "docs/README.md",
+            "docs/roadmap/implementation-phases.md",
+            "docs/roadmap/production-refinement-roadmap.md",
+            "docs/release/production-readiness-checklist.md",
+        ]
         let instructionFiles = instructionCandidates.filter { candidate in
             fileManager.fileExists(atPath: workspaceRoot.appendingPathComponent(candidate).path)
         }

@@ -218,9 +218,11 @@ private final class RecordingExecutionRuntime: ExecutionRuntime, @unchecked Send
     try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
     try fileManager.createDirectory(at: root.appendingPathComponent("Sources"), withIntermediateDirectories: true)
     try fileManager.createDirectory(at: root.appendingPathComponent("Tests"), withIntermediateDirectories: true)
+    try fileManager.createDirectory(at: root.appendingPathComponent("docs/roadmap"), withIntermediateDirectories: true)
     try "{}".write(to: root.appendingPathComponent("package.json"), atomically: true, encoding: .utf8)
     try "name: demo".write(to: root.appendingPathComponent("pnpm-lock.yaml"), atomically: true, encoding: .utf8)
     try "# Demo".write(to: root.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
+    try "# Phases".write(to: root.appendingPathComponent("docs/roadmap/implementation-phases.md"), atomically: true, encoding: .utf8)
 
     let snapshot = WorkspaceSnapshotBuilder.capture(workspaceRoot: root)
 
@@ -229,6 +231,7 @@ private final class RecordingExecutionRuntime: ExecutionRuntime, @unchecked Send
     #expect(snapshot.sourceRoots.contains("Sources"))
     #expect(snapshot.testRoots.contains("Tests"))
     #expect(snapshot.instructionFiles.contains("README.md"))
+    #expect(snapshot.instructionFiles.contains("docs/roadmap/implementation-phases.md"))
 }
 
 @Test func runtimeCompletesSimpleFilesystemRun() async throws {

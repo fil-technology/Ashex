@@ -1,6 +1,6 @@
 # Ashex Production Refinement Roadmap
 
-This roadmap starts after the completion of the foundation and production-shaping milestones in `IMPLEMENTATION_PHASES.md` and `PRODUCTION_MILESTONES.md`.
+This roadmap starts after the completion of the foundation and production-shaping milestones in [`implementation-phases.md`](implementation-phases.md) and [`production-milestones.md`](production-milestones.md).
 
 The goal now is not to add another broad MVP checklist. The goal is to close the behavioral gap between Ashex's current harness architecture and the day-to-day reliability of stronger coding agents.
 
@@ -168,7 +168,7 @@ Ashex should feel meaningfully closer to stronger coding agents when it can do t
 
 ## Relationship To Existing Docs
 
-- `IMPLEMENTATION_PHASES.md` tracks the broader product and build history
-- `PRODUCTION_MILESTONES.md` tracks the completed production-foundation milestones
-- `PRODUCTION_READINESS_CHECKLIST.md` tracks the concrete remaining production-grade checklist
+- [`implementation-phases.md`](implementation-phases.md) tracks the broader product and build history
+- [`production-milestones.md`](production-milestones.md) tracks the completed production-foundation milestones
+- [`../release/production-readiness-checklist.md`](../release/production-readiness-checklist.md) tracks the concrete remaining production-grade checklist
 - this file tracks the next refinement path from "production-shaped" toward a stronger day-to-day coding agent

@@ -355,4 +355,4 @@ The next roadmap is refinement-oriented rather than foundation-oriented. It focu
 - stronger long-session behavior
 - more advanced multi-agent orchestration
 
-See `PRODUCTION_REFINEMENT_ROADMAP.md` for the current next-stage plan.
+See [`production-refinement-roadmap.md`](production-refinement-roadmap.md) for the current next-stage plan.

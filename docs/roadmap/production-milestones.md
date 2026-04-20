@@ -70,4 +70,4 @@ The next stage is refinement work:
 - stronger long-session behavior
 - more advanced multi-agent orchestration
 
-See `PRODUCTION_REFINEMENT_ROADMAP.md` for the next-stage roadmap.
+See [`production-refinement-roadmap.md`](production-refinement-roadmap.md) for the next-stage roadmap.
