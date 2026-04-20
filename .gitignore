@@ -2,6 +2,8 @@
 /.build
 /Packages
 /.ashex
+/scripts/.ashex/
+/scripts/ashex.config.json
 /.vscode
 xcuserdata/
 DerivedData/
