@@ -58,8 +58,10 @@ This checklist tracks the remaining work between Ashex's current production-shap
 
 ## Public Release Metadata
 
-- [ ] Add an explicit project license
+- [x] Add an explicit project license
 - [x] Add contributing guidance
 - [x] Add a code of conduct
 - [x] Add a changelog
 - [x] Organize long-form documentation into a dedicated docs tree
+- [x] Add release packaging for tagged builds
+- [x] Add Homebrew formula generation for a separate tap repository

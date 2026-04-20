@@ -4,7 +4,7 @@ Ashex is a local-first coding agent runtime for macOS, built as a Swift package 
 
 It is designed for people who want a transparent, hackable agent shell with typed tools, persistent runs, guarded execution, and room to evolve toward stronger coding-assistant behavior without turning into a black box.
 
-## What this MVP includes
+## What it includes
 
 - A real single-agent loop with max-iteration and cancellation guards
 - A connector-ready daemon path for long-running background operation
@@ -43,19 +43,11 @@ Repository documentation is now grouped under `docs/` so the project root stays 
 - `docs/roadmap/production-milestones.md`: completed production-shaping milestones
 - `docs/roadmap/production-refinement-roadmap.md`: current phase-by-phase refinement plan
 - `docs/release/production-readiness-checklist.md`: production and shipping checklist
-- `docs/release/upcoming-release-prep.md`: draft release-prep notes for the next release
 - `docs/connectors/daemon-telegram-mvp.md`: daemon and Telegram connector architecture notes
 - `docs/providers/dflash-provider-plan.md`: DFlash integration plan and follow-up work
 - `docs/adoption/ash-optimization-adoption-plan.md`: Ash optimization adoption seam notes
 - `docs/adoption/ash-to-ashex-adoption-plan.md`: broader Ash-to-Ashex transfer plan
 - `docs/research/omlx-evaluation.md`: research notes for the oMLX evaluation
-
-For future Codex sessions and other agents, `.codex/` now contains a curated entrypoint:
-
-- `.codex/README.md`: where to start
-- `.codex/context/architecture.md`: runtime and daemon architecture map
-- `.codex/context/docs-map.md`: high-signal docs and source references
-- `.codex/release/release-prep.md`: release workflow and next-release prep pointers
 
 ## Quick start
 
@@ -94,6 +86,23 @@ You can also install somewhere else:
 
 ```bash
 ./scripts/install.sh /usr/local/bin
+```
+
+Release packaging and Homebrew prep:
+
+```bash
+./scripts/package_source_release.sh v0.2.0
+./scripts/package_release.sh v0.2.0
+./scripts/render_homebrew_formula.sh \
+  --version v0.2.0 \
+  --source-url https://github.com/fil-technology/Ashex/releases/download/v0.2.0/ashex-v0.2.0-source.tar.gz \
+  --sha256 <release-source-tarball-sha256>
+```
+
+Once the release asset and formula are published, the install path is:
+
+```bash
+brew install fil-technology/tap/ashex
 ```
 
 TUI highlights:
@@ -152,7 +161,7 @@ CLI options:
 
 Daemon and Telegram commands:
 
-- `daemon run`: start Ash in the foreground as a long-running process
+- `daemon run`: start Ashex in the foreground as a long-running process
 - `daemon start`: launch the daemon in the background and write logs under `STORAGE/daemon/daemon.log`
 - `daemon stop`: send `SIGTERM` to the tracked daemon process
 - `daemon status`: show PID and log path when the daemon is running
@@ -377,12 +386,11 @@ The daemon path is additive and keeps the core runtime intact:
 - `DaemonSupervisor` handles commands such as `/start`, `/help`, `/reset`, `/status`, `/pending`, `/approve`, `/deny`, and `/stop`, then routes normal text into the runtime
 - `TelegramConnector` uses Bot API polling, persists processed `update_id` values, ignores unsupported updates cleanly, and sends final text responses back in chunks
 
-Current MVP limitations:
+Current connector limitations:
 
 - Telegram private chats only
-- text messages only
-- final-message replies only
-- no webhook deployment
+- replies are currently emitted as final messages rather than true streamed chunks
+- webhook deployment is not wired yet
 - remote approvals currently live inside the same Telegram conversation and are limited to one pending approval per chat
 
 Implementation notes and next-step recommendations live in [`docs/connectors/daemon-telegram-mvp.md`](docs/connectors/daemon-telegram-mvp.md).
