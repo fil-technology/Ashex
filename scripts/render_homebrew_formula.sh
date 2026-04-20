@@ -48,7 +48,8 @@ fi
 
 VERSION_NO_V="${VERSION#v}"
 
-if [[ "$ARCH" == "arm64" ]]; then
+case "$ARCH" in
+  arm64)
 FORMULA=$(cat <<EOF
 class Ashex < Formula
   desc "Local-first Swift coding agent for macOS with a TUI, daemon, and typed tools"
@@ -64,7 +65,7 @@ class Ashex < Formula
   end
 
   on_intel do
-    odie "Intel is not supported by this release yet."
+    odie "Intel is not yet supported by this formula release. Install a matching x86_64 artifact or publish an Intel archive."
   end
 
   def install
@@ -74,13 +75,14 @@ class Ashex < Formula
   end
 
   test do
-    output = shell_output("\#{bin}/ashex --help")
+    output = shell_output("#{bin}/ashex --help")
     assert_match "ashex", output
   end
 end
 EOF
 )
-elif [[ "$ARCH" == "x86_64" ]]; then
+    ;;
+  x86_64)
 FORMULA=$(cat <<EOF
 class Ashex < Formula
   desc "Local-first Swift coding agent for macOS with a TUI, daemon, and typed tools"
@@ -91,7 +93,7 @@ class Ashex < Formula
   depends_on :macos
 
   on_arm do
-    odie "Apple Silicon is not supported by this release yet."
+    odie "Apple Silicon is not yet supported by this formula release. Install a matching arm64 artifact or publish an Apple Silicon archive."
   end
 
   on_intel do
@@ -106,16 +108,18 @@ class Ashex < Formula
   end
 
   test do
-    output = shell_output("\#{bin}/ashex --help")
+    output = shell_output("#{bin}/ashex --help")
     assert_match "ashex", output
   end
 end
 EOF
 )
-else
-  echo "error: unsupported arch: $ARCH" >&2
-  exit 1
-fi
+    ;;
+  *)
+    echo "error: unsupported arch: $ARCH" >&2
+    exit 1
+    ;;
+esac
 
 if [[ -n "$OUTPUT" ]]; then
   printf "%s\n" "$FORMULA" > "$OUTPUT"
