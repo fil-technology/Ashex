@@ -4,16 +4,6 @@ Ashex is a local-first coding agent runtime for macOS, built as a Swift package 
 
 It is designed for people who want a transparent, hackable agent shell with typed tools, persistent runs, guarded execution, and room to evolve toward stronger coding-assistant behavior without turning into a black box.
 
-## GitHub Description
-
-Short description:
-
-> Local-first Swift coding agent for macOS with a TUI, daemon, typed tools, persistent runs, and Telegram support.
-
-Release/share blurb:
-
-> Ashex is a local-first coding agent runtime for macOS. It combines a reusable Swift core, a terminal TUI, a connector-ready daemon, typed tool orchestration, persistent history, guarded execution, and optional Telegram control in a small repo you can actually understand and extend.
-
 ## What this MVP includes
 
 - A real single-agent loop with max-iteration and cancellation guards
@@ -66,18 +56,6 @@ For future Codex sessions and other agents, `.codex/` now contains a curated ent
 - `.codex/context/architecture.md`: runtime and daemon architecture map
 - `.codex/context/docs-map.md`: high-signal docs and source references
 - `.codex/release/release-prep.md`: release workflow and next-release prep pointers
-
-## Public Release Notes
-
-For a public release pass, this repo now includes:
-
-- grouped documentation under `docs/`
-- contributor guidance in `CONTRIBUTING.md`
-- a simple community standard in `CODE_OF_CONDUCT.md`
-- a living `CHANGELOG.md`
-- curated `.codex/` orientation docs for future agent sessions
-
-One important thing is still intentionally not guessed in-repo: the project license. Pick that explicitly before publishing broadly.
 
 ## Quick start
 
