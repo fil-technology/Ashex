@@ -475,6 +475,25 @@ import Testing
     #expect(TokenSavingsEstimator.estimatedUsageMoneyUSD(for: 1_000_000, provider: "openai", model: "gpt-5.4-mini") > 0)
 }
 
+@Test func localModelGuardrailKeepsSmallFunctionGemmaModelRunnable() {
+    let assessment = LocalModelGuardrails.assessOllamaModel(
+        model: "functiongemma:latest",
+        installedModels: [
+            .init(name: "functiongemma:latest", sizeBytes: 300_000_000)
+        ],
+        resources: HostResources(
+            physicalMemoryBytes: 8_000_000_000,
+            usableLocalModelMemoryBytes: 2_000_000_000,
+            estimatedMemoryBandwidthGBps: 100,
+            chipDescription: "Apple M-series",
+            isUnifiedMemory: true
+        )
+    )
+
+    #expect(assessment.severity == .ok)
+    #expect((assessment.estimatedWorkingSetBytes ?? 0) < 1_000_000_000)
+}
+
 @Test func optimizationAdvisorPrefersTriattentionForFocusedLocalCodeTaskWithCalibration() {
     let resolution = ContextOptimizationAdvisor().resolve(
         taskKind: .feature,

@@ -65,6 +65,7 @@ final class TUIApp {
 
     private enum OnboardingStep {
         case provider
+        case experimentalProvider
         case apiKey
         case model
         case modelDownload
@@ -338,8 +339,10 @@ final class TUIApp {
             handleEnter()
         case .backspace:
             handleBackspace()
-        case .escape, .left:
+        case .escape:
             handleBack()
+        case .left:
+            handleLeft()
         case .character("k") where focus == .launcher:
             moveSelection(-1)
         case .character("j") where focus == .launcher:
@@ -924,6 +927,26 @@ final class TUIApp {
         }
     }
 
+    private func handleLeft() {
+        if pendingApproval != nil {
+            handleApproval(key: .left)
+            return
+        }
+
+        if showOnboarding {
+            if inputMode == .onboardingText, !onboardingTextInput.isEmpty {
+                onboardingTextInput = ""
+                statusLine = "Cleared setup answer"
+            } else {
+                skipOnboardingStep()
+                statusLine = "Skipped setup item"
+            }
+            return
+        }
+
+        handleBack()
+    }
+
     private func moveSelection(_ delta: Int) {
         selectedIndex = min(max(selectedIndex + delta, 0), menuItems.count - 1)
     }
@@ -1118,11 +1141,17 @@ final class TUIApp {
         switch onboardingStep {
         case .provider:
             return [
-                .init(title: "dflash", subtitle: "Local DFlash server at \(sessionUserConfig.dflash.baseURL)"),
                 .init(title: "ollama", subtitle: "Local Ollama models on this Mac"),
                 .init(title: "openai", subtitle: "Hosted OpenAI models with an API key"),
                 .init(title: "anthropic", subtitle: "Hosted Claude models with an API key"),
                 .init(title: "mock", subtitle: "Offline mock adapter for testing tools without a model"),
+                .init(title: "Experimental providers", subtitle: "Try local experimental backends such as DFlash"),
+                .init(title: "Skip provider", subtitle: "Keep \(sessionProvider) with model \(sessionModel)")
+            ]
+        case .experimentalProvider:
+            return [
+                .init(title: "dflash", subtitle: "Local DFlash server at \(sessionUserConfig.dflash.baseURL)"),
+                .init(title: "Back to providers", subtitle: "Return to the main provider list"),
                 .init(title: "Skip provider", subtitle: "Keep \(sessionProvider) with model \(sessionModel)")
             ]
         case .apiKey:
@@ -1210,7 +1239,21 @@ final class TUIApp {
             let choices = onboardingChoices
             guard choices.indices.contains(onboardingSelection) else { return }
             let choice = choices[onboardingSelection].title
-            if choice == "Skip provider" {
+            if choice == "Experimental providers" {
+                advanceOnboarding(to: .experimentalProvider)
+            } else if choice == "Skip provider" {
+                advanceOnboarding(to: providerNeedsAPIKey(sessionProvider) ? .apiKey : .model)
+            } else {
+                applyOnboardingProvider(choice)
+                advanceOnboarding(to: providerNeedsAPIKey(sessionProvider) ? .apiKey : .model)
+            }
+        case .experimentalProvider:
+            let choices = onboardingChoices
+            guard choices.indices.contains(onboardingSelection) else { return }
+            let choice = choices[onboardingSelection].title
+            if choice == "Back to providers" {
+                advanceOnboarding(to: .provider)
+            } else if choice == "Skip provider" {
                 advanceOnboarding(to: providerNeedsAPIKey(sessionProvider) ? .apiKey : .model)
             } else {
                 applyOnboardingProvider(choice)
@@ -1460,7 +1503,7 @@ final class TUIApp {
 
     private func skipOnboardingStep() {
         switch onboardingStep {
-        case .provider:
+        case .provider, .experimentalProvider:
             advanceOnboarding(to: providerNeedsAPIKey(sessionProvider) ? .apiKey : .model)
         case .apiKey:
             advanceOnboarding(to: .model)
@@ -2926,6 +2969,8 @@ final class TUIApp {
         switch onboardingStep {
         case .provider:
             return "Which provider would you like to use?"
+        case .experimentalProvider:
+            return "Experimental providers"
         case .apiKey:
             return "Add the API key for \(sessionProvider.capitalized)"
         case .model:
@@ -2947,6 +2992,8 @@ final class TUIApp {
         switch onboardingStep {
         case .provider:
             return "Choose the model provider Ashex should use for chat and coding runs. Local providers keep work on your Mac. Hosted providers need API keys."
+        case .experimentalProvider:
+            return "These providers are useful for local experiments, but may need extra services or have rougher model behavior than the main provider list."
         case .apiKey:
             return "Keys are stored in Keychain, not in the project config. You can also skip and add one later from Assistant Setup."
         case .model:
@@ -5319,6 +5366,15 @@ final class TUIApp {
                 render()
                 return
             }
+            if Self.providerStatusAllowsRuntimeRetry(snapshot, provider: sessionProvider) {
+                refreshSessionRuntime()
+                if self.providerStartupIssue == nil {
+                    statusLine = snapshot.headline
+                    processPromptQueueIfPossible()
+                    render()
+                    return
+                }
+            }
             statusLine = "Provider needs attention"
             let shouldReplaceTranscript = runLines.isEmpty ||
                 runLines.first?.hasPrefix("[startup]") == true ||
@@ -5340,6 +5396,24 @@ final class TUIApp {
         }
         processPromptQueueIfPossible()
         render()
+    }
+
+    private static func providerStatusAllowsRuntimeRetry(_ snapshot: ProviderStatusSnapshot, provider: String) -> Bool {
+        switch provider {
+        case "mock":
+            return true
+        case "openai", "anthropic":
+            return !snapshot.headline.localizedCaseInsensitiveContains("missing") &&
+                !snapshot.headline.localizedCaseInsensitiveContains("failed")
+        case "ollama":
+            if snapshot.headline == "Ollama connection failed" { return false }
+            return snapshot.guardrailAssessment?.severity != .blocked
+        case "dflash":
+            return snapshot.headline == "DFlash server looks ready" ||
+                snapshot.headline == "DFlash server is reachable"
+        default:
+            return false
+        }
     }
 
     private func validateRunGuardrails() async throws {

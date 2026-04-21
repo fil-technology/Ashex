@@ -280,11 +280,23 @@ private enum ModelBudget {
     }
 
     static func contextReserveBytes(modelSizeBytes: UInt64) -> UInt64 {
-        max(gigabytes(1), UInt64(Double(modelSizeBytes) * 0.18))
+        if modelSizeBytes <= megabytes(512) {
+            return max(megabytes(384), UInt64(Double(modelSizeBytes) * 0.45))
+        }
+        if modelSizeBytes <= gigabytes(1) {
+            return max(megabytes(512), UInt64(Double(modelSizeBytes) * 0.32))
+        }
+        return max(gigabytes(1), UInt64(Double(modelSizeBytes) * 0.18))
     }
 
     static func runtimeOverheadBytes(modelSizeBytes: UInt64) -> UInt64 {
-        max(megabytes(768), UInt64(Double(modelSizeBytes) * 0.08))
+        if modelSizeBytes <= megabytes(512) {
+            return max(megabytes(256), UInt64(Double(modelSizeBytes) * 0.20))
+        }
+        if modelSizeBytes <= gigabytes(1) {
+            return max(megabytes(384), UInt64(Double(modelSizeBytes) * 0.12))
+        }
+        return max(megabytes(768), UInt64(Double(modelSizeBytes) * 0.08))
     }
 
     static func gigabytes(_ value: UInt64) -> UInt64 {
