@@ -1118,6 +1118,21 @@ private final class RecordingExecutionRuntime: ExecutionRuntime, @unchecked Send
     #expect(assessment.severity == .warning)
 }
 
+@Test func ollamaGuardrailWarnsInsteadOfBlockingInstalledModelAboveBackgroundBudget() {
+    let assessment = LocalModelGuardrails.assessOllamaModel(
+        model: "local",
+        installedModels: [
+            .init(name: "local", sizeBytes: 5_000_000_000),
+        ],
+        resources: .init(
+            physicalMemoryBytes: 8_000_000_000,
+            usableLocalModelMemoryBytes: 4_000_000_000
+        )
+    )
+
+    #expect(assessment.severity == .warning)
+}
+
 @Test func ollamaGuardrailBlocksOversizedModel() {
     let assessment = LocalModelGuardrails.assessOllamaModel(
         model: "large",

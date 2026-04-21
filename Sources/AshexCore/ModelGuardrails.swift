@@ -146,7 +146,7 @@ public enum LocalModelGuardrails {
         )
 
         let sizeSummary = """
-        Model file size \(formatBytes(modelSizeBytes)); estimated working set \(formatBytes(estimatedWorkingSetBytes)); safe local budget \(formatBytes(resources.usableLocalModelMemoryBytes)) out of \(formatBytes(resources.physicalMemoryBytes)) system RAM.
+        Model file size \(formatBytes(modelSizeBytes)); estimated working set \(formatBytes(estimatedWorkingSetBytes)); background-safe budget \(formatBytes(resources.usableLocalModelMemoryBytes)) out of \(formatBytes(resources.physicalMemoryBytes)) system RAM.
         """
         let contextSummary = "Ashex reserves about \(formatBytes(contextReserveBytes)) for context, KV cache, and runtime overhead."
         let chipSummary = resources.chipDescription.map {
@@ -166,17 +166,18 @@ public enum LocalModelGuardrails {
             .prefix(3)
             .map(\.name)
 
-        if usageRatio >= 1.0 {
+        let physicalMemoryRatio = Double(estimatedWorkingSetBytes) / Double(max(resources.physicalMemoryBytes, 1))
+        if physicalMemoryRatio >= 0.95 {
             var details = [sizeSummary, contextSummary]
             if let chipSummary { details.append(chipSummary) }
             if let throughputSummary { details.append(throughputSummary) }
-            details.append("This model is likely to push the Mac into heavy swapping or out-of-memory pressure.")
+            details.append("This model is close to or above total system RAM after runtime overhead, so Ashex blocks it by default.")
             if !smallerModels.isEmpty {
                 details.append("Try a smaller local model instead: \(smallerModels.joined(separator: ", ")).")
             }
             return .init(
                 severity: .blocked,
-                headline: "Selected model exceeds the safe local-memory budget",
+                headline: "Selected model exceeds the hard local-memory limit",
                 details: details,
                 selectedModel: model,
                 modelSizeBytes: modelSizeBytes,
@@ -192,7 +193,7 @@ public enum LocalModelGuardrails {
             var details = [sizeSummary, contextSummary]
             if let chipSummary { details.append(chipSummary) }
             if let throughputSummary { details.append(throughputSummary) }
-            details.append("This model may run, but it is large enough that other apps can feel pressure while Ashex is active.")
+            details.append("This model is installed and may run, but it is large enough that other apps can feel pressure while Ashex is active.")
             if !smallerModels.isEmpty {
                 details.append("If you want a lighter option, try: \(smallerModels.joined(separator: ", ")).")
             }

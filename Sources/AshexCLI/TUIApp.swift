@@ -2147,7 +2147,7 @@ final class TUIApp {
         showSettings = false
         showHelp = false
         showHistory = false
-        focus = .transcript
+        focus = .input
         statusLine = "Checking model guardrails"
         if let activeQueuedPrompt {
             runLines.append("[queue] Starting prompt #\(activeQueuedPrompt.id) (\(promptQueue.count) queued behind it)")
@@ -2958,7 +2958,7 @@ final class TUIApp {
         case .telegramToken:
             return "Create a Telegram bot by messaging @BotFather, copy the token, and paste it here. Ashex saves the token in Keychain and uses it only for your local daemon."
         case .daemon:
-            return "The daemon is needed for background Telegram polling. You can also start or stop it later from Assistant Setup."
+            return "The daemon is needed for background Telegram polling. macOS may show a password or Keychain prompt so the background daemon can read the Telegram token you saved locally."
         case .done:
             return "You can open Assistant Setup anytime to change provider, model, Telegram, daemon, or safety settings."
         }
@@ -5179,7 +5179,7 @@ final class TUIApp {
         showHelp = false
         showHistory = false
         showCommands = false
-        focus = .transcript
+        focus = .input
 
         let queuePosition = promptQueue.count
         runLines.append("[queue] Added prompt #\(queuedPrompt.id) at position \(queuePosition)")
