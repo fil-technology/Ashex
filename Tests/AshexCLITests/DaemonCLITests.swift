@@ -20,6 +20,15 @@ import Testing
     #expect(DaemonCLICommand.parse(arguments: ["ashex", "cron", "remove", "--id", "daily"]) == .cronRemove(["--id", "daily"]))
 }
 
+@Test func defaultWorkspaceIsOutsideCurrentDirectory() {
+    let currentDirectory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).standardizedFileURL
+    let defaultWorkspace = CLIConfiguration.defaultWorkspaceRoot().standardizedFileURL
+
+    #expect(defaultWorkspace.path != currentDirectory.path)
+    #expect(defaultWorkspace.lastPathComponent == "DefaultWorkspace")
+    #expect(defaultWorkspace.deletingLastPathComponent().lastPathComponent == "Ashex")
+}
+
 @Test func cliConfigurationUsesDFlashProviderDefaults() throws {
     let workspace = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)

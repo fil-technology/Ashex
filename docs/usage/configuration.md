@@ -7,11 +7,12 @@ Ashex reads project config first, then optional global config. Project settings 
 - Project config: `WORKSPACE/ashex.config.json`
 - Global config: `~/.config/ashex/ashex.config.json`
 - Persistence directory: `WORKSPACE/.ashex` unless overridden with `--storage PATH`
+- Default workspace: `~/Ashex/DefaultWorkspace`, created on first run when `--workspace` is not provided.
 
 ## CLI Options
 
 - `onboard`: open the setup wizard even if saved settings already exist.
-- `--workspace PATH`: workspace root enforced by `WorkspaceGuard`.
+- `--workspace PATH`: workspace root enforced by `WorkspaceGuard`; overrides the default workspace.
 - `--storage PATH`: persistence directory, default `WORKSPACE/.ashex`.
 - `--onboarding`: alias for `onboard`.
 - `--max-iterations N`: loop limit, default `8`.

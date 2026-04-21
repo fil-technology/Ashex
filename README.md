@@ -72,7 +72,8 @@ ashex 'shell: ls -la'
 Useful options:
 
 - `onboard`: open the setup wizard even if saved settings already exist
-- `--workspace PATH`: run against a specific project root
+- Default workspace: `~/Ashex/DefaultWorkspace`, created on first run so accidental file operations do not target the Ashex source tree
+- `--workspace PATH`: run against a specific project root instead of the default workspace
 - `--storage PATH`: use a specific persistence directory, default `WORKSPACE/.ashex`
 - `--provider mock|openai|anthropic|ollama|dflash`: choose the model provider
 - `--model MODEL`: choose the provider model

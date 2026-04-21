@@ -171,7 +171,7 @@ struct CLIConfiguration {
 
     init(arguments: [String]) throws {
         var promptParts: [String] = []
-        var workspaceRoot = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        var workspaceRoot = Self.defaultWorkspaceRoot()
         var storageRoot: URL?
         var maxIterations = 8
         var providerOverride: String?
@@ -249,6 +249,12 @@ struct CLIConfiguration {
         self.approvalMode = approvalMode
         self.shouldPersistSessionDefaults = providerOverride == nil && modelOverride == nil && environmentProvider == nil && environmentModel == nil
         self.forceOnboarding = forceOnboarding
+    }
+
+    static func defaultWorkspaceRoot(fileManager: FileManager = .default) -> URL {
+        fileManager.homeDirectoryForCurrentUser
+            .appendingPathComponent("Ashex", isDirectory: true)
+            .appendingPathComponent("DefaultWorkspace", isDirectory: true)
     }
 
     func makeModelAdapter() throws -> any ModelAdapter {

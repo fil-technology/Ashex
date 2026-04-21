@@ -27,3 +27,4 @@ The format is loosely based on Keep a Changelog and uses a simple `Added`, `Chan
 - direct-chat handling now strips leaked `<think>` blocks and rejects raw tool transcript echoes
 - Telegram reply parsing is more resilient to empty structured replies and leaked reasoning text
 - local script runtime artifacts are now ignored by git
+- default CLI workspaces now use `~/Ashex/DefaultWorkspace` instead of the current project directory
