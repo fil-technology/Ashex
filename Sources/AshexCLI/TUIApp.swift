@@ -1665,7 +1665,10 @@ final class TUIApp {
 
     private var ollamaPickerModels: [String] {
         guard sessionProvider == "ollama" else { return [] }
-        return providerStatus.availableModels.compactMap(Self.selectableModelName(from:))
+        return OllamaModelDisplayOrdering.orderedDisplayNames(
+            providerStatus.availableModels,
+            selectedModel: sessionModel
+        ).compactMap(Self.selectableModelName(from:))
     }
 
     private func selectedOllamaModelPickerIndex() -> Int {
@@ -5815,7 +5818,7 @@ private enum ProviderInspector {
                 if models.isEmpty {
                     details.append("No local models were returned by Ollama.")
                 }
-                let displayModels = models.sorted { $0.name < $1.name }.map { model in
+                let displayModels = OllamaModelDisplayOrdering.ordered(models, selectedModel: model).map { model in
                     if let sizeBytes = model.sizeBytes {
                         return "\(model.name) • \(LocalModelGuardrails.formatBytes(sizeBytes))"
                     }
@@ -5917,6 +5920,73 @@ private enum ProviderInspector {
                 guardrailAssessment: nil
             )
         }
+    }
+}
+
+enum OllamaModelDisplayOrdering {
+    static func ordered(_ models: [LocalModelDescriptor], selectedModel: String) -> [LocalModelDescriptor] {
+        models.sorted { lhs, rhs in
+            let lhsRank = rank(modelName: lhs.name, selectedModel: selectedModel)
+            let rhsRank = rank(modelName: rhs.name, selectedModel: selectedModel)
+            if lhsRank != rhsRank {
+                return lhsRank < rhsRank
+            }
+            return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+        }
+    }
+
+    static func orderedDisplayNames(_ displayNames: [String], selectedModel: String) -> [String] {
+        displayNames.sorted { lhs, rhs in
+            let lhsName = selectableName(from: lhs)
+            let rhsName = selectableName(from: rhs)
+            let lhsRank = rank(modelName: lhsName, selectedModel: selectedModel)
+            let rhsRank = rank(modelName: rhsName, selectedModel: selectedModel)
+            if lhsRank != rhsRank {
+                return lhsRank < rhsRank
+            }
+            return lhs.localizedStandardCompare(rhs) == .orderedAscending
+        }
+    }
+
+    private static func rank(modelName: String, selectedModel: String) -> Int {
+        let normalized = modelName.lowercased()
+        if normalized == selectedModel.lowercased(), !isDiscouragedDefault(normalized) {
+            return 0
+        }
+        if isDiscouragedDefault(normalized) {
+            return 30
+        }
+        if isPreferredGeneralModel(normalized) {
+            return 10
+        }
+        return 20
+    }
+
+    private static func selectableName(from displayName: String) -> String {
+        displayName.components(separatedBy: "•").first?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? displayName
+    }
+
+    private static func isPreferredGeneralModel(_ modelName: String) -> Bool {
+        [
+            "llama",
+            "qwen",
+            "gemma",
+            "mistral",
+            "codellama",
+            "deepseek-coder"
+        ].contains { modelName.contains($0) }
+    }
+
+    private static func isDiscouragedDefault(_ modelName: String) -> Bool {
+        [
+            "function",
+            "embed",
+            "embedding",
+            "whisper",
+            "bge",
+            "nomic-embed"
+        ].contains { modelName.contains($0) }
     }
 }
 

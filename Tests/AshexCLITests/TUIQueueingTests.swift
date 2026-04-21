@@ -52,3 +52,27 @@ import Testing
     #expect(WorkspaceSelection.clamped(12, recentWorkspaceCount: 20) == WorkspaceSelection.visibleRecentWorkspaceLimit)
     #expect(WorkspaceSelection.maxSelectionIndex(for: 0) == 0)
 }
+
+@Test func ollamaModelOrderingPrefersGeneralModelsOverFunctionModels() {
+    let ordered = OllamaModelDisplayOrdering.orderedDisplayNames(
+        [
+            "functiongemma:latest • 300 MB",
+            "gemma4:latest • 9.6 GB"
+        ],
+        selectedModel: "llama3.2"
+    )
+
+    #expect(ordered.first == "gemma4:latest • 9.6 GB")
+}
+
+@Test func ollamaModelOrderingKeepsUsableSelectedModelFirst() {
+    let ordered = OllamaModelDisplayOrdering.orderedDisplayNames(
+        [
+            "qwen2.5-coder:7b • 4.7 GB",
+            "gemma4:latest • 9.6 GB"
+        ],
+        selectedModel: "qwen2.5-coder:7b"
+    )
+
+    #expect(ordered.first == "qwen2.5-coder:7b • 4.7 GB")
+}
