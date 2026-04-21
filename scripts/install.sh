@@ -18,6 +18,12 @@ if [[ ! -x "$BINARY_PATH" ]]; then
 fi
 
 install -m 755 "$BINARY_PATH" "$INSTALL_DIR/$TARGET_NAME"
+VERSION="${ASHEX_VERSION:-dev}"
+COMMIT="${ASHEX_COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || true)}"
+{
+  echo "version=$VERSION"
+  echo "commit=$COMMIT"
+} > "$INSTALL_DIR/$TARGET_NAME.version"
 
 echo "Installed $TARGET_NAME to $INSTALL_DIR/$TARGET_NAME"
 case ":$PATH:" in

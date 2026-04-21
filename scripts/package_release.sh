@@ -39,6 +39,11 @@ if [[ ! -d "$RESOURCE_BUNDLE_PATH" ]]; then
 fi
 
 install -m 755 "$BINARY_PATH" "$STAGE_DIR/bin/ashex"
+COMMIT="${ASHEX_COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || true)}"
+{
+  echo "version=$VERSION"
+  echo "commit=$COMMIT"
+} > "$STAGE_DIR/bin/ashex.version"
 cp -R "$RESOURCE_BUNDLE_PATH" "$STAGE_DIR/bin/Ashex_AshexCore.bundle"
 install -m 644 "$ROOT_DIR/README.md" "$STAGE_DIR/share/doc/ashex/README.md"
 install -m 644 "$ROOT_DIR/LICENSE" "$STAGE_DIR/share/doc/ashex/LICENSE"

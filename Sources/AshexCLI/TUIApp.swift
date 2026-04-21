@@ -2682,6 +2682,7 @@ final class TUIApp {
 
         let provider = "\(TerminalUIStyle.faint)provider\(TerminalUIStyle.reset) \(TerminalUIStyle.blue)\(sessionProvider)\(TerminalUIStyle.reset)"
         let model = "\(TerminalUIStyle.faint)model\(TerminalUIStyle.reset) \(TerminalUIStyle.ink)\(sessionModel)\(TerminalUIStyle.reset)"
+        let version = "\(TerminalUIStyle.faint)ver\(TerminalUIStyle.reset) \(TerminalUIStyle.ink)\(AppBuildInfo.current.displayLabel)\(TerminalUIStyle.reset)"
         let sandbox = "\(TerminalUIStyle.faint)sandbox\(TerminalUIStyle.reset) \(TerminalUIStyle.cyan)\(sessionUserConfig.sandbox.mode.rawValue)\(TerminalUIStyle.reset)"
         let usage = "\(TerminalUIStyle.faint)tok~\(TerminalUIStyle.reset) \(TerminalUIStyle.ink)\(formattedEstimatedTokens)\(TerminalUIStyle.reset)"
         let context = "\(TerminalUIStyle.faint)ctx~\(TerminalUIStyle.reset) \(TerminalUIStyle.ink)\(formattedContextUsage)\(TerminalUIStyle.reset)"
@@ -2698,7 +2699,7 @@ final class TUIApp {
         let savedTotal = "\(TerminalUIStyle.faint)total \(economicsLabel)\(TerminalUIStyle.reset) \(economicsColor)\(totalValue)\(TerminalUIStyle.reset)"
         let savedMoney = "\(TerminalUIStyle.faint)\(economicsLabel) money\(TerminalUIStyle.reset) \(economicsColor)\(moneyValue)\(TerminalUIStyle.reset)"
         let status = "\(statusColor)\(displayStatusLine)\(TerminalUIStyle.reset)"
-        let right = "\(provider)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(model)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(sandbox)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(usage)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(context)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(savedToday)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(savedSession)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(savedTotal)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(savedMoney)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(status)"
+        let right = "\(version)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(provider)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(model)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(sandbox)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(usage)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(context)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(savedToday)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(savedSession)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(savedTotal)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(savedMoney)  \(TerminalUIStyle.faint)•\(TerminalUIStyle.reset)  \(status)"
 
         let topLine = join(left: left, right: right, width: innerWidth)
         let workspace = "\(TerminalUIStyle.faint)workspace\(TerminalUIStyle.reset) \(TerminalUIStyle.truncateVisible(sessionWorkspaceRoot.path, limit: innerWidth))"
@@ -5264,10 +5265,6 @@ final class TUIApp {
     }
 
     private func queuedPromptBlockedReason() -> String? {
-        if let providerStartupIssue, providerStartupIssue.provider == sessionProvider {
-            return providerStartupIssue.message
-        }
-
         switch sessionProvider {
         case "openai", "anthropic":
             let apiKey = try? configuration.resolvedAPIKey(for: sessionProvider)
@@ -5283,6 +5280,11 @@ final class TUIApp {
             }
         default:
             break
+        }
+
+        if let providerStartupIssue, providerStartupIssue.provider == sessionProvider,
+           !Self.providerStatusAllowsRuntimeRetry(providerStatus, provider: sessionProvider) {
+            return providerStartupIssue.message
         }
 
         return nil
@@ -5381,9 +5383,14 @@ final class TUIApp {
                 runLines.first?.hasPrefix("[startup]") == true ||
                 Self.isProviderAttentionTranscript(runLines)
             if shouldReplaceTranscript {
+                let attentionMessage = Self.providerAttentionMessage(
+                    startupIssue: providerStartupIssue,
+                    snapshot: snapshot,
+                    provider: sessionProvider
+                )
                 runLines = [
                     "[provider] Provider '\(sessionProvider)' needs attention",
-                    providerStartupIssue.message,
+                    attentionMessage,
                     Self.recoveryHint(for: sessionProvider)
                 ]
                 runFinished = true
@@ -5430,6 +5437,22 @@ final class TUIApp {
         default:
             return false
         }
+    }
+
+    private static func providerAttentionMessage(
+        startupIssue: ProviderStartupIssue,
+        snapshot: ProviderStatusSnapshot,
+        provider: String
+    ) -> String {
+        if provider == "ollama",
+           let assessment = snapshot.guardrailAssessment,
+           assessment.severity == .blocked {
+            return ([assessment.headline] + assessment.details).joined(separator: " ")
+        }
+        if snapshot.headline == "Ollama connection failed" {
+            return snapshot.details.first ?? startupIssue.message
+        }
+        return startupIssue.message
     }
 
     private func validateRunGuardrails() async throws {

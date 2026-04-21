@@ -9,6 +9,10 @@ struct AshexCLI {
                 print(helpText)
                 return
             }
+            if isVersionRequested(arguments: CommandLine.arguments) {
+                print("ashex \(AppBuildInfo.current.displayLabel)")
+                return
+            }
 
             if try await DaemonCLI.handle(arguments: CommandLine.arguments) {
                 return
@@ -46,6 +50,10 @@ struct AshexCLI {
         arguments.dropFirst().contains { $0 == "--help" || $0 == "-h" }
     }
 
+    static func isVersionRequested(arguments: [String]) -> Bool {
+        arguments.dropFirst().contains { $0 == "--version" || $0 == "-v" }
+    }
+
     static let helpText = """
     Usage:
       ashex [options] [prompt]
@@ -62,6 +70,7 @@ struct AshexCLI {
       --max-iterations N        Maximum agent loop iterations
       --approval-mode MODE      trusted or guarded
       --onboarding              Open first-run setup
+      -v, --version             Show installed version and commit
       -h, --help                Show this help
     """
 
