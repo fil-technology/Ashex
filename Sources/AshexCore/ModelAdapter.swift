@@ -765,7 +765,11 @@ extension OllamaChatModelAdapter: DirectChatModelAdapter {
 
     public func directReplyEnvelope(history: [MessageRecord], systemPrompt: String, attachments: [InputAttachment]) async throws -> DirectChatReplyEnvelope {
         do {
-            return try await requestDirectReply(history: history, systemPrompt: systemPrompt, attachments: attachments, repair: false)
+            let envelope = try await requestDirectReply(history: history, systemPrompt: systemPrompt, attachments: attachments, repair: false)
+            guard Self.shouldRepairFalseLimitationReply(envelope.text) else {
+                return envelope
+            }
+            return try await requestDirectReply(history: history, systemPrompt: systemPrompt, attachments: attachments, repair: true)
         } catch let error as AshexError {
             guard shouldRetryStructuredOutput(for: error) || error.localizedDescription.lowercased().contains("did not return a reply") else {
                 throw error
@@ -781,7 +785,7 @@ extension OllamaChatModelAdapter: DirectChatModelAdapter {
         repair: Bool
     ) async throws -> DirectChatReplyEnvelope {
         let repairInstruction = repair
-            ? " Your previous reply was empty. Reply again with a non-empty `reply` string."
+            ? " Your previous reply was empty or falsely claimed narrow limitations. Reply again with a direct, helpful, non-empty `reply` string. Do not say you can only assist with messaging, file management, virtual assistants, or similar generic limitations."
             : ""
         let requestBody = OllamaChatRequest(
             model: configuration.model,
@@ -828,6 +832,21 @@ extension OllamaChatModelAdapter: DirectChatModelAdapter {
             throw AshexError.model("Ollama direct chat did not return a reply")
         }
         return .init(text: reply, reasoningSummary: ReasoningSummaryExtractor.summary(fromExposedThinkingIn: content))
+    }
+
+    private static func shouldRepairFalseLimitationReply(_ reply: String) -> Bool {
+        let lowered = reply.lowercased()
+        let falseLimitationSignals = [
+            "my current capabilities are limited",
+            "my available tools are focused",
+            "i cannot assist with asking",
+            "i cannot provide personal or professional name information",
+            "limited to assisting with messages",
+            "limited to virtual assistants",
+            "cannot assist with retrieving weather information",
+            "file and directory operations"
+        ]
+        return falseLimitationSignals.contains { lowered.contains($0) }
     }
 }
 

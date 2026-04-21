@@ -249,6 +249,47 @@ struct OllamaChatModelAdapterTests {
         #expect(OllamaStubURLProtocol.state.requestCount == 2)
     }
 
+    @Test func directReplyRepairsFalseCapabilityLimitation() async throws {
+        let session = makeOllamaStubbedSession(responses: [
+            (
+                200,
+                """
+                {
+                  "message": {
+                    "content": "{\\"reply\\":\\"My current capabilities are limited to assisting with messages and file management.\\"}"
+                  }
+                }
+                """
+            ),
+            (
+                200,
+                """
+                {
+                  "message": {
+                    "content": "{\\"reply\\":\\"I'm Ashex, your local-first assistant.\\"}"
+                  }
+                }
+                """
+            ),
+        ])
+
+        let adapter = OllamaChatModelAdapter(
+            configuration: .init(model: "gemma4:latest", baseURL: URL(string: "http://localhost:11434/api/chat")!),
+            session: session
+        )
+
+        let reply = try await adapter.directReply(
+            history: [
+                .init(id: UUID(), threadID: UUID(), runID: UUID(), role: .user, content: "What is your name?", createdAt: Date())
+            ],
+            systemPrompt: "You are Ashex."
+        )
+
+        #expect(reply == "I'm Ashex, your local-first assistant.")
+        #expect(OllamaStubURLProtocol.state.requestCount == 2)
+        #expect(OllamaStubURLProtocol.state.lastRequestBodyString?.contains("falsely claimed narrow limitations") == true)
+    }
+
     @Test func directReplySendsImageAttachmentThroughOllamaImages() async throws {
         let session = makeOllamaStubbedSession(statusCode: 200, body: """
         {

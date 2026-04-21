@@ -14,6 +14,14 @@ public enum ConnectorMessageIntentClassifier {
             return .workspaceTask
         }
 
+        let liveLookupSignals = [
+            "weather", "forecast", "latest news", "search latest", "look up", "lookup",
+            "search for", "find information", "load this url"
+        ]
+        if liveLookupSignals.contains(where: lowered.contains) {
+            return .workspaceTask
+        }
+
         let explicitToolSignals = [
             "shell:", "run shell", "use curl", "run curl", "curl ", "wget ", "git ", "swift test",
             "xcodebuild", "npm ", "pnpm ", "yarn ", "python ", "ruby ", "node ", "make ",
@@ -27,9 +35,8 @@ public enum ConnectorMessageIntentClassifier {
             "how are you", "who are you", "what can you do", "hello", "hi", "hey", "thanks",
             "thank you", "good morning", "good evening", "explain", "what is", "what's", "why is",
             "can you explain", "tell me about", "tell me a joke", "help me understand",
-            "search for", "look up", "find information", "what is the weather", "what's the weather",
             "give me", "write me", "show me", "summarize", "search latest", "latest news",
-            "load this url", "what is this repo about", "what this repo is about"
+            "what is this repo about", "what this repo is about"
         ]
         if directChatPrefixes.contains(where: lowered.hasPrefix) {
             return .directChat

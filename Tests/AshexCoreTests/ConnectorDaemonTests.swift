@@ -338,7 +338,7 @@ import Testing
     #expect(ConnectorMessageIntentClassifier.classify("Can you use curl to fetch https://example.com?") == .workspaceTask)
     #expect(ConnectorMessageIntentClassifier.classify("What are the files in current directory?") == .workspaceTask)
     #expect(ConnectorMessageIntentClassifier.classify("List files of the project") == .workspaceTask)
-    #expect(ConnectorMessageIntentClassifier.classify("Search for the weather in Petah Tikva Israel") == .directChat)
+    #expect(ConnectorMessageIntentClassifier.classify("Search for the weather in Petah Tikva Israel") == .workspaceTask)
     #expect(ConnectorMessageIntentClassifier.classify("Give me simple swift hello world app code") == .directChat)
     #expect(ConnectorMessageIntentClassifier.classify("What this repo is about?") == .directChat)
     #expect(ConnectorMessageIntentClassifier.classify("What this repo is about: https://github.com/Eronred/aso-skills") == .workspaceTask)

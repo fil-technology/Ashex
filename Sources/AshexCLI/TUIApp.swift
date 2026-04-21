@@ -190,6 +190,7 @@ final class TUIApp {
     private var activeThreadID: UUID?
     private var activeChatMessages: [MessageRecord] = []
     private var activeRunID: UUID?
+    private var activeRunMode: RunRequest.Mode?
     private var sessionInspector: SessionInspector
     private var tokenSavingsSnapshot: TokenSavingsSnapshot?
     private var tokenUsageSnapshot: TokenUsageSnapshot?
@@ -256,6 +257,10 @@ final class TUIApp {
             self.statusLine = "Set up Ashex"
         }
         Task { [weak self] in
+            await self?.refreshProviderStatus()
+        }
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(2))
             await self?.refreshProviderStatus()
         }
         refreshDaemonStatus()
@@ -2172,6 +2177,9 @@ final class TUIApp {
         runTask?.cancel()
         let executionControl = ExecutionControl()
         runExecutionControl = executionControl
+        let intent = ConnectorMessageIntentClassifier.classify(prompt)
+        let requestedMode: RunRequest.Mode = intent == .directChat ? .directChat : .agent
+        activeRunMode = requestedMode
         runLines = [
             "Prompt: \(prompt)",
             ""
@@ -2200,8 +2208,6 @@ final class TUIApp {
         }
         startWorkingIndicator()
         let queuedPrompt = activeQueuedPrompt
-        let intent = ConnectorMessageIntentClassifier.classify(prompt)
-        let requestedMode: RunRequest.Mode = intent == .directChat ? .directChat : .agent
         let requestedThreadID = activeThreadID
         runTask = Task { [weak self] in
             guard let self else { return }
@@ -2237,6 +2243,7 @@ final class TUIApp {
                     self.runTask = nil
                     self.runExecutionControl = nil
                     self.stopWorkingIndicator()
+                    self.activeRunMode = nil
                     if let queuedPrompt, PromptFailureRouting.shouldRetry(message: error.localizedDescription) {
                         let retriedPrompt = queuedPrompt.incrementingAttemptCount()
                         self.promptQueue.requeueAtFront(retriedPrompt)
@@ -2286,6 +2293,7 @@ final class TUIApp {
     private func finishRun() {
         stopWorkingIndicator()
         runExecutionControl = nil
+        activeRunMode = nil
         runFinished = true
         runStartedAt = nil
         currentRunActivity = nil
@@ -4103,6 +4111,9 @@ final class TUIApp {
 
         if runFinished {
             lines.append("\(TerminalUIStyle.faint)Ready for your next message.\(TerminalUIStyle.reset)")
+        } else if !runLines.isEmpty {
+            lines.append("\(TerminalUIStyle.ink)Activity\(TerminalUIStyle.reset)")
+            lines.append(contentsOf: wrappedRunLines(width: width))
         }
         return lines
     }
@@ -4156,8 +4167,8 @@ final class TUIApp {
     private var isChatConversationVisible: Bool {
         guard pendingApproval == nil else { return false }
         guard !showWorkspaces, !showHistory, !showSettings, !showCommands, !showHelp else { return false }
-        guard runFinished, inputMode == .prompt, activeThreadID != nil else { return false }
-        return !activeChatMessages.isEmpty
+        guard inputMode == .prompt, activeThreadID != nil else { return false }
+        return !activeChatMessages.isEmpty || !runFinished || activeRunMode != nil
     }
 
     private func scrollTerminal(by delta: Int) {
@@ -5375,6 +5386,10 @@ final class TUIApp {
                 refreshSessionRuntime()
                 if self.providerStartupIssue == nil {
                     statusLine = snapshot.headline
+                    if Self.isProviderAttentionTranscript(runLines) {
+                        runLines = []
+                        transcriptScrollOffset = 0
+                    }
                     processPromptQueueIfPossible()
                     render()
                     return
@@ -5796,7 +5811,7 @@ private enum ProviderInspector {
         case "ollama":
             do {
                 let baseURL = CLIConfiguration.ollamaBaseURL()
-                let models = try await OllamaCatalogClient().fetchModels(baseURL: baseURL)
+                let models = try await fetchOllamaModelsWithStartupRetry(baseURL: baseURL)
                 let assessment = LocalModelGuardrails.assessOllamaModel(
                     model: model,
                     installedModels: models,
@@ -5920,6 +5935,20 @@ private enum ProviderInspector {
                 guardrailAssessment: nil
             )
         }
+    }
+
+    private static func fetchOllamaModelsWithStartupRetry(baseURL: URL) async throws -> [LocalModelDescriptor] {
+        var lastError: Error?
+        for attempt in 0..<3 {
+            do {
+                return try await OllamaCatalogClient().fetchModels(baseURL: baseURL)
+            } catch {
+                lastError = error
+                guard attempt < 2 else { break }
+                try? await Task.sleep(for: .milliseconds(700))
+            }
+        }
+        throw lastError ?? AshexError.model("Failed to read Ollama model catalog")
     }
 }
 
