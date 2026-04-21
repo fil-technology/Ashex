@@ -118,6 +118,28 @@ struct OllamaChatModelAdapterTests {
         #expect(abs(OllamaStubURLProtocol.state.lastRequestTimeout - 321) < 0.001)
     }
 
+    @Test func ollamaBackendErrorsIncludeModelAndRawMessage() async throws {
+        let session = makeOllamaStubbedSession(statusCode: 500, body: """
+        {
+          "error": "out of memory"
+        }
+        """)
+
+        let adapter = OllamaChatModelAdapter(
+            configuration: .init(model: "functiongemma:latest", baseURL: URL(string: "http://localhost:11434/api/chat")!),
+            session: session
+        )
+
+        do {
+            _ = try await adapter.nextAction(for: sampleModelContext())
+            Issue.record("Expected Ollama backend error")
+        } catch {
+            let message = error.localizedDescription
+            #expect(message.contains("Ollama request for model 'functiongemma:latest' failed with HTTP 500: out of memory"))
+            #expect(message.contains("Ollama backend"))
+        }
+    }
+
     @Test func parsesStructuredTaskPlanOutput() async throws {
         let session = makeOllamaStubbedSession(statusCode: 200, body: """
         {

@@ -729,7 +729,7 @@ public struct OllamaChatModelAdapter: ModelAdapter {
 
         guard (200..<300).contains(httpResponse.statusCode) else {
             let apiError = try? decoder.decode(OllamaErrorEnvelope.self, from: data)
-            throw AshexError.model(apiError?.error ?? "Ollama request failed with status \(httpResponse.statusCode)")
+            throw AshexError.model(ollamaErrorMessage(statusCode: httpResponse.statusCode, apiError: apiError?.error))
         }
 
         let envelope = try decoder.decode(OllamaChatResponseEnvelope.self, from: data)
@@ -820,7 +820,7 @@ extension OllamaChatModelAdapter: DirectChatModelAdapter {
         }
         guard (200..<300).contains(httpResponse.statusCode) else {
             let apiError = try? decoder.decode(OllamaErrorEnvelope.self, from: data)
-            throw AshexError.model(apiError?.error ?? "Ollama request failed with status \(httpResponse.statusCode)")
+            throw AshexError.model(ollamaErrorMessage(statusCode: httpResponse.statusCode, apiError: apiError?.error))
         }
         let envelope = try decoder.decode(OllamaChatResponseEnvelope.self, from: data)
         let content = envelope.message.content.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -864,7 +864,7 @@ extension OllamaChatModelAdapter: TaskPlanningModelAdapter {
         }
         guard (200..<300).contains(httpResponse.statusCode) else {
             let apiError = try? decoder.decode(OllamaErrorEnvelope.self, from: data)
-            throw AshexError.model(apiError?.error ?? "Ollama request failed with status \(httpResponse.statusCode)")
+            throw AshexError.model(ollamaErrorMessage(statusCode: httpResponse.statusCode, apiError: apiError?.error))
         }
 
         let envelope = try decoder.decode(OllamaChatResponseEnvelope.self, from: data)
@@ -874,6 +874,21 @@ extension OllamaChatModelAdapter: TaskPlanningModelAdapter {
         }
         let candidate = DirectChatReplyParser.extractJSONObjectString(from: content) ?? content
         return try TaskPlanParser.parsePlan(from: candidate, fallbackTaskKind: taskKind)
+    }
+}
+
+private extension OllamaChatModelAdapter {
+    func ollamaErrorMessage(statusCode: Int, apiError: String?) -> String {
+        let rawError = apiError?.trimmingCharacters(in: .whitespacesAndNewlines)
+        var message = "Ollama request for model '\(configuration.model)' failed with HTTP \(statusCode)"
+        if let rawError, !rawError.isEmpty {
+            message += ": \(rawError)"
+            if rawError.localizedCaseInsensitiveContains("out of memory") {
+                message += ". This is the Ollama backend failing to allocate the requested model/context, not Ashex's local guardrail."
+                message += " Stop other Ollama models with `ollama stop <model>`, restart Ollama, or choose a smaller/currently installed model from Assistant Setup."
+            }
+        }
+        return message
     }
 }
 

@@ -5374,6 +5374,7 @@ final class TUIApp {
                     render()
                     return
                 }
+                mergeDiscoveredModelsIntoProviderAttentionStatus(from: snapshot)
             }
             statusLine = "Provider needs attention"
             let shouldReplaceTranscript = runLines.isEmpty ||
@@ -5396,6 +5397,21 @@ final class TUIApp {
         }
         processPromptQueueIfPossible()
         render()
+    }
+
+    private func mergeDiscoveredModelsIntoProviderAttentionStatus(from snapshot: ProviderStatusSnapshot) {
+        guard !snapshot.availableModels.isEmpty else { return }
+        var details = providerStatus.details
+        let discoveredSummary = "Discovered \(snapshot.availableModels.count) available model(s) from \(sessionProvider)."
+        if !details.contains(discoveredSummary) {
+            details.append(discoveredSummary)
+        }
+        providerStatus = .init(
+            headline: providerStatus.headline,
+            details: details,
+            availableModels: snapshot.availableModels,
+            guardrailAssessment: snapshot.guardrailAssessment
+        )
     }
 
     private static func providerStatusAllowsRuntimeRetry(_ snapshot: ProviderStatusSnapshot, provider: String) -> Bool {
