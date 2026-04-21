@@ -76,6 +76,11 @@ final class TUIApp {
         )
     }
 
+    private struct ProviderStartupIssue {
+        let provider: String
+        let message: String
+    }
+
     private let configuration: CLIConfiguration
     private var runtime: AgentRuntime
     private var historyStore: SQLitePersistenceStore
@@ -137,7 +142,7 @@ final class TUIApp {
     private var sessionGlobalUserConfigFile: URL?
     private var sessionProvider: String
     private var sessionModel: String
-    private var providerStartupIssue: String?
+    private var providerStartupIssue: ProviderStartupIssue?
     private var historyThreads: [ThreadSummary] = []
     private var historyRuns: [UUID: [RunRecord]] = [:]
     private var historySelection = 0
@@ -193,7 +198,10 @@ final class TUIApp {
                 model: CLIConfiguration.defaultModel(for: "mock"),
                 approvalPolicy: approvalPolicy
             )
-            self.providerStartupIssue = error.localizedDescription
+            self.providerStartupIssue = ProviderStartupIssue(
+                provider: configuration.provider,
+                message: error.localizedDescription
+            )
             self.providerStatus = .init(
                 headline: "Provider needs attention",
                 details: [
@@ -233,6 +241,10 @@ final class TUIApp {
         default:
             return "Open Provider Settings to choose a working provider."
         }
+    }
+
+    private static func isProviderAttentionTranscript(_ lines: [String]) -> Bool {
+        lines.first?.hasPrefix("[provider] Provider '") == true
     }
 
     private static func selectableModelName(from displayName: String) -> String? {
@@ -1005,6 +1017,11 @@ final class TUIApp {
         sessionProvider = nextProvider
         sessionModel = CLIConfiguration.defaultModel(for: nextProvider)
         showModelPicker = false
+        providerStartupIssue = nil
+        if Self.isProviderAttentionTranscript(runLines) {
+            runLines = []
+            transcriptScrollOffset = 0
+        }
         refreshSessionRuntime()
         persistSessionSettings()
         statusLine = "Provider switched to \(sessionProvider)"
@@ -1346,7 +1363,7 @@ final class TUIApp {
             runtime = try makeSessionRuntime()
             providerStartupIssue = nil
         } catch {
-            providerStartupIssue = error.localizedDescription
+            providerStartupIssue = ProviderStartupIssue(provider: sessionProvider, message: error.localizedDescription)
 
             do {
                 runtime = try makeSessionRuntime(provider: "mock", model: CLIConfiguration.defaultModel(for: "mock"))
@@ -1357,7 +1374,7 @@ final class TUIApp {
             providerStatus = .init(
                 headline: "Provider needs attention",
                 details: [
-                    self.providerStartupIssue ?? error.localizedDescription,
+                    self.providerStartupIssue?.message ?? error.localizedDescription,
                     "Ashex could not rebuild the selected provider runtime. The TUI stays alive and queued prompts will wait until the provider is available again.",
                     Self.recoveryHint(for: sessionProvider)
                 ],
@@ -4416,8 +4433,8 @@ final class TUIApp {
     }
 
     private func queuedPromptBlockedReason() -> String? {
-        if let providerStartupIssue {
-            return providerStartupIssue
+        if let providerStartupIssue, providerStartupIssue.provider == sessionProvider {
+            return providerStartupIssue.message
         }
 
         switch sessionProvider {
@@ -4492,13 +4509,18 @@ final class TUIApp {
     }
 
     private func refreshProviderStatus() async {
-        let apiKey = try? configuration.resolvedAPIKey(for: sessionProvider)
+        let provider = sessionProvider
+        let model = sessionModel
+        let apiKey = try? configuration.resolvedAPIKey(for: provider)
         let snapshot = await ProviderInspector.inspect(
-            provider: sessionProvider,
-            model: sessionModel,
+            provider: provider,
+            model: model,
             apiKey: apiKey ?? nil,
             dflashConfig: sessionUserConfig.dflash
         )
+        guard provider == sessionProvider, model == sessionModel else {
+            return
+        }
         providerStatus = snapshot
         if showModelPicker {
             if sessionProvider != "ollama" || ollamaPickerModels.isEmpty {
@@ -4508,12 +4530,19 @@ final class TUIApp {
             }
         }
         if let providerStartupIssue {
+            guard providerStartupIssue.provider == sessionProvider else {
+                self.providerStartupIssue = nil
+                render()
+                return
+            }
             statusLine = "Provider needs attention"
-            let shouldReplaceTranscript = runLines.isEmpty || runLines.first?.hasPrefix("[startup]") == true
+            let shouldReplaceTranscript = runLines.isEmpty ||
+                runLines.first?.hasPrefix("[startup]") == true ||
+                Self.isProviderAttentionTranscript(runLines)
             if shouldReplaceTranscript {
                 runLines = [
                     "[provider] Provider '\(sessionProvider)' needs attention",
-                    providerStartupIssue,
+                    providerStartupIssue.message,
                     Self.recoveryHint(for: sessionProvider)
                 ]
                 runFinished = true
