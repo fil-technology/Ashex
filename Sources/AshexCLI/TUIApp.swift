@@ -64,7 +64,6 @@ final class TUIApp {
     }
 
     private enum OnboardingStep {
-        case welcome
         case provider
         case apiKey
         case model
@@ -163,7 +162,7 @@ final class TUIApp {
     private var sessionModel: String
     private var providerStartupIssue: ProviderStartupIssue?
     private var showOnboarding = false
-    private var onboardingStep: OnboardingStep = .welcome
+    private var onboardingStep: OnboardingStep = .provider
     private var onboardingSelection = 0
     private var onboardingStatus = ""
     private var historyThreads: [ThreadSummary] = []
@@ -249,11 +248,11 @@ final class TUIApp {
         loadHistory()
         self.showOnboarding = configuration.forceOnboarding || Self.shouldStartOnboarding(store: historyStore)
         if showOnboarding {
-            self.onboardingStep = .welcome
+            self.onboardingStep = .provider
             self.onboardingSelection = 0
             self.onboardingStatus = "First-run setup"
             self.focus = .transcript
-            self.statusLine = "Welcome to Ashex setup"
+            self.statusLine = "Set up Ashex"
         }
         Task { [weak self] in
             await self?.refreshProviderStatus()
@@ -1117,29 +1116,22 @@ final class TUIApp {
 
     private var onboardingChoices: [OnboardingChoice] {
         switch onboardingStep {
-        case .welcome:
-            return [
-                .init(title: "Skip setup", subtitle: "Use the current defaults and do this later in Assistant Setup"),
-                .init(title: "Start guided setup", subtitle: "Answer a few questions and then open the main UI")
-            ]
         case .provider:
             return [
-                .init(title: "Skip provider", subtitle: "Keep \(sessionProvider) with model \(sessionModel)"),
                 .init(title: "dflash", subtitle: "Local DFlash server at \(sessionUserConfig.dflash.baseURL)"),
                 .init(title: "ollama", subtitle: "Local Ollama models on this Mac"),
                 .init(title: "openai", subtitle: "Hosted OpenAI models with an API key"),
                 .init(title: "anthropic", subtitle: "Hosted Claude models with an API key"),
-                .init(title: "mock", subtitle: "Offline mock adapter for testing tools without a model")
+                .init(title: "mock", subtitle: "Offline mock adapter for testing tools without a model"),
+                .init(title: "Skip provider", subtitle: "Keep \(sessionProvider) with model \(sessionModel)")
             ]
         case .apiKey:
             return [
-                .init(title: "Skip API key", subtitle: "Keep configuring; prompts will wait until a key is added"),
-                .init(title: "Enter API key", subtitle: "Save it securely in Keychain")
+                .init(title: "Enter API key", subtitle: "Save it securely in Keychain"),
+                .init(title: "Skip API key", subtitle: "Keep configuring; prompts will wait until a key is added")
             ]
         case .model:
-            var choices = [
-                OnboardingChoice(title: "Skip model", subtitle: "Use \(sessionModel)")
-            ]
+            var choices: [OnboardingChoice] = []
             choices.append(contentsOf: modelChoicesFromProviderStatus())
             choices.append(.init(title: "Enter model manually", subtitle: "Type any provider-specific model name"))
             if sessionProvider == "ollama" {
@@ -1148,26 +1140,27 @@ final class TUIApp {
             } else {
                 choices.append(.init(title: "Refresh model list", subtitle: "Fetch available models for the selected provider"))
             }
+            choices.append(OnboardingChoice(title: "Skip model", subtitle: "Use \(sessionModel)"))
             return choices
         case .modelDownload:
             return [
-                .init(title: "Skip download", subtitle: "Continue without downloading a model"),
-                .init(title: "Pull model", subtitle: "Type an Ollama model name below, then press Enter")
+                .init(title: "Pull model", subtitle: "Type an Ollama model name below, then press Enter"),
+                .init(title: "Skip download", subtitle: "Continue without downloading a model")
             ]
         case .telegram:
             return [
-                .init(title: "Skip Telegram", subtitle: "Use Ashex only from this terminal for now"),
-                .init(title: "Set up Telegram", subtitle: "Enable the Telegram connector and add a bot token")
+                .init(title: "Connect Telegram", subtitle: "Enable Telegram and paste your own bot token from BotFather"),
+                .init(title: "Skip Telegram", subtitle: "Use Ashex only from this terminal for now")
             ]
         case .telegramToken:
             return [
-                .init(title: "Skip token", subtitle: "Leave Telegram disabled until you add one later"),
-                .init(title: "Save Telegram token", subtitle: "Paste a bot token below, then press Enter")
+                .init(title: "Save Telegram token", subtitle: "Paste a bot token below, then press Enter"),
+                .init(title: "Skip token", subtitle: "Leave Telegram disabled until you add one later")
             ]
         case .daemon:
             return [
-                .init(title: "Skip daemon", subtitle: "Start it later from Assistant Setup"),
-                .init(title: "Start daemon", subtitle: "Run Ashex in the background for Telegram/remote tasks")
+                .init(title: "Start daemon", subtitle: "Run Ashex in the background for Telegram/remote tasks"),
+                .init(title: "Skip daemon", subtitle: "Start it later from Assistant Setup")
             ]
         case .done:
             return [
@@ -1213,12 +1206,6 @@ final class TUIApp {
 
     private func handleOnboardingEnter() {
         switch onboardingStep {
-        case .welcome:
-            if onboardingSelection == 0 {
-                finishOnboarding(markCompleted: true)
-            } else {
-                advanceOnboarding(to: .provider)
-            }
         case .provider:
             let choices = onboardingChoices
             guard choices.indices.contains(onboardingSelection) else { return }
@@ -1231,9 +1218,9 @@ final class TUIApp {
             }
         case .apiKey:
             if onboardingSelection == 0 {
-                advanceOnboarding(to: .model)
-            } else {
                 beginOnboardingText(step: .apiKey, placeholderStatus: "Paste \(sessionProvider.capitalized) API key")
+            } else {
+                advanceOnboarding(to: .model)
             }
         case .model:
             handleOnboardingModelChoice()
@@ -1241,39 +1228,41 @@ final class TUIApp {
             if inputMode == .onboardingText {
                 commitOnboardingModelDownload()
             } else if onboardingSelection == 0 {
-                advanceOnboarding(to: .telegram)
-            } else {
                 beginOnboardingText(step: .modelDownload, placeholderStatus: "Type an Ollama model name to download")
+            } else {
+                advanceOnboarding(to: .telegram)
             }
         case .telegram:
             if onboardingSelection == 0 {
-                sessionUserConfig.telegram.enabled = false
-                persistUserConfig()
-                advanceOnboarding(to: .daemon)
-            } else {
                 sessionUserConfig.telegram.enabled = true
                 persistUserConfig()
                 advanceOnboarding(to: .telegramToken)
+            } else {
+                sessionUserConfig.telegram.enabled = false
+                persistUserConfig()
+                advanceOnboarding(to: .daemon)
             }
         case .telegramToken:
             if inputMode == .onboardingText {
                 commitOnboardingTelegramToken()
             } else if onboardingSelection == 0 {
-                advanceOnboarding(to: .daemon)
-            } else {
                 beginOnboardingText(step: .telegramToken, placeholderStatus: "Paste Telegram bot token")
+            } else {
+                skipOnboardingTelegramToken()
             }
         case .daemon:
             if onboardingSelection == 0 {
-                advanceOnboarding(to: .done)
-            } else {
                 onboardingStatus = "Starting daemon..."
                 Task { [weak self] in
-                    await self?.toggleDaemonFromSettings()
+                    let started = await self?.toggleDaemonFromSettings() ?? false
                     await MainActor.run {
-                        self?.advanceOnboarding(to: .done)
+                        if started {
+                            self?.advanceOnboarding(to: .done)
+                        }
                     }
                 }
+            } else {
+                advanceOnboarding(to: .done)
             }
         case .done:
             finishOnboarding(markCompleted: true)
@@ -1357,7 +1346,7 @@ final class TUIApp {
     private func commitOnboardingTelegramToken() {
         let trimmed = onboardingTextInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
-            advanceOnboarding(to: .daemon)
+            skipOnboardingTelegramToken()
             return
         }
 
@@ -1371,6 +1360,13 @@ final class TUIApp {
         } catch {
             onboardingStatus = "Failed to save Telegram token: \(error.localizedDescription)"
         }
+        advanceOnboarding(to: .daemon)
+    }
+
+    private func skipOnboardingTelegramToken() {
+        sessionUserConfig.telegram.enabled = false
+        persistUserConfig()
+        onboardingStatus = "Telegram left disabled until a bot token is added"
         advanceOnboarding(to: .daemon)
     }
 
@@ -1464,8 +1460,6 @@ final class TUIApp {
 
     private func skipOnboardingStep() {
         switch onboardingStep {
-        case .welcome:
-            finishOnboarding(markCompleted: true)
         case .provider:
             advanceOnboarding(to: providerNeedsAPIKey(sessionProvider) ? .apiKey : .model)
         case .apiKey:
@@ -1503,7 +1497,7 @@ final class TUIApp {
             }
         }
         showOnboarding = false
-        onboardingStep = .welcome
+        onboardingStep = .provider
         onboardingSelection = 0
         onboardingTextInput = ""
         inputMode = .prompt
@@ -2703,6 +2697,17 @@ final class TUIApp {
     private func renderBody(width: Int, height: Int) -> [String] {
         let chromeHeight = 12
         let bodyHeight = max(height - chromeHeight, 10)
+
+        if showOnboarding, pendingApproval == nil {
+            return panel(
+                title: "First-Run Setup",
+                lines: renderOnboardingWizardLines(width: width - 4, maxBodyHeight: bodyHeight),
+                width: width,
+                maxBodyHeight: bodyHeight,
+                isFocused: isRightPanelFocused
+            )
+        }
+
         let gap = 1
         let leftWidth = max(min(width / 3, 40), 30)
         let availableRightWidth = max(width - leftWidth - gap, 38)
@@ -2857,7 +2862,7 @@ final class TUIApp {
     }
 
     private func renderOnboardingWizardLines(width: Int, maxBodyHeight: Int) -> [String] {
-        let allSteps: [OnboardingStep] = [.welcome, .provider, .apiKey, .model, .telegram, .daemon, .done]
+        let allSteps: [OnboardingStep] = [.provider, .apiKey, .model, .telegram, .daemon, .done]
         let stepIndex = allSteps.firstIndex(of: onboardingStep).map { $0 + 1 } ?? allSteps.count
         var lines: [String] = [
             "\(TerminalUIStyle.faint)Step \(min(stepIndex, allSteps.count))/\(allSteps.count) • Enter accepts • s skips • Esc closes setup\(TerminalUIStyle.reset)",
@@ -2867,15 +2872,12 @@ final class TUIApp {
         lines.append(contentsOf: wrapText(onboardingTitle, width: width).map { "\(TerminalUIStyle.bold)\(TerminalUIStyle.ink)\($0)\(TerminalUIStyle.reset)" })
         lines.append(contentsOf: wrapText(onboardingBody, width: width).map { "\(TerminalUIStyle.slate)\($0)\(TerminalUIStyle.reset)" })
 
-        if !onboardingStatus.isEmpty {
-            lines.append("")
-            lines.append(contentsOf: wrapText(onboardingStatus, width: width).map { "\(TerminalUIStyle.amber)\($0)\(TerminalUIStyle.reset)" })
-        }
-
         lines.append("")
         lines.append("\(TerminalUIStyle.ink)Current setup\(TerminalUIStyle.reset)")
         lines.append("\(TerminalUIStyle.slate)Provider: \(sessionProvider)   Model: \(sessionModel)\(TerminalUIStyle.reset)")
         lines.append("\(TerminalUIStyle.slate)Telegram: \(sessionUserConfig.telegram.enabled ? "enabled" : "disabled")   Daemon: \(daemonStatus?.isRunning == true ? "running" : "stopped")\(TerminalUIStyle.reset)")
+        let status = onboardingStatus.isEmpty ? "Choose an option to continue." : onboardingStatus
+        lines.append("\(TerminalUIStyle.amber)Status: \(TerminalUIStyle.truncateVisible(status, limit: max(width - 8, 10)))\(TerminalUIStyle.reset)")
 
         if onboardingStep == .model, !providerStatus.details.isEmpty {
             lines.append("")
@@ -2891,8 +2893,10 @@ final class TUIApp {
         for (index, choice) in choices.enumerated() {
             let selected = index == onboardingSelection && inputMode != .onboardingText
             let marker = selected ? "\(TerminalUIStyle.selection) \(TerminalUIStyle.reset)" : " "
-            let color = selected ? TerminalUIStyle.cyan : TerminalUIStyle.blue
-            lines.append("\(marker) \(TerminalUIStyle.bold)\(color)\(choice.title)\(TerminalUIStyle.reset)")
+            let isSkip = choice.title.localizedCaseInsensitiveContains("skip")
+            let color = selected ? TerminalUIStyle.cyan : (isSkip ? TerminalUIStyle.faint : TerminalUIStyle.blue)
+            let titleStyle = isSkip && !selected ? "" : TerminalUIStyle.bold
+            lines.append("\(marker) \(titleStyle)\(color)\(choice.title)\(TerminalUIStyle.reset)")
             lines.append("   \(TerminalUIStyle.slate)\(TerminalUIStyle.truncateVisible(choice.subtitle, limit: max(width - 3, 10)))\(TerminalUIStyle.reset)")
         }
 
@@ -2920,8 +2924,6 @@ final class TUIApp {
 
     private var onboardingTitle: String {
         switch onboardingStep {
-        case .welcome:
-            return "Let’s set up Ashex"
         case .provider:
             return "Which provider would you like to use?"
         case .apiKey:
@@ -2931,7 +2933,7 @@ final class TUIApp {
         case .modelDownload:
             return "Download an Ollama model"
         case .telegram:
-            return "Do you want Telegram control?"
+            return "Connect Telegram?"
         case .telegramToken:
             return "Add your Telegram bot token"
         case .daemon:
@@ -2943,10 +2945,8 @@ final class TUIApp {
 
     private var onboardingBody: String {
         switch onboardingStep {
-        case .welcome:
-            return "This quick setup fills the same Provider Settings you can edit later. Every step can be skipped."
         case .provider:
-            return "Local providers keep work on your Mac. Hosted providers need API keys. Mock is useful for testing the UI and tools."
+            return "Choose the model provider Ashex should use for chat and coding runs. Local providers keep work on your Mac. Hosted providers need API keys."
         case .apiKey:
             return "Keys are stored in Keychain, not in the project config. You can also skip and add one later from Assistant Setup."
         case .model:
@@ -2954,9 +2954,9 @@ final class TUIApp {
         case .modelDownload:
             return "Ashex will run `ollama pull <model>` and select the model after it finishes."
         case .telegram:
-            return "Telegram lets you send tasks to Ashex remotely. You can skip it if you only want the terminal UI."
+            return "Telegram lets you send tasks to Ashex remotely. For privacy and routing, each user should create their own bot with BotFather; a shared bot would mix users behind the same token and is not the safe default."
         case .telegramToken:
-            return "Create a bot with BotFather, paste its token here, and Ashex will save it in Keychain."
+            return "Create a Telegram bot by messaging @BotFather, copy the token, and paste it here. Ashex saves the token in Keychain and uses it only for your local daemon."
         case .daemon:
             return "The daemon is needed for background Telegram polling. You can also start or stop it later from Assistant Setup."
         case .done:
@@ -3577,6 +3577,10 @@ final class TUIApp {
     }
 
     private func renderInputBar(width: Int) -> [String] {
+        if showOnboarding, inputMode != .onboardingText {
+            return []
+        }
+
         let innerWidth = max(width - 4, 20)
         let actualLabelText: String
         switch inputMode {
@@ -4829,6 +4833,10 @@ final class TUIApp {
         statusLine = "Starting daemon in background"
         Thread.sleep(forTimeInterval: 0.4)
         daemonStatus = try stateStore.status()
+        guard daemonStatus?.isRunning == true else {
+            let logHint = FileManager.default.fileExists(atPath: logURL.path) ? " See \(logURL.path)" : ""
+            throw AshexError.model("Daemon did not stay running.\(logHint)")
+        }
     }
 
     private func stopDaemonFromTUI() throws {
@@ -4848,7 +4856,8 @@ final class TUIApp {
         daemonStatus = try stateStore.status()
     }
 
-    private func toggleDaemonFromSettings() async {
+    @discardableResult
+    private func toggleDaemonFromSettings() async -> Bool {
         do {
             refreshDaemonStatus()
             if daemonStatus?.isRunning == true {
@@ -4858,14 +4867,20 @@ final class TUIApp {
             }
             refreshDaemonStatus()
             if daemonStatus?.isRunning == true {
+                sessionUserConfig.daemon.enabled = true
+                persistUserConfig()
                 statusLine = "Daemon is running"
             } else {
+                sessionUserConfig.daemon.enabled = false
+                persistUserConfig()
                 statusLine = "Daemon is stopped"
             }
             render()
+            return true
         } catch {
             statusLine = error.localizedDescription
             render()
+            return false
         }
     }
 
