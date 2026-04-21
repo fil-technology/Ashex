@@ -20,6 +20,12 @@ import Testing
     #expect(DaemonCLICommand.parse(arguments: ["ashex", "cron", "remove", "--id", "daily"]) == .cronRemove(["--id", "daily"]))
 }
 
+@Test func cliDetectsHelpBeforeTreatingItAsPrompt() {
+    #expect(AshexCLI.isHelpRequested(arguments: ["ashex", "--help"]))
+    #expect(AshexCLI.isHelpRequested(arguments: ["ashex", "-h"]))
+    #expect(AshexCLI.helpText.contains("Usage:"))
+}
+
 @Test func defaultWorkspaceIsOutsideCurrentDirectory() {
     let currentDirectory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).standardizedFileURL
     let defaultWorkspace = CLIConfiguration.defaultWorkspaceRoot().standardizedFileURL

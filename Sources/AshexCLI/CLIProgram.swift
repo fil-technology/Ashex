@@ -5,6 +5,11 @@ import Foundation
 struct AshexCLI {
     static func main() async {
         do {
+            if isHelpRequested(arguments: CommandLine.arguments) {
+                print(helpText)
+                return
+            }
+
             if try await DaemonCLI.handle(arguments: CommandLine.arguments) {
                 return
             }
@@ -36,6 +41,29 @@ struct AshexCLI {
             Darwin.exit(1)
         }
     }
+
+    static func isHelpRequested(arguments: [String]) -> Bool {
+        arguments.dropFirst().contains { $0 == "--help" || $0 == "-h" }
+    }
+
+    static let helpText = """
+    Usage:
+      ashex [options] [prompt]
+      ashex onboard [options]
+      ashex daemon <run|start|stop|status> [options]
+      ashex telegram test [options]
+      ashex cron <list|add|remove> [options]
+
+    Options:
+      --workspace PATH          Workspace root to use
+      --storage PATH            Storage root for Ashex state
+      --provider NAME           Provider: mock, openai, anthropic, ollama, dflash
+      --model NAME              Provider model name
+      --max-iterations N        Maximum agent loop iterations
+      --approval-mode MODE      trusted or guarded
+      --onboarding              Open first-run setup
+      -h, --help                Show this help
+    """
 
     private static func startupRecoveryMessage(for error: Error) -> String? {
         let message = error.localizedDescription.lowercased()
