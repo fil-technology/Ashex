@@ -40,21 +40,21 @@ struct AshexCLI {
     private static func startupRecoveryMessage(for error: Error) -> String? {
         let message = error.localizedDescription.lowercased()
         if message.contains("openai_api_key") {
-            return "Action: set OPENAI_API_KEY, or run `swift run ashex --provider mock` to open the TUI without a remote provider."
+            return "Action: set OPENAI_API_KEY, or run `ashex --provider mock` to open the TUI without a remote provider."
         }
         if message.contains("anthropic_api_key") {
-            return "Action: set ANTHROPIC_API_KEY, or run `swift run ashex --provider mock` to open the TUI without a remote provider."
+            return "Action: set ANTHROPIC_API_KEY, or run `ashex --provider mock` to open the TUI without a remote provider."
         }
         if message.contains("dflash") {
-            return "Action: start `dflash-serve`, choose `dflash` in Provider Settings, or run `swift run ashex --provider mock` until the local DFlash server is available."
+            return "Action: start `dflash-serve`, choose `dflash` in Provider Settings, or run `ashex --provider mock` until the local DFlash server is available."
         }
         if message.contains("could not connect to the server") || message.contains("failed to connect") || message.contains("connection") {
-            return "Action: start Ollama with `ollama serve`, switch to `mock` in Provider Settings after launch, or run `swift run ashex --provider mock`."
+            return "Action: start Ollama with `ollama serve`, switch to `mock` in Provider Settings after launch, or run `ashex --provider mock`."
         }
         if message.contains("guardrail") || message.contains("local model") {
             return "Action: choose a smaller model in Provider Settings, or set ASHEX_ALLOW_LARGE_MODELS=1 if you really want to override the memory guardrail."
         }
-        return "Action: launch with `swift run ashex --provider mock` to recover into the TUI and then adjust Provider Settings."
+        return "Action: launch with `ashex --provider mock` to recover into the TUI and then adjust Provider Settings."
     }
 
     private static func render(_ event: RuntimeEvent) {
@@ -256,7 +256,7 @@ struct CLIConfiguration {
     }
 
     func makeModelAdapter(provider: String, model: String) throws -> any ModelAdapter {
-        let audioTranscriber = try makeAudioTranscriberIfAvailable()
+        let audioTranscriber = makeAudioTranscriberIfAvailable(for: provider)
         let baseAdapter: any ModelAdapter
         switch provider {
         case "mock":
@@ -499,10 +499,15 @@ struct CLIConfiguration {
         return nil
     }
 
-    private func makeAudioTranscriberIfAvailable() throws -> (any AudioTranscriber)? {
-        guard let apiKey = try resolvedAPIKey(for: "openai"), !apiKey.isEmpty else {
+    private func makeAudioTranscriberIfAvailable(for provider: String) -> (any AudioTranscriber)? {
+        guard provider == "openai" || provider == "ollama" else {
             return nil
         }
+
+        guard let apiKey = try? resolvedAPIKey(for: "openai"), !apiKey.isEmpty else {
+            return nil
+        }
+
         return OpenAIAudioTranscriber(apiKey: apiKey)
     }
 
