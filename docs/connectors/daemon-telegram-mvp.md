@@ -27,11 +27,11 @@
 - Direct-chat routing for casual prompts such as "How are you?"
 - Telegram-triggered tool execution when `telegram.executionPolicy` is set to `trusted_full_access`
 - CLI commands for:
-  - `ash daemon run`
-  - `ash daemon start`
-  - `ash daemon stop`
-  - `ash daemon status`
-  - `ash telegram test`
+  - `ashex daemon run`
+  - `ashex daemon start`
+  - `ashex daemon stop`
+  - `ashex daemon status`
+  - `ashex telegram test`
 - Config additions for daemon, Telegram, DFlash, and logging settings
 
 ## Architecture Decisions

@@ -13,6 +13,7 @@ final class TUIApp {
         case telegramAllowedUsers
         case workspacePath
         case terminalCommand
+        case onboardingText
     }
 
     private struct MenuItem {
@@ -62,6 +63,18 @@ final class TUIApp {
         case back = "Back"
     }
 
+    private enum OnboardingStep {
+        case welcome
+        case provider
+        case apiKey
+        case model
+        case modelDownload
+        case telegram
+        case telegramToken
+        case daemon
+        case done
+    }
+
     struct ProviderStatusSnapshot {
         let headline: String
         let details: [String]
@@ -79,6 +92,11 @@ final class TUIApp {
     private struct ProviderStartupIssue {
         let provider: String
         let message: String
+    }
+
+    private struct OnboardingChoice {
+        let title: String
+        let subtitle: String
     }
 
     private let configuration: CLIConfiguration
@@ -111,6 +129,7 @@ final class TUIApp {
     private var telegramAllowedUsersInput = ""
     private var workspacePathInput = ""
     private var terminalCommandInput = ""
+    private var onboardingTextInput = ""
     private var inputMode: InputMode = .prompt
     private var showHelp = false
     private var showCommands = false
@@ -143,6 +162,10 @@ final class TUIApp {
     private var sessionProvider: String
     private var sessionModel: String
     private var providerStartupIssue: ProviderStartupIssue?
+    private var showOnboarding = false
+    private var onboardingStep: OnboardingStep = .welcome
+    private var onboardingSelection = 0
+    private var onboardingStatus = ""
     private var historyThreads: [ThreadSummary] = []
     private var historyRuns: [UUID: [RunRecord]] = [:]
     private var historySelection = 0
@@ -157,6 +180,7 @@ final class TUIApp {
     private var terminalTask: Task<Void, Never>?
     private var terminalCancellation = CancellationToken()
     private var currentRunPhase: String?
+    private var currentRunActivity: String?
     private var currentExplorationTargets: [String] = []
     private var currentPendingExplorationTargets: [String] = []
     private var currentRejectedExplorationTargets: [String] = []
@@ -164,6 +188,7 @@ final class TUIApp {
     private var currentPlannedFiles: [String] = []
     private var currentPatchObjectives: [String] = []
     private var activeThreadID: UUID?
+    private var activeChatMessages: [MessageRecord] = []
     private var activeRunID: UUID?
     private var sessionInspector: SessionInspector
     private var tokenSavingsSnapshot: TokenSavingsSnapshot?
@@ -222,10 +247,31 @@ final class TUIApp {
         try? RecentWorkspaceStore.record(workspaceURL: configuration.workspaceRoot)
         loadRecentWorkspaces()
         loadHistory()
+        self.showOnboarding = configuration.forceOnboarding || Self.shouldStartOnboarding(store: historyStore)
+        if showOnboarding {
+            self.onboardingStep = .welcome
+            self.onboardingSelection = 0
+            self.onboardingStatus = "First-run setup"
+            self.focus = .transcript
+            self.statusLine = "Welcome to Ashex setup"
+        }
         Task { [weak self] in
             await self?.refreshProviderStatus()
         }
         refreshDaemonStatus()
+    }
+
+    private static let onboardingNamespace = "ui.onboarding"
+    private static let onboardingCompletedKey = "completed"
+
+    private static func shouldStartOnboarding(store: SQLitePersistenceStore) -> Bool {
+        do {
+            let completed = try store.fetchSetting(namespace: onboardingNamespace, key: onboardingCompletedKey)?.value.boolValue == true
+            let hasSessionDefaults = try store.fetchSetting(namespace: "ui.session", key: "default_provider") != nil
+            return !completed && !hasSessionDefaults
+        } catch {
+            return false
+        }
     }
 
     private static func recoveryHint(for provider: String) -> String {
@@ -347,6 +393,12 @@ final class TUIApp {
     }
 
     private func cycleFocus() {
+        if showOnboarding {
+            focus = inputMode == .onboardingText ? .input : .transcript
+            statusLine = "First-run setup"
+            return
+        }
+
         if showSettings {
             switch focus {
             case .launcher:
@@ -438,6 +490,11 @@ final class TUIApp {
     }
 
     private func handleUp() {
+        if showOnboarding {
+            moveOnboardingSelection(-1)
+            return
+        }
+
         switch focus {
         case .launcher:
             moveSelection(-1)
@@ -463,6 +520,11 @@ final class TUIApp {
     }
 
     private func handleDown() {
+        if showOnboarding {
+            moveOnboardingSelection(1)
+            return
+        }
+
         switch focus {
         case .launcher:
             moveSelection(1)
@@ -537,6 +599,14 @@ final class TUIApp {
             return
         }
 
+        if showOnboarding {
+            if commitOnboardingTextIfNeeded() {
+                return
+            }
+            handleOnboardingEnter()
+            return
+        }
+
         switch inputMode {
         case .prompt:
             let prompt = promptText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -568,6 +638,8 @@ final class TUIApp {
         case .terminalCommand:
             commitTerminalCommand()
             return
+        case .onboardingText:
+            return
         }
 
         if focus == .launcher {
@@ -588,6 +660,14 @@ final class TUIApp {
     }
 
     private func handleBackspace() {
+        if showOnboarding, inputMode == .onboardingText {
+            guard !onboardingTextInput.isEmpty else { return }
+            onboardingTextInput.removeLast()
+            focus = .input
+            statusLine = "Editing setup answer"
+            return
+        }
+
         switch inputMode {
         case .prompt:
             guard !promptText.isEmpty else { return }
@@ -629,12 +709,25 @@ final class TUIApp {
             terminalCommandInput.removeLast()
             focus = .input
             statusLine = "Editing terminal command"
+        case .onboardingText:
+            break
         }
     }
 
     private func handleBack() {
         if pendingApproval != nil {
             handleApproval(key: .escape)
+            return
+        }
+
+        if showOnboarding {
+            if inputMode == .onboardingText, !onboardingTextInput.isEmpty {
+                onboardingTextInput = ""
+                statusLine = "Cleared setup answer"
+            } else {
+                finishOnboarding(markCompleted: false)
+                statusLine = "Onboarding closed; open Assistant Setup anytime"
+            }
             return
         }
 
@@ -705,6 +798,11 @@ final class TUIApp {
             case .terminalCommand:
                 inputMode = .prompt
                 showTerminalPane = false
+                focus = .launcher
+                statusLine = "Back to launcher"
+                return
+            case .onboardingText:
+                inputMode = .prompt
                 focus = .launcher
                 statusLine = "Back to launcher"
                 return
@@ -785,6 +883,11 @@ final class TUIApp {
     }
 
     private func handleCharacter(_ character: Character) {
+        if showOnboarding {
+            handleOnboardingCharacter(character)
+            return
+        }
+
         guard focus == .input else { return }
         switch inputMode {
         case .prompt:
@@ -811,6 +914,9 @@ final class TUIApp {
         case .terminalCommand:
             terminalCommandInput.append(character)
             statusLine = "Editing terminal command"
+        case .onboardingText:
+            onboardingTextInput.append(character)
+            statusLine = "Editing setup answer"
         }
         if inputMode == .prompt {
             showHelp = false
@@ -1007,6 +1113,408 @@ final class TUIApp {
             focus = .launcher
             statusLine = "Back to launcher"
         }
+    }
+
+    private var onboardingChoices: [OnboardingChoice] {
+        switch onboardingStep {
+        case .welcome:
+            return [
+                .init(title: "Skip setup", subtitle: "Use the current defaults and do this later in Assistant Setup"),
+                .init(title: "Start guided setup", subtitle: "Answer a few questions and then open the main UI")
+            ]
+        case .provider:
+            return [
+                .init(title: "Skip provider", subtitle: "Keep \(sessionProvider) with model \(sessionModel)"),
+                .init(title: "dflash", subtitle: "Local DFlash server at \(sessionUserConfig.dflash.baseURL)"),
+                .init(title: "ollama", subtitle: "Local Ollama models on this Mac"),
+                .init(title: "openai", subtitle: "Hosted OpenAI models with an API key"),
+                .init(title: "anthropic", subtitle: "Hosted Claude models with an API key"),
+                .init(title: "mock", subtitle: "Offline mock adapter for testing tools without a model")
+            ]
+        case .apiKey:
+            return [
+                .init(title: "Skip API key", subtitle: "Keep configuring; prompts will wait until a key is added"),
+                .init(title: "Enter API key", subtitle: "Save it securely in Keychain")
+            ]
+        case .model:
+            var choices = [
+                OnboardingChoice(title: "Skip model", subtitle: "Use \(sessionModel)")
+            ]
+            choices.append(contentsOf: modelChoicesFromProviderStatus())
+            choices.append(.init(title: "Enter model manually", subtitle: "Type any provider-specific model name"))
+            if sessionProvider == "ollama" {
+                choices.append(.init(title: "Download Ollama model", subtitle: "Run `ollama pull <model>` from setup"))
+                choices.append(.init(title: "Refresh local models", subtitle: "Ask Ollama for the current model list again"))
+            } else {
+                choices.append(.init(title: "Refresh model list", subtitle: "Fetch available models for the selected provider"))
+            }
+            return choices
+        case .modelDownload:
+            return [
+                .init(title: "Skip download", subtitle: "Continue without downloading a model"),
+                .init(title: "Pull model", subtitle: "Type an Ollama model name below, then press Enter")
+            ]
+        case .telegram:
+            return [
+                .init(title: "Skip Telegram", subtitle: "Use Ashex only from this terminal for now"),
+                .init(title: "Set up Telegram", subtitle: "Enable the Telegram connector and add a bot token")
+            ]
+        case .telegramToken:
+            return [
+                .init(title: "Skip token", subtitle: "Leave Telegram disabled until you add one later"),
+                .init(title: "Save Telegram token", subtitle: "Paste a bot token below, then press Enter")
+            ]
+        case .daemon:
+            return [
+                .init(title: "Skip daemon", subtitle: "Start it later from Assistant Setup"),
+                .init(title: "Start daemon", subtitle: "Run Ashex in the background for Telegram/remote tasks")
+            ]
+        case .done:
+            return [
+                .init(title: "Open Ashex", subtitle: "Finish onboarding and show the main UI")
+            ]
+        }
+    }
+
+    private func modelChoicesFromProviderStatus() -> [OnboardingChoice] {
+        providerStatus.availableModels.prefix(8).compactMap { displayName in
+            guard let name = Self.selectableModelName(from: displayName) else { return nil }
+            return OnboardingChoice(title: name, subtitle: displayName == name ? "Available from \(sessionProvider)" : displayName)
+        }
+    }
+
+    private func moveOnboardingSelection(_ delta: Int) {
+        let choices = onboardingChoices
+        guard !choices.isEmpty else { return }
+        onboardingSelection = min(max(onboardingSelection + delta, 0), choices.count - 1)
+        statusLine = "First-run setup"
+    }
+
+    private func handleOnboardingCharacter(_ character: Character) {
+        if inputMode == .onboardingText {
+            onboardingTextInput.append(character)
+            focus = .input
+            statusLine = "Editing setup answer"
+            return
+        }
+
+        switch character {
+        case "s", "S":
+            skipOnboardingStep()
+        case "r" where onboardingStep == .model, "R" where onboardingStep == .model:
+            refreshOnboardingModels()
+        case "d" where onboardingStep == .model && sessionProvider == "ollama",
+             "D" where onboardingStep == .model && sessionProvider == "ollama":
+            beginOnboardingText(step: .modelDownload, placeholderStatus: "Type an Ollama model name to download")
+        default:
+            return
+        }
+    }
+
+    private func handleOnboardingEnter() {
+        switch onboardingStep {
+        case .welcome:
+            if onboardingSelection == 0 {
+                finishOnboarding(markCompleted: true)
+            } else {
+                advanceOnboarding(to: .provider)
+            }
+        case .provider:
+            let choices = onboardingChoices
+            guard choices.indices.contains(onboardingSelection) else { return }
+            let choice = choices[onboardingSelection].title
+            if choice == "Skip provider" {
+                advanceOnboarding(to: providerNeedsAPIKey(sessionProvider) ? .apiKey : .model)
+            } else {
+                applyOnboardingProvider(choice)
+                advanceOnboarding(to: providerNeedsAPIKey(sessionProvider) ? .apiKey : .model)
+            }
+        case .apiKey:
+            if onboardingSelection == 0 {
+                advanceOnboarding(to: .model)
+            } else {
+                beginOnboardingText(step: .apiKey, placeholderStatus: "Paste \(sessionProvider.capitalized) API key")
+            }
+        case .model:
+            handleOnboardingModelChoice()
+        case .modelDownload:
+            if inputMode == .onboardingText {
+                commitOnboardingModelDownload()
+            } else if onboardingSelection == 0 {
+                advanceOnboarding(to: .telegram)
+            } else {
+                beginOnboardingText(step: .modelDownload, placeholderStatus: "Type an Ollama model name to download")
+            }
+        case .telegram:
+            if onboardingSelection == 0 {
+                sessionUserConfig.telegram.enabled = false
+                persistUserConfig()
+                advanceOnboarding(to: .daemon)
+            } else {
+                sessionUserConfig.telegram.enabled = true
+                persistUserConfig()
+                advanceOnboarding(to: .telegramToken)
+            }
+        case .telegramToken:
+            if inputMode == .onboardingText {
+                commitOnboardingTelegramToken()
+            } else if onboardingSelection == 0 {
+                advanceOnboarding(to: .daemon)
+            } else {
+                beginOnboardingText(step: .telegramToken, placeholderStatus: "Paste Telegram bot token")
+            }
+        case .daemon:
+            if onboardingSelection == 0 {
+                advanceOnboarding(to: .done)
+            } else {
+                onboardingStatus = "Starting daemon..."
+                Task { [weak self] in
+                    await self?.toggleDaemonFromSettings()
+                    await MainActor.run {
+                        self?.advanceOnboarding(to: .done)
+                    }
+                }
+            }
+        case .done:
+            finishOnboarding(markCompleted: true)
+        }
+    }
+
+    private func handleOnboardingModelChoice() {
+        let choices = onboardingChoices
+        guard choices.indices.contains(onboardingSelection) else { return }
+        let choice = choices[onboardingSelection].title
+
+        switch choice {
+        case "Enter model manually":
+            beginOnboardingText(step: .model, placeholderStatus: "Type model name")
+        case "Download Ollama model":
+            beginOnboardingText(step: .modelDownload, placeholderStatus: "Type an Ollama model name to download")
+        case "Refresh local models", "Refresh model list":
+            refreshOnboardingModels()
+        case "Skip model":
+            advanceOnboarding(to: .telegram)
+        default:
+            sessionModel = choice
+            refreshSessionRuntime()
+            persistSessionSettings()
+            onboardingStatus = "Selected model \(sessionModel)"
+            advanceOnboarding(to: .telegram)
+        }
+    }
+
+    private func beginOnboardingText(step: OnboardingStep, placeholderStatus: String) {
+        onboardingStep = step
+        onboardingTextInput = step == .model ? sessionModel : ""
+        inputMode = .onboardingText
+        focus = .input
+        onboardingSelection = 0
+        statusLine = placeholderStatus
+        onboardingStatus = placeholderStatus
+    }
+
+    private func commitOnboardingTextIfNeeded() -> Bool {
+        guard inputMode == .onboardingText else { return false }
+        let trimmed = onboardingTextInput.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        switch onboardingStep {
+        case .apiKey:
+            guard !trimmed.isEmpty else {
+                advanceOnboarding(to: .model)
+                return true
+            }
+            do {
+                let normalized = normalizeAPIKeyInput(trimmed, for: sessionProvider)
+                try secretStore.writeSecret(namespace: "provider.credentials", key: CLIConfiguration.apiKeySettingKey(for: sessionProvider), value: normalized)
+                onboardingStatus = "\(sessionProvider.capitalized) API key saved in Keychain"
+            } catch {
+                onboardingStatus = "Failed to save API key: \(error.localizedDescription)"
+            }
+            advanceOnboarding(to: .model)
+            return true
+        case .model:
+            guard !trimmed.isEmpty else {
+                advanceOnboarding(to: .telegram)
+                return true
+            }
+            sessionModel = trimmed
+            refreshSessionRuntime()
+            persistSessionSettings()
+            onboardingStatus = "Selected model \(sessionModel)"
+            advanceOnboarding(to: .telegram)
+            return true
+        case .telegramToken:
+            commitOnboardingTelegramToken()
+            return true
+        case .modelDownload:
+            commitOnboardingModelDownload()
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func commitOnboardingTelegramToken() {
+        let trimmed = onboardingTextInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            advanceOnboarding(to: .daemon)
+            return
+        }
+
+        do {
+            let normalized = trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+            try secretStore.writeSecret(namespace: DaemonCLI.telegramSecretNamespace, key: DaemonCLI.telegramSecretKey, value: normalized)
+            sessionUserConfig.telegram.botToken = nil
+            sessionUserConfig.telegram.enabled = true
+            persistUserConfig()
+            onboardingStatus = "Telegram token saved in Keychain"
+        } catch {
+            onboardingStatus = "Failed to save Telegram token: \(error.localizedDescription)"
+        }
+        advanceOnboarding(to: .daemon)
+    }
+
+    private func commitOnboardingModelDownload() {
+        let modelName = onboardingTextInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !modelName.isEmpty else {
+            advanceOnboarding(to: .telegram)
+            return
+        }
+        guard sessionProvider == "ollama" else {
+            sessionModel = modelName
+            refreshSessionRuntime()
+            persistSessionSettings()
+            advanceOnboarding(to: .telegram)
+            return
+        }
+
+        onboardingStatus = "Downloading \(modelName) with ollama pull..."
+        inputMode = .prompt
+        focus = .transcript
+        render()
+        Task { [weak self] in
+            let result = await Self.runOllamaPull(modelName: modelName)
+            await MainActor.run {
+                guard let self else { return }
+                if result.success {
+                    self.sessionModel = modelName
+                    self.refreshSessionRuntime()
+                    self.persistSessionSettings()
+                    self.onboardingStatus = "Downloaded and selected \(modelName)"
+                } else {
+                    self.onboardingStatus = "Download failed: \(result.message ?? "unknown error")"
+                }
+                self.advanceOnboarding(to: .telegram)
+            }
+        }
+    }
+
+    private static func runOllamaPull(modelName: String) async -> (success: Bool, message: String?) {
+        await Task.detached {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            process.arguments = ["ollama", "pull", modelName]
+            let pipe = Pipe()
+            process.standardOutput = pipe
+            process.standardError = pipe
+
+            do {
+                try process.run()
+                process.waitUntilExit()
+                if process.terminationStatus == 0 {
+                    return (true, nil)
+                }
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                let output = String(data: data, encoding: .utf8) ?? "ollama pull exited \(process.terminationStatus)"
+                return (false, output.trimmingCharacters(in: .whitespacesAndNewlines))
+            } catch {
+                return (false, error.localizedDescription)
+            }
+        }.value
+    }
+
+    private func refreshOnboardingModels() {
+        onboardingStatus = "Refreshing \(sessionProvider) models..."
+        Task { [weak self] in
+            await self?.refreshProviderStatus()
+            await MainActor.run {
+                self?.onboardingSelection = 0
+                self?.onboardingStatus = self?.providerStatus.headline ?? "Model refresh completed"
+                self?.render()
+            }
+        }
+    }
+
+    private func applyOnboardingProvider(_ provider: String) {
+        sessionProvider = provider
+        sessionModel = CLIConfiguration.defaultModel(for: provider)
+        showModelPicker = false
+        providerStartupIssue = nil
+        refreshSessionRuntime()
+        persistSessionSettings()
+        onboardingStatus = "Provider set to \(provider)"
+        Task { [weak self] in
+            await self?.refreshProviderStatus()
+        }
+    }
+
+    private func providerNeedsAPIKey(_ provider: String) -> Bool {
+        provider == "openai" || provider == "anthropic"
+    }
+
+    private func skipOnboardingStep() {
+        switch onboardingStep {
+        case .welcome:
+            finishOnboarding(markCompleted: true)
+        case .provider:
+            advanceOnboarding(to: providerNeedsAPIKey(sessionProvider) ? .apiKey : .model)
+        case .apiKey:
+            advanceOnboarding(to: .model)
+        case .model, .modelDownload:
+            advanceOnboarding(to: .telegram)
+        case .telegram, .telegramToken:
+            advanceOnboarding(to: .daemon)
+        case .daemon:
+            advanceOnboarding(to: .done)
+        case .done:
+            finishOnboarding(markCompleted: true)
+        }
+    }
+
+    private func advanceOnboarding(to step: OnboardingStep) {
+        onboardingStep = step
+        onboardingSelection = 0
+        onboardingTextInput = ""
+        inputMode = .prompt
+        focus = .transcript
+        transcriptScrollOffset = 0
+        if step == .done {
+            onboardingStatus = onboardingStatus.isEmpty ? "Setup complete" : onboardingStatus
+        }
+        render()
+    }
+
+    private func finishOnboarding(markCompleted: Bool) {
+        if markCompleted {
+            do {
+                try historyStore.upsertSetting(namespace: Self.onboardingNamespace, key: Self.onboardingCompletedKey, value: .bool(true), now: Date())
+            } catch {
+                statusLine = "Failed to save onboarding state"
+            }
+        }
+        showOnboarding = false
+        onboardingStep = .welcome
+        onboardingSelection = 0
+        onboardingTextInput = ""
+        inputMode = .prompt
+        focus = .launcher
+        showSettings = false
+        showHistory = false
+        showWorkspaces = false
+        showCommands = false
+        showHelp = false
+        statusLine = "Ready"
+        render()
     }
 
     private func cycleProvider() {
@@ -1419,6 +1927,8 @@ final class TUIApp {
         sessionInspector = SessionInspector(persistence: store)
         workspaceSelection = 0
         workspacePreviewLines = []
+        activeThreadID = nil
+        activeChatMessages = []
         providerStartupIssue = nil
         promptQueue = PromptQueueState()
         activeQueuedPrompt = nil
@@ -1631,6 +2141,7 @@ final class TUIApp {
         runStartedAt = Date()
         workingFrameIndex = 0
         currentRunPhase = nil
+        currentRunActivity = "Checking model guardrails"
         currentExplorationTargets = []
         currentPendingExplorationTargets = []
         currentRejectedExplorationTargets = []
@@ -1714,6 +2225,7 @@ final class TUIApp {
     private func append(event: RuntimeEvent) {
         let shouldFollowTail = isTranscriptNearBottom()
         updateLiveRunState(from: event.payload)
+        refreshActiveChatMessagesIfNeeded(for: event.payload)
         runLines.append(contentsOf: renderLines(for: event.payload))
         if shouldFollowTail {
             transcriptScrollOffset = 0
@@ -1722,11 +2234,23 @@ final class TUIApp {
         render()
     }
 
+    private func refreshActiveChatMessagesIfNeeded(for payload: RuntimeEventPayload) {
+        switch payload {
+        case .messageAppended, .finalAnswer:
+            loadActiveChatMessages()
+        default:
+            break
+        }
+    }
+
     private func finishRun() {
         stopWorkingIndicator()
         runExecutionControl = nil
         runFinished = true
         runStartedAt = nil
+        currentRunActivity = nil
+        loadActiveChatMessages()
+        loadHistory()
         refreshTokenEconomicsSnapshot(runID: activeRunID)
         if statusLine == "Running" {
             statusLine = "Run finished"
@@ -1739,6 +2263,7 @@ final class TUIApp {
 
     private func restorePromptEntryIfIdle() {
         guard runFinished, runTask == nil, activeQueuedPrompt == nil, pendingApproval == nil, promptQueue.isEmpty else { return }
+        guard !showOnboarding else { return }
         guard !showSettings, !showHelp, !showHistory, !showCommands, !showWorkspaces else { return }
         inputMode = .prompt
         focus = .input
@@ -1761,6 +2286,7 @@ final class TUIApp {
             currentPatchObjectives = []
         case .workflowPhaseChanged(_, let phase, _):
             currentRunPhase = phase
+            currentRunActivity = friendlyActivityTitle(for: phase)
         case .explorationPlanUpdated(_, let targets, let pendingTargets, let rejectedTargets, _):
             currentExplorationTargets = targets
             currentPendingExplorationTargets = pendingTargets
@@ -1796,6 +2322,7 @@ final class TUIApp {
         switch payload {
         case .runStarted(let threadID, let runID):
             activeThreadID = threadID
+            loadActiveChatMessages()
             return ["[run] Started run \(runID.uuidString)"]
         case .runStateChanged(_, let state, let reason):
             switch state {
@@ -1872,6 +2399,7 @@ final class TUIApp {
             }
             return lines
         case .status(_, let message):
+            currentRunActivity = friendlyStatusActivity(message)
             return summarizeStatusMessage(message)
         case .messageAppended(_, _, let role):
             switch role {
@@ -1916,9 +2444,9 @@ final class TUIApp {
         case .finalAnswer(_, _, let text):
             let normalizedText = normalizeStoredTranscriptText(text)
             if let structured = formattedStructuredLines(from: normalizedText) {
-                return ["", "Final answer:"] + structured
+                return ["", "Assistant:"] + structured
             }
-            return ["", "Final answer:"] + normalizedText.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+            return ["", "Assistant:"] + normalizedText.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         case .error(_, let message):
             return ["[error] \(normalizeStoredTranscriptText(message))"]
         case .runFinished(_, let state):
@@ -1937,6 +2465,36 @@ final class TUIApp {
         default:
             return "\(title)"
         }
+    }
+
+    private func friendlyActivityTitle(for phase: String) -> String {
+        switch phase.lowercased() {
+        case "exploration":
+            return "Inspecting workspace"
+        case "mutation":
+            return "Making changes"
+        case "validation":
+            return "Validating result"
+        default:
+            return "Working on \(phase)"
+        }
+    }
+
+    private func friendlyStatusActivity(_ message: String) -> String {
+        let lowered = message.lowercased()
+        if lowered.contains("thinking about the reply") {
+            return "Thinking about the reply"
+        }
+        if lowered.contains("thinking about the next action") || lowered.contains("thinking about the next step") {
+            return "Thinking about the next step"
+        }
+        if lowered.contains("subagent") {
+            return "Waiting on subagent"
+        }
+        if lowered.contains("tool") {
+            return "Running tool"
+        }
+        return message
     }
 
     private func friendlyOutcome(_ outcome: String) -> String {
@@ -2164,6 +2722,9 @@ final class TUIApp {
         if let pendingApproval {
             rightTitle = "Approval Required"
             rightLines = renderApprovalLines(request: pendingApproval.request, width: rightWidth - 4)
+        } else if showOnboarding {
+            rightTitle = "First-Run Setup"
+            rightLines = renderOnboardingWizardLines(width: rightWidth - 4, maxBodyHeight: bodyHeight)
         } else if showWorkspaces {
             rightTitle = "Workspaces"
             rightLines = renderWorkspaceLines(width: rightWidth - 4)
@@ -2189,6 +2750,9 @@ final class TUIApp {
                 maxBodyHeight: bodyHeight,
                 emptyState: "No help entries."
             )
+        } else if isChatConversationVisible {
+            rightTitle = "Chat"
+            rightLines = renderChatConversationLines(width: rightWidth - 4, maxBodyHeight: bodyHeight)
         } else if isComposeTranscriptVisible {
             rightTitle = "New Chat"
             rightLines = renderComposeLines(width: rightWidth - 4, maxBodyHeight: bodyHeight)
@@ -2228,6 +2792,12 @@ final class TUIApp {
             "\(TerminalUIStyle.faint)\(focus == .launcher ? "Launcher focused" : "Press Tab to focus launcher")\(TerminalUIStyle.reset)",
             ""
         ]
+
+        if showOnboarding {
+            lines.append("\(TerminalUIStyle.amber)Setup is open\(TerminalUIStyle.reset)")
+            lines.append("\(TerminalUIStyle.slate)Answer each step or press s to skip. Esc exits setup.\(TerminalUIStyle.reset)")
+            lines.append("")
+        }
 
         for (index, item) in menuItems.enumerated() {
             let selected = index == selectedIndex
@@ -2270,6 +2840,128 @@ final class TUIApp {
         var output = [transcriptHeader(width: width, totalLines: expanded.count, visibleLines: bodyLimit), ""]
         output.append(contentsOf: viewport)
         return output
+    }
+
+    private func renderChatConversationLines(width: Int, maxBodyHeight: Int) -> [String] {
+        let bodyLimit = max(maxBodyHeight - 3, 1)
+        let expanded = chatConversationLines(width: width)
+        let maxOffset = max(expanded.count - bodyLimit, 0)
+        transcriptScrollOffset = min(max(transcriptScrollOffset, 0), maxOffset)
+        let endIndex = max(expanded.count - transcriptScrollOffset, 0)
+        let startIndex = max(endIndex - bodyLimit, 0)
+        let viewport = Array(expanded[startIndex..<endIndex])
+
+        var output = [transcriptHeader(width: width, totalLines: expanded.count, visibleLines: bodyLimit), ""]
+        output.append(contentsOf: viewport)
+        return output
+    }
+
+    private func renderOnboardingWizardLines(width: Int, maxBodyHeight: Int) -> [String] {
+        let allSteps: [OnboardingStep] = [.welcome, .provider, .apiKey, .model, .telegram, .daemon, .done]
+        let stepIndex = allSteps.firstIndex(of: onboardingStep).map { $0 + 1 } ?? allSteps.count
+        var lines: [String] = [
+            "\(TerminalUIStyle.faint)Step \(min(stepIndex, allSteps.count))/\(allSteps.count) • Enter accepts • s skips • Esc closes setup\(TerminalUIStyle.reset)",
+            ""
+        ]
+
+        lines.append(contentsOf: wrapText(onboardingTitle, width: width).map { "\(TerminalUIStyle.bold)\(TerminalUIStyle.ink)\($0)\(TerminalUIStyle.reset)" })
+        lines.append(contentsOf: wrapText(onboardingBody, width: width).map { "\(TerminalUIStyle.slate)\($0)\(TerminalUIStyle.reset)" })
+
+        if !onboardingStatus.isEmpty {
+            lines.append("")
+            lines.append(contentsOf: wrapText(onboardingStatus, width: width).map { "\(TerminalUIStyle.amber)\($0)\(TerminalUIStyle.reset)" })
+        }
+
+        lines.append("")
+        lines.append("\(TerminalUIStyle.ink)Current setup\(TerminalUIStyle.reset)")
+        lines.append("\(TerminalUIStyle.slate)Provider: \(sessionProvider)   Model: \(sessionModel)\(TerminalUIStyle.reset)")
+        lines.append("\(TerminalUIStyle.slate)Telegram: \(sessionUserConfig.telegram.enabled ? "enabled" : "disabled")   Daemon: \(daemonStatus?.isRunning == true ? "running" : "stopped")\(TerminalUIStyle.reset)")
+
+        if onboardingStep == .model, !providerStatus.details.isEmpty {
+            lines.append("")
+            lines.append("\(TerminalUIStyle.ink)Provider status\(TerminalUIStyle.reset)")
+            for detail in providerStatus.details.prefix(3) {
+                lines.append("\(TerminalUIStyle.slate)\(TerminalUIStyle.truncateVisible(detail, limit: width))\(TerminalUIStyle.reset)")
+            }
+        }
+
+        lines.append("")
+        lines.append("\(TerminalUIStyle.ink)Choices\(TerminalUIStyle.reset)")
+        let choices = onboardingChoices
+        for (index, choice) in choices.enumerated() {
+            let selected = index == onboardingSelection && inputMode != .onboardingText
+            let marker = selected ? "\(TerminalUIStyle.selection) \(TerminalUIStyle.reset)" : " "
+            let color = selected ? TerminalUIStyle.cyan : TerminalUIStyle.blue
+            lines.append("\(marker) \(TerminalUIStyle.bold)\(color)\(choice.title)\(TerminalUIStyle.reset)")
+            lines.append("   \(TerminalUIStyle.slate)\(TerminalUIStyle.truncateVisible(choice.subtitle, limit: max(width - 3, 10)))\(TerminalUIStyle.reset)")
+        }
+
+        if inputMode == .onboardingText {
+            lines.append("")
+            lines.append("\(TerminalUIStyle.amber)Type your answer in the input bar and press Enter. Empty input skips this step.\(TerminalUIStyle.reset)")
+        } else if onboardingStep == .model && sessionProvider == "ollama" {
+            lines.append("")
+            lines.append("\(TerminalUIStyle.faint)Shortcut: press r to refresh local models, or d to download with ollama pull.\(TerminalUIStyle.reset)")
+        } else if onboardingStep == .model {
+            lines.append("")
+            lines.append("\(TerminalUIStyle.faint)Shortcut: press r to refresh the model list.\(TerminalUIStyle.reset)")
+        }
+
+        let bodyLimit = max(maxBodyHeight - 3, 1)
+        let expanded = lines.flatMap { wrapRunLine($0, width: width) }
+        let maxOffset = max(expanded.count - bodyLimit, 0)
+        transcriptScrollOffset = min(max(transcriptScrollOffset, 0), maxOffset)
+        let endIndex = max(expanded.count - transcriptScrollOffset, 0)
+        let startIndex = max(endIndex - bodyLimit, 0)
+        let viewport = Array(expanded[startIndex..<endIndex])
+
+        return [transcriptHeader(width: width, totalLines: expanded.count, visibleLines: bodyLimit), ""] + viewport
+    }
+
+    private var onboardingTitle: String {
+        switch onboardingStep {
+        case .welcome:
+            return "Let’s set up Ashex"
+        case .provider:
+            return "Which provider would you like to use?"
+        case .apiKey:
+            return "Add the API key for \(sessionProvider.capitalized)"
+        case .model:
+            return "Choose a model"
+        case .modelDownload:
+            return "Download an Ollama model"
+        case .telegram:
+            return "Do you want Telegram control?"
+        case .telegramToken:
+            return "Add your Telegram bot token"
+        case .daemon:
+            return "Start the background daemon?"
+        case .done:
+            return "Setup is complete"
+        }
+    }
+
+    private var onboardingBody: String {
+        switch onboardingStep {
+        case .welcome:
+            return "This quick setup fills the same Provider Settings you can edit later. Every step can be skipped."
+        case .provider:
+            return "Local providers keep work on your Mac. Hosted providers need API keys. Mock is useful for testing the UI and tools."
+        case .apiKey:
+            return "Keys are stored in Keychain, not in the project config. You can also skip and add one later from Assistant Setup."
+        case .model:
+            return "Pick a discovered model, enter one manually, or download an Ollama model if you are using Ollama."
+        case .modelDownload:
+            return "Ashex will run `ollama pull <model>` and select the model after it finishes."
+        case .telegram:
+            return "Telegram lets you send tasks to Ashex remotely. You can skip it if you only want the terminal UI."
+        case .telegramToken:
+            return "Create a bot with BotFather, paste its token here, and Ashex will save it in Keychain."
+        case .daemon:
+            return "The daemon is needed for background Telegram polling. You can also start or stop it later from Assistant Setup."
+        case .done:
+            return "You can open Assistant Setup anytime to change provider, model, Telegram, daemon, or safety settings."
+        }
     }
 
     private func renderScrollableStaticLines(_ lines: [String], width: Int, maxBodyHeight: Int, emptyState: String) -> [String] {
@@ -2896,6 +3588,7 @@ final class TUIApp {
         case .telegramAllowedUsers: actualLabelText = "Users"
         case .workspacePath: actualLabelText = "Workspace"
         case .terminalCommand: actualLabelText = "Terminal"
+        case .onboardingText: actualLabelText = "Setup"
         }
         let title = focus == .input ? "\(TerminalUIStyle.cyan)\(actualLabelText)\(TerminalUIStyle.reset)" : "\(TerminalUIStyle.faint)\(actualLabelText)\(TerminalUIStyle.reset)"
         let currentText: String
@@ -2908,6 +3601,10 @@ final class TUIApp {
         case .telegramAllowedUsers: currentText = telegramAllowedUsersInput
         case .workspacePath: currentText = workspacePathInput
         case .terminalCommand: currentText = terminalCommandInput
+        case .onboardingText:
+            currentText = onboardingStep == .apiKey || onboardingStep == .telegramToken
+                ? String(repeating: "•", count: onboardingTextInput.count)
+                : onboardingTextInput
         }
         let placeholder = inputMode == .model
             ? "Type a model name, then press Enter to apply…"
@@ -2923,6 +3620,8 @@ final class TUIApp {
                     ? "Type a project directory path, then press Enter to switch…"
                 : inputMode == .terminalCommand
                     ? "Type a shell command for the side terminal, then press Enter…"
+                : inputMode == .onboardingText
+                    ? "Type setup answer, then press Enter…"
                 : "Type a message here, then press Enter to send…"
         let prompt = currentText.isEmpty
             ? "\(TerminalUIStyle.faint)\(placeholder)\(TerminalUIStyle.reset)"
@@ -2984,6 +3683,8 @@ final class TUIApp {
             colored = "\(TerminalUIStyle.cyan)\(line)\(TerminalUIStyle.reset)"
         } else if line.hasPrefix("[agent]") {
             colored = "\(TerminalUIStyle.amber)\(line)\(TerminalUIStyle.reset)"
+        } else if line.hasPrefix("[thinking]") {
+            colored = "\(TerminalUIStyle.amber)\(line)\(TerminalUIStyle.reset)"
         } else if line.hasPrefix("[action]") {
             colored = "\(TerminalUIStyle.violet)\(line)\(TerminalUIStyle.reset)"
         } else if line.hasPrefix("[done]") {
@@ -3031,6 +3732,8 @@ final class TUIApp {
         } else if line.hasPrefix("[plan]") {
             baseColor = TerminalUIStyle.cyan
         } else if line.hasPrefix("[agent]") {
+            baseColor = TerminalUIStyle.amber
+        } else if line.hasPrefix("[thinking]") {
             baseColor = TerminalUIStyle.amber
         } else if line.hasPrefix("[action]") {
             baseColor = TerminalUIStyle.violet
@@ -3128,7 +3831,8 @@ final class TUIApp {
         let frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
         let frame = frames[workingFrameIndex % frames.count]
         let elapsedText = formattedElapsed
-        return "\(frame) Working\(elapsedText.map { " (\($0))" } ?? "")"
+        let activity = currentRunActivity ?? "Working"
+        return "\(frame) \(activity)\(elapsedText.map { " (\($0))" } ?? "")"
     }
 
     private var formattedElapsed: String? {
@@ -3245,7 +3949,9 @@ final class TUIApp {
 
     private func transcriptHeader(width: Int, totalLines: Int, visibleLines: Int) -> String {
         let state: String
-        if isComposeTranscriptVisible {
+        if isChatConversationVisible {
+            state = "chat"
+        } else if isComposeTranscriptVisible {
             state = "draft"
         } else {
             state = runLines.isEmpty ? "empty" : (runFinished ? "idle" : "streaming")
@@ -3306,6 +4012,46 @@ final class TUIApp {
         return lines
     }
 
+    private func chatConversationLines(width: Int) -> [String] {
+        let threadLabel = activeThreadID.map { "thread \($0.uuidString.prefix(8))" } ?? "thread"
+        var lines: [String] = [
+            "\(TerminalUIStyle.ink)Active chat\(TerminalUIStyle.reset)",
+            "\(TerminalUIStyle.slate)Type in the input bar and press Enter to continue this conversation.\(TerminalUIStyle.reset)",
+            "\(TerminalUIStyle.faint)\(threadLabel) • \(sessionProvider) • \(sessionModel)\(TerminalUIStyle.reset)",
+            ""
+        ]
+
+        let visibleMessages = activeChatMessages.filter { message in
+            message.role == .user || message.role == .assistant
+        }
+
+        guard !visibleMessages.isEmpty else {
+            lines.append("\(TerminalUIStyle.faint)No visible chat messages yet. Type below to start.\(TerminalUIStyle.reset)")
+            return lines
+        }
+
+        for message in visibleMessages.suffix(24) {
+            let isUser = message.role == .user
+            let label = isUser ? "You" : "Ashex"
+            let color = isUser ? TerminalUIStyle.cyan : TerminalUIStyle.green
+            lines.append("\(TerminalUIStyle.bold)\(color)\(label)\(TerminalUIStyle.reset)")
+            let normalized = normalizeStoredTranscriptText(message.content)
+            if let structured = formattedStructuredLines(from: normalized) {
+                lines.append(contentsOf: structured.flatMap { wrapRunLine($0, width: width) })
+            } else {
+                lines.append(contentsOf: normalized.split(separator: "\n", omittingEmptySubsequences: false).flatMap {
+                    wrapRunLine(String($0), width: width)
+                })
+            }
+            lines.append("")
+        }
+
+        if runFinished {
+            lines.append("\(TerminalUIStyle.faint)Ready for your next message.\(TerminalUIStyle.reset)")
+        }
+        return lines
+    }
+
     private func scrollTranscript(by delta: Int) {
         let metrics = transcriptMetrics()
         let maxOffset = max(metrics.totalLines - metrics.bodyLimit, 0)
@@ -3350,6 +4096,13 @@ final class TUIApp {
         default:
             return false
         }
+    }
+
+    private var isChatConversationVisible: Bool {
+        guard pendingApproval == nil else { return false }
+        guard !showWorkspaces, !showHistory, !showSettings, !showCommands, !showHelp else { return false }
+        guard runFinished, inputMode == .prompt, activeThreadID != nil else { return false }
+        return !activeChatMessages.isEmpty
     }
 
     private func scrollTerminal(by delta: Int) {
@@ -3962,12 +4715,26 @@ final class TUIApp {
             historySelection = min(historySelection, max(historyThreads.count, 0))
             refreshTokenEconomicsSnapshot(runID: latestPersistedRunID())
             refreshHistoryPreview()
+            loadActiveChatMessages()
         } catch {
             historyThreads = []
             historyRuns = [:]
             historyPreviewLines = ["[error] \(error.localizedDescription)"]
             tokenSavingsSnapshot = nil
             tokenUsageSnapshot = nil
+        }
+    }
+
+    private func loadActiveChatMessages() {
+        guard let activeThreadID else {
+            activeChatMessages = []
+            return
+        }
+
+        do {
+            activeChatMessages = try historyStore.fetchMessages(threadID: activeThreadID)
+        } catch {
+            activeChatMessages = []
         }
     }
 
@@ -4212,6 +4979,7 @@ final class TUIApp {
     private func openSelectedHistoryRun() {
         if historySelection == 0 {
             activeThreadID = nil
+            activeChatMessages = []
             runLines = []
             transcriptScrollOffset = 0
             runFinished = true
@@ -4353,6 +5121,7 @@ final class TUIApp {
             currentPlannedFiles = memory?.plannedChangeSet ?? []
             currentPatchObjectives = memory?.patchObjectives ?? []
             activeThreadID = thread.id
+            loadActiveChatMessages()
             transcriptScrollOffset = 0
             runFinished = true
             showHistory = false

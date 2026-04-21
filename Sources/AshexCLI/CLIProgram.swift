@@ -13,9 +13,9 @@ struct AshexCLI {
             }
 
             let configuration = try CLIConfiguration(arguments: CommandLine.arguments)
-            try configuration.persistSessionSettings()
 
             if let prompt = configuration.prompt {
+                try configuration.persistSessionSettings()
                 try await configuration.validateModelGuardrails()
                 let runtime = try configuration.makeRuntime()
                 let stream = runtime.run(.init(prompt: prompt, maxIterations: configuration.maxIterations))
@@ -167,6 +167,7 @@ struct CLIConfiguration {
     let userConfigFile: URL
     let globalUserConfigFile: URL?
     let shouldPersistSessionDefaults: Bool
+    let forceOnboarding: Bool
 
     init(arguments: [String]) throws {
         var promptParts: [String] = []
@@ -176,10 +177,13 @@ struct CLIConfiguration {
         var providerOverride: String?
         var modelOverride: String?
         var approvalMode = ApprovalMode(rawValue: ProcessInfo.processInfo.environment["ASHEX_APPROVAL_MODE"] ?? "trusted") ?? .trusted
+        var forceOnboarding = false
 
         var iterator = arguments.dropFirst().makeIterator()
         while let argument = iterator.next() {
             switch argument {
+            case "onboard", "--onboarding":
+                forceOnboarding = true
             case "--workspace":
                 guard let value = iterator.next() else { throw AshexError.model("Missing value for --workspace") }
                 workspaceRoot = URL(fileURLWithPath: value, relativeTo: URL(fileURLWithPath: FileManager.default.currentDirectoryPath))
@@ -212,7 +216,7 @@ struct CLIConfiguration {
         }
 
         let promptText = promptParts.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
-        let prompt = promptText.isEmpty ? nil : promptText
+        let prompt = forceOnboarding || promptText.isEmpty ? nil : promptText
 
         self.prompt = prompt
         self.workspaceRoot = workspaceRoot.standardizedFileURL
@@ -244,6 +248,7 @@ struct CLIConfiguration {
         self.model = modelOverride ?? environmentModel ?? persistedModel ?? Self.defaultModel(for: resolvedProvider)
         self.approvalMode = approvalMode
         self.shouldPersistSessionDefaults = providerOverride == nil && modelOverride == nil && environmentProvider == nil && environmentModel == nil
+        self.forceOnboarding = forceOnboarding
     }
 
     func makeModelAdapter() throws -> any ModelAdapter {

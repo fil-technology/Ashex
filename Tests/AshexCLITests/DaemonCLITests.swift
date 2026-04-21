@@ -29,6 +29,26 @@ import Testing
     #expect(configuration.model == "Qwen/Qwen3.5-4B")
 }
 
+@Test func cliConfigurationCanForceOnboarding() throws {
+    let workspace = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+
+    let configuration = try CLIConfiguration(arguments: ["ashex", "--workspace", workspace.path, "onboard", "ignored prompt"])
+
+    #expect(configuration.forceOnboarding)
+    #expect(configuration.prompt == nil)
+}
+
+@Test func cliConfigurationSupportsOnboardingFlagAlias() throws {
+    let workspace = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+
+    let configuration = try CLIConfiguration(arguments: ["ashex", "--workspace", workspace.path, "--onboarding"])
+
+    #expect(configuration.forceOnboarding)
+    #expect(configuration.prompt == nil)
+}
+
 @Test func cliConfigurationUsesEshBridgeForEnabledOptimizedOllama() throws {
     let workspace = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
