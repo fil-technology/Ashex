@@ -5317,7 +5317,6 @@ final class TUIApp {
                 runFinished = true
                 transcriptScrollOffset = 0
             }
-            self.providerStartupIssue = nil
             render()
             return
         }
