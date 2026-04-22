@@ -117,9 +117,13 @@ private final class RecordingExecutionRuntime: ExecutionRuntime, @unchecked Send
     )
 
     var plannedSteps: [String] = []
+    var todoSnapshots: [[RunTodoItem]] = []
     for await event in runtime.run(RunRequest(prompt: "Implement the new Telegram controls and persist the selected model after restart")) {
         if case .taskPlanCreated(_, let steps) = event.payload {
             plannedSteps = steps
+        }
+        if case .todoListUpdated(_, let items) = event.payload {
+            todoSnapshots.append(items)
         }
     }
 
@@ -128,6 +132,9 @@ private final class RecordingExecutionRuntime: ExecutionRuntime, @unchecked Send
         "Implement the requested changes",
         "Validate the updated behavior",
     ])
+    #expect(todoSnapshots.first?.map(\.status) == [.pending, .pending, .pending])
+    #expect(todoSnapshots.contains { $0.map(\.status) == [.inProgress, .pending, .pending] })
+    #expect(todoSnapshots.last?.map(\.status) == [.completed, .completed, .completed])
 }
 
 @Test func taskPlannerUsesExplorationFallbackForShortAnalysisPrompts() {
@@ -548,7 +555,7 @@ private final class RecordingExecutionRuntime: ExecutionRuntime, @unchecked Send
     var sawRecoveryAnswer = false
     for await event in runtime.run(RunRequest(prompt: "read note.txt")) {
         if case .finalAnswer(_, _, let text) = event.payload {
-            sawRecoveryAnswer = text.contains("hello") && text.contains("Using the latest tool result")
+            sawRecoveryAnswer = text.contains("hello") && text.contains("Here is the latest filesystem result")
         }
     }
 
@@ -627,17 +634,20 @@ private final class RecordingExecutionRuntime: ExecutionRuntime, @unchecked Send
 
     var sawExplorationPlan = false
     var sawPatchPlan = false
+    var sawPerFilePatchStatus = false
     for await event in runtime.run(RunRequest(prompt: "implement provider settings in the runtime and validate the result carefully")) {
         if case .status(_, let message) = event.payload, message.contains("Exploration plan:") {
             sawExplorationPlan = true
         }
         if case .patchPlanUpdated(_, let paths, let objectives) = event.payload, !paths.isEmpty, !objectives.isEmpty {
             sawPatchPlan = true
+            sawPerFilePatchStatus = objectives.contains { $0.hasPrefix("pending:") || $0.hasPrefix("inspected:") || $0.hasPrefix("completed:") }
         }
     }
 
     #expect(sawExplorationPlan)
     #expect(sawPatchPlan)
+    #expect(sawPerFilePatchStatus)
 }
 
 @Test func runtimeCanDelegateBoundedSubagentSteps() async throws {
@@ -1100,6 +1110,74 @@ private final class RecordingExecutionRuntime: ExecutionRuntime, @unchecked Send
     #expect(xcodeActions.contains { $0.call.toolName == "build" && $0.call.arguments["operation"]?.stringValue == "xcodebuild_build" })
     #expect(xcodeActions.contains { $0.call.toolName == "build" && $0.call.arguments["operation"]?.stringValue == "xcodebuild_test" })
     #expect(xcodeActions.contains { $0.call.arguments["project"]?.stringValue == "App.xcodeproj" })
+}
+
+@Test func validationStrategyPlansPythonRubyAndContainerChecks() {
+    let pythonSnapshot = WorkspaceSnapshotRecord(
+        id: UUID(),
+        runID: UUID(),
+        workspaceRootPath: "/tmp/python-project",
+        topLevelEntries: ["pyproject.toml", "app"],
+        instructionFiles: [],
+        projectMarkers: ["pyproject.toml"],
+        sourceRoots: ["app"],
+        testRoots: [],
+        gitBranch: nil,
+        gitStatusSummary: nil,
+        createdAt: Date()
+    )
+    let pythonActions = ValidationStrategy.plan(
+        request: "fix the parser bug and validate it",
+        taskKind: .bugFix,
+        changedFiles: ["app/parser.py"],
+        workspaceSnapshot: pythonSnapshot,
+        availableToolNames: ["shell"]
+    )
+    #expect(pythonActions.contains { $0.call.arguments["command"]?.stringValue == "python -m pytest" })
+
+    let rubySnapshot = WorkspaceSnapshotRecord(
+        id: UUID(),
+        runID: UUID(),
+        workspaceRootPath: "/tmp/ruby-project",
+        topLevelEntries: ["Gemfile", "lib"],
+        instructionFiles: [],
+        projectMarkers: ["Gemfile"],
+        sourceRoots: ["lib"],
+        testRoots: [],
+        gitBranch: nil,
+        gitStatusSummary: nil,
+        createdAt: Date()
+    )
+    let rubyActions = ValidationStrategy.plan(
+        request: "refactor the formatter",
+        taskKind: .refactor,
+        changedFiles: ["lib/formatter.rb"],
+        workspaceSnapshot: rubySnapshot,
+        availableToolNames: ["shell"]
+    )
+    #expect(rubyActions.contains { $0.call.arguments["command"]?.stringValue == "ruby -c lib/formatter.rb" })
+
+    let containerSnapshot = WorkspaceSnapshotRecord(
+        id: UUID(),
+        runID: UUID(),
+        workspaceRootPath: "/tmp/container-project",
+        topLevelEntries: ["compose.yaml", "Dockerfile"],
+        instructionFiles: [],
+        projectMarkers: ["compose.yaml", "Dockerfile"],
+        sourceRoots: [],
+        testRoots: [],
+        gitBranch: nil,
+        gitStatusSummary: nil,
+        createdAt: Date()
+    )
+    let containerActions = ValidationStrategy.plan(
+        request: "update service wiring",
+        taskKind: .feature,
+        changedFiles: ["compose.yaml"],
+        workspaceSnapshot: containerSnapshot,
+        availableToolNames: ["shell"]
+    )
+    #expect(containerActions.contains { $0.call.arguments["command"]?.stringValue == "docker compose config" })
 }
 
 @Test func ollamaGuardrailWarnsForMemoryHeavyModel() {

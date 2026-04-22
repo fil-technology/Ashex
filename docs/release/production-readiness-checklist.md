@@ -24,21 +24,21 @@ This checklist tracks the remaining work between Ashex's current production-shap
 
 - [x] Run proactive validation for SwiftPM, JavaScript package managers, Rust, and Go
 - [x] Add typed SwiftPM and Xcode build/test actions instead of relying only on raw shell commands
-- [ ] Add more framework-aware validations for Python, Ruby, and containerized projects
-- [ ] Distinguish "validation attempted" from "validation passed" more clearly in final summaries
+- [x] Add more framework-aware validations for Python, Ruby, and containerized projects
+- [x] Distinguish "validation attempted" from "validation passed" more clearly in final summaries
 - [ ] Prefer targeted test scopes when enough file/module context is available
 
 ## Multi-File Change Reliability
 
 - [x] Persist patch plan targets and objectives
-- [ ] Add per-file intent and per-file completion state
+- [x] Add per-file intent and per-file completion state
 - [ ] Show pending versus completed file work more clearly in the TUI
 - [ ] Improve rollback guidance when a larger plan drifts
 
 ## Long-Session And Resume Quality
 
 - [x] Persist working memory, compactions, and carry-forward notes
-- [ ] Reduce stale repeated context more aggressively after long runs
+- [x] Reduce stale repeated context more aggressively after long runs
 - [ ] Preserve stronger task continuity across resumed sessions
 - [ ] Surface compacted memory more explicitly in history review
 

@@ -92,20 +92,24 @@ public struct DebugConfig: Codable, Sendable {
 
 public struct OllamaConfig: Codable, Sendable {
     public var requestTimeoutSeconds: Int
+    public var contextWindowTokens: Int
 
-    public init(requestTimeoutSeconds: Int = 180) {
+    public init(requestTimeoutSeconds: Int = 180, contextWindowTokens: Int = 4096) {
         self.requestTimeoutSeconds = requestTimeoutSeconds
+        self.contextWindowTokens = contextWindowTokens
     }
 
     public static let `default` = OllamaConfig()
 
     private enum CodingKeys: String, CodingKey {
         case requestTimeoutSeconds
+        case contextWindowTokens
     }
 
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         requestTimeoutSeconds = max(15, try container.decodeIfPresent(Int.self, forKey: .requestTimeoutSeconds) ?? Self.default.requestTimeoutSeconds)
+        contextWindowTokens = max(512, try container.decodeIfPresent(Int.self, forKey: .contextWindowTokens) ?? Self.default.contextWindowTokens)
     }
 }
 

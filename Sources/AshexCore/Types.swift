@@ -314,6 +314,27 @@ public struct WorkspaceSnapshotRecord: Codable, Sendable, Equatable {
     }
 }
 
+public enum RunTodoStatus: String, Codable, Sendable, Equatable {
+    case pending
+    case inProgress
+    case completed
+    case skipped
+}
+
+public struct RunTodoItem: Codable, Sendable, Equatable {
+    public let index: Int
+    public let title: String
+    public let status: RunTodoStatus
+    public let summary: String?
+
+    public init(index: Int, title: String, status: RunTodoStatus, summary: String? = nil) {
+        self.index = index
+        self.title = title
+        self.status = status
+        self.summary = summary
+    }
+}
+
 public struct WorkingMemoryRecord: Codable, Sendable, Equatable {
     public let id: UUID
     public let runID: UUID

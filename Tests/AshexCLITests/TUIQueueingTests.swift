@@ -27,6 +27,16 @@ import Testing
     #expect(!PromptFailureRouting.shouldRetry(message: "Prompt violated policy"))
 }
 
+@Test func providerFailureRoutingIdentifiesOllamaResourceFailures() {
+    let message = "Ollama request for model 'gemma4:latest' failed with HTTP 500: out of memory"
+
+    #expect(ProviderFailureRouting.isOllamaModelResourceFailure(message: message))
+    #expect(ProviderFailureRouting.isOllamaModelResourceFailure(message: "out of memory"))
+    #expect(ProviderFailureRouting.recoveryHint(provider: "ollama", message: message).contains("Ollama is running"))
+    #expect(ProviderFailureRouting.runtimeFailureDetails(provider: "ollama", message: message).first == "Selected Ollama model could not fit in available memory.")
+    #expect(!ProviderFailureRouting.recoveryHint(provider: "ollama", message: message).contains("ollama serve"))
+}
+
 @Test func versionFlagIsRecognized() {
     #expect(AshexCLI.isVersionRequested(arguments: ["ashex", "--version"]))
     #expect(AshexCLI.isVersionRequested(arguments: ["ashex", "-v"]))
@@ -75,4 +85,15 @@ import Testing
     )
 
     #expect(ordered.first == "qwen2.5-coder:7b • 4.7 GB")
+}
+
+@Test func ollamaOnboardingSafestModelPrefersSmallestGeneralInstalledModel() {
+    let selected = OllamaModelDisplayOrdering.safestInstalledModelName(
+        from: [
+            "gemma4:latest • 9.6 GB",
+            "functiongemma:latest • 300.8 MB"
+        ]
+    )
+
+    #expect(selected == "gemma4:latest")
 }

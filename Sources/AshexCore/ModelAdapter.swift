@@ -505,15 +505,18 @@ public struct OllamaModelConfiguration: Sendable {
     public let model: String
     public let baseURL: URL
     public let requestTimeoutSeconds: Int
+    public let contextWindowTokens: Int
 
     public init(
         model: String = "llama3.2",
         baseURL: URL = URL(string: "http://localhost:11434/api/chat")!,
-        requestTimeoutSeconds: Int = 180
+        requestTimeoutSeconds: Int = 180,
+        contextWindowTokens: Int = 4096
     ) {
         self.model = model
         self.baseURL = baseURL
         self.requestTimeoutSeconds = requestTimeoutSeconds
+        self.contextWindowTokens = max(512, contextWindowTokens)
     }
 }
 
@@ -711,6 +714,7 @@ public struct OllamaChatModelAdapter: ModelAdapter {
             messages: messages,
             format: schema,
             options: [
+                "num_ctx": .number(Double(configuration.contextWindowTokens)),
                 "temperature": .number(0),
             ],
             stream: false
@@ -807,6 +811,7 @@ extension OllamaChatModelAdapter: DirectChatModelAdapter {
                 "additionalProperties": .bool(false),
             ],
             options: [
+                "num_ctx": .number(Double(configuration.contextWindowTokens)),
                 "temperature": .number(0.2),
             ],
             stream: false
@@ -866,6 +871,7 @@ extension OllamaChatModelAdapter: TaskPlanningModelAdapter {
             ],
             format: ModelPromptRenderer.taskPlanSchema(),
             options: [
+                "num_ctx": .number(Double(configuration.contextWindowTokens)),
                 "temperature": .number(0),
             ],
             stream: false

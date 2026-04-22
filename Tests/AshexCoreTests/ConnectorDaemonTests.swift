@@ -112,6 +112,42 @@ import Testing
     #expect(event?.externalUserID == "44")
 }
 
+@Test func telegramConnectorNormalizesWorkspaceCommands() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let persistence = SQLitePersistenceStore(databaseURL: root.appendingPathComponent("ashex.sqlite"))
+    try persistence.initialize()
+
+    let connector = TelegramConnector(
+        token: "test-token",
+        config: TelegramConfig(enabled: true),
+        client: MockTelegramBotClient(),
+        persistence: persistence
+    )
+
+    let commands: [(String, ConnectorCommand)] = [
+        ("/pwd", .pwd),
+        ("/workspace", .workspace),
+        ("/last", .last),
+        ("/ls Sources", .ls),
+        ("/mkdir Notes", .mkdir),
+    ]
+
+    for (index, command) in commands.enumerated() {
+        let event = try await connector.normalize(update: TelegramUpdate(
+            updateID: Int64(90 + index),
+            message: TelegramMessage(
+                messageID: Int64(20 + index),
+                from: TelegramUser(id: 44, isBot: false, firstName: "Sam", username: "sam"),
+                chat: TelegramChat(id: 55, type: "private"),
+                date: 0,
+                text: command.0
+            )
+        ))
+
+        #expect(event?.command == command.1)
+    }
+}
+
 @Test func telegramConnectorNormalizesPhotoMessagesIntoAttachmentPrompt() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     let persistence = SQLitePersistenceStore(databaseURL: root.appendingPathComponent("ashex.sqlite"))
@@ -550,6 +586,138 @@ import Testing
     #expect(setting?.value.boolValue == false)
 }
 
+@Test func daemonSupervisorWorkspaceCommandsUseConfiguredRoot() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    try "hello".write(to: root.appendingPathComponent("note.txt"), atomically: true, encoding: .utf8)
+    let persistence = SQLitePersistenceStore(databaseURL: root.appendingPathComponent(".ashex/ashex.sqlite"))
+    try persistence.initialize()
+
+    let connector = RecordingConnector()
+    let supervisor = DaemonSupervisor(
+        registry: ConnectorRegistry(connectors: [connector]),
+        router: ConversationRouter(mappingStore: ConnectorConversationMappingStore(persistence: persistence)),
+        dispatcher: RunDispatcher(runtime: BlockingRuntime()),
+        persistence: persistence,
+        logger: DaemonLogger(minimumLevel: .error),
+        runStore: DaemonConversationRunStore(),
+        remoteApprovalInbox: RemoteApprovalInbox(persistence: persistence),
+        config: .init(maxIterations: 2, connectorLabel: "telegram", workspaceRootPath: root.path)
+    )
+
+    let conversation = ConnectorConversationReference(
+        connectorKind: "telegram",
+        connectorID: "telegram",
+        externalConversationID: "chat-workspace"
+    )
+
+    try await supervisor.handle(.init(
+        connectorKind: "telegram",
+        connectorID: "telegram",
+        messageID: "workspace-1",
+        conversation: conversation,
+        externalUserID: "44",
+        text: "/pwd",
+        command: .pwd
+    ))
+    try await supervisor.handle(.init(
+        connectorKind: "telegram",
+        connectorID: "telegram",
+        messageID: "workspace-2",
+        conversation: conversation,
+        externalUserID: "44",
+        text: "/ls",
+        command: .ls
+    ))
+
+    let sentMessages = await connector.recordedMessages()
+    #expect(sentMessages.contains { $0.text.contains(root.path) })
+    #expect(sentMessages.contains { $0.text.contains("note.txt") })
+}
+
+@Test func daemonSupervisorSimpleCreateFolderFailsFastInAssistantOnlyMode() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let persistence = SQLitePersistenceStore(databaseURL: root.appendingPathComponent(".ashex/ashex.sqlite"))
+    try persistence.initialize()
+
+    let connector = RecordingConnector()
+    let supervisor = DaemonSupervisor(
+        registry: ConnectorRegistry(connectors: [connector]),
+        router: ConversationRouter(mappingStore: ConnectorConversationMappingStore(persistence: persistence)),
+        dispatcher: RunDispatcher(runtime: BlockingRuntime()),
+        persistence: persistence,
+        logger: DaemonLogger(minimumLevel: .error),
+        runStore: DaemonConversationRunStore(),
+        remoteApprovalInbox: RemoteApprovalInbox(persistence: persistence),
+        config: .init(maxIterations: 2, connectorLabel: "telegram", workspaceRootPath: root.path, executionPolicy: .assistantOnly)
+    )
+
+    let conversation = ConnectorConversationReference(
+        connectorKind: "telegram",
+        connectorID: "telegram",
+        externalConversationID: "chat-workspace"
+    )
+
+    try await supervisor.handle(.init(
+        connectorKind: "telegram",
+        connectorID: "telegram",
+        messageID: "workspace-3",
+        conversation: conversation,
+        externalUserID: "44",
+        text: "create a folder named Reports",
+        command: nil
+    ))
+
+    let sentMessages = await connector.recordedMessages()
+    #expect(sentMessages.contains { $0.text.contains("assistant_only") })
+    #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("Reports").path))
+}
+
+@Test func daemonSupervisorSimpleCreateFolderWorksInTrustedMode() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let persistence = SQLitePersistenceStore(databaseURL: root.appendingPathComponent(".ashex/ashex.sqlite"))
+    try persistence.initialize()
+
+    let connector = RecordingConnector()
+    let supervisor = DaemonSupervisor(
+        registry: ConnectorRegistry(connectors: [connector]),
+        router: ConversationRouter(mappingStore: ConnectorConversationMappingStore(persistence: persistence)),
+        dispatcher: RunDispatcher(runtime: BlockingRuntime()),
+        persistence: persistence,
+        logger: DaemonLogger(minimumLevel: .error),
+        runStore: DaemonConversationRunStore(),
+        remoteApprovalInbox: RemoteApprovalInbox(persistence: persistence),
+        config: .init(
+            maxIterations: 2,
+            connectorLabel: "telegram",
+            workspaceRootPath: root.path,
+            executionPolicy: .trustedFullAccess
+        )
+    )
+
+    let conversation = ConnectorConversationReference(
+        connectorKind: "telegram",
+        connectorID: "telegram",
+        externalConversationID: "chat-workspace"
+    )
+
+    try await supervisor.handle(.init(
+        connectorKind: "telegram",
+        connectorID: "telegram",
+        messageID: "workspace-4",
+        conversation: conversation,
+        externalUserID: "44",
+        text: "/mkdir Reports",
+        command: .mkdir
+    ))
+
+    let sentMessages = await connector.recordedMessages()
+    #expect(sentMessages.contains { $0.text.contains("Created folder") })
+    #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("Reports").path))
+}
+
 @Test func daemonSupervisorModelCommandSwitchesActiveModel() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -979,6 +1147,148 @@ import Testing
     #expect(sentMessages.contains { $0.text.contains("Reasoning: analyzed the request") })
 }
 
+@Test func daemonSupervisorSendsRunProgressEventsToTelegram() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let persistence = SQLitePersistenceStore(databaseURL: root.appendingPathComponent("ashex.sqlite"))
+    try persistence.initialize()
+
+    let connector = RecordingConnector()
+    let supervisor = DaemonSupervisor(
+        registry: ConnectorRegistry(connectors: [connector]),
+        router: ConversationRouter(mappingStore: ConnectorConversationMappingStore(persistence: persistence)),
+        dispatcher: RunDispatcher(runtime: ProgressRuntime()),
+        persistence: persistence,
+        logger: DaemonLogger(minimumLevel: .error),
+        runStore: DaemonConversationRunStore(),
+        remoteApprovalInbox: RemoteApprovalInbox(persistence: persistence),
+        config: .init(maxIterations: 2, connectorLabel: "telegram", provider: "ollama", model: "gemma4:latest")
+    )
+
+    let conversation = ConnectorConversationReference(
+        connectorKind: "telegram",
+        connectorID: "telegram",
+        externalConversationID: "chat-progress"
+    )
+
+    try await supervisor.handle(.init(
+        connectorKind: "telegram",
+        connectorID: "telegram",
+        messageID: "2301",
+        conversation: conversation,
+        externalUserID: "44",
+        text: "Implement a feature",
+        command: nil
+    ))
+
+    try await Task.sleep(nanoseconds: 150_000_000)
+
+    let sentMessages = await connector.recordedMessages()
+    #expect(sentMessages.contains { $0.text.contains("Plan created") && $0.text.contains("Inspect files") })
+    #expect(sentMessages.contains { $0.text.contains("Current plan") && $0.text.contains("[>] 1. Inspect files") })
+    #expect(sentMessages.contains { $0.text.contains("Patch plan updated") && $0.text.contains("Sources/App.swift") })
+    #expect(sentMessages.contains { $0.text.contains("Changed files") && $0.text.contains("Sources/App.swift") })
+    #expect(sentMessages.contains { $0.text.contains("Subagent assigned") && $0.text.contains("reviewer") })
+    #expect(sentMessages.contains { $0.text.contains("Subagent handoff") && $0.text.contains("No blockers") })
+    #expect(sentMessages.contains { $0.text.contains("Final progress reply") })
+}
+
+@Test func daemonSupervisorProgressCommandControlsProgressUpdates() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let persistence = SQLitePersistenceStore(databaseURL: root.appendingPathComponent("ashex.sqlite"))
+    try persistence.initialize()
+
+    let connector = RecordingConnector()
+    let supervisor = DaemonSupervisor(
+        registry: ConnectorRegistry(connectors: [connector]),
+        router: ConversationRouter(mappingStore: ConnectorConversationMappingStore(persistence: persistence)),
+        dispatcher: RunDispatcher(runtime: ProgressRuntime()),
+        persistence: persistence,
+        logger: DaemonLogger(minimumLevel: .error),
+        runStore: DaemonConversationRunStore(),
+        remoteApprovalInbox: RemoteApprovalInbox(persistence: persistence),
+        config: .init(maxIterations: 2, connectorLabel: "telegram", provider: "ollama", model: "gemma4:latest")
+    )
+
+    let conversation = ConnectorConversationReference(
+        connectorKind: "telegram",
+        connectorID: "telegram",
+        externalConversationID: "chat-progress-quiet"
+    )
+
+    try await supervisor.handle(.init(
+        connectorKind: "telegram",
+        connectorID: "telegram",
+        messageID: "2401",
+        conversation: conversation,
+        externalUserID: "44",
+        text: "/progress quiet",
+        command: .progress
+    ))
+    try await supervisor.handle(.init(
+        connectorKind: "telegram",
+        connectorID: "telegram",
+        messageID: "2402",
+        conversation: conversation,
+        externalUserID: "44",
+        text: "Implement a feature",
+        command: nil
+    ))
+
+    try await Task.sleep(nanoseconds: 150_000_000)
+
+    let sentMessages = await connector.recordedMessages()
+    #expect(sentMessages.contains { $0.text.contains("Progress updates are quiet") })
+    #expect(!sentMessages.contains { $0.text.contains("Plan created") })
+    #expect(sentMessages.contains { $0.text.contains("Final progress reply") })
+}
+
+@Test func daemonSupervisorLastCommandSummarizesLatestRun() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let persistence = SQLitePersistenceStore(databaseURL: root.appendingPathComponent("ashex.sqlite"))
+    try persistence.initialize()
+
+    let thread = try persistence.createThread(now: Date())
+    let run = try persistence.createRun(threadID: thread.id, state: .running, now: Date())
+    try persistence.transitionRun(runID: run.id, to: .completed, reason: nil, now: Date())
+    _ = try persistence.createRunSteps(runID: run.id, steps: ["Inspect", "Patch"], now: Date())
+    try persistence.appendEvent(.init(payload: .patchPlanUpdated(runID: run.id, paths: ["Sources/App.swift"], objectives: ["Add feature"])), runID: run.id)
+    try persistence.appendEvent(.init(payload: .changedFilesTracked(runID: run.id, paths: ["Sources/App.swift"])), runID: run.id)
+    try persistence.appendEvent(.init(payload: .toolCallFinished(runID: run.id, toolCallID: UUID(), success: true, summary: "git diff validated the change")), runID: run.id)
+    try persistence.appendEvent(.init(payload: .subagentAssigned(runID: run.id, title: "Review", role: "reviewer", goal: "Inspect change")), runID: run.id)
+    try persistence.appendEvent(.init(payload: .subagentHandoff(runID: run.id, title: "Review", role: "reviewer", summary: "No blockers", remainingItems: [])), runID: run.id)
+
+    let connector = RecordingConnector()
+    let supervisor = DaemonSupervisor(
+        registry: ConnectorRegistry(connectors: [connector]),
+        router: ConversationRouter(mappingStore: ConnectorConversationMappingStore(persistence: persistence)),
+        dispatcher: RunDispatcher(runtime: BlockingRuntime()),
+        persistence: persistence,
+        logger: DaemonLogger(minimumLevel: .error),
+        runStore: DaemonConversationRunStore(),
+        remoteApprovalInbox: RemoteApprovalInbox(persistence: persistence),
+        config: .init(maxIterations: 2, connectorLabel: "telegram")
+    )
+
+    try await supervisor.handle(.init(
+        connectorKind: "telegram",
+        connectorID: "telegram",
+        messageID: "2501",
+        conversation: .init(connectorKind: "telegram", connectorID: "telegram", externalConversationID: "chat-last"),
+        externalUserID: "44",
+        text: "/last",
+        command: .last
+    ))
+
+    let sentMessages = await connector.recordedMessages()
+    #expect(sentMessages.contains { $0.text.contains("Last run") })
+    #expect(sentMessages.contains { $0.text.contains("Validation confidence: verified") })
+    #expect(sentMessages.contains { $0.text.contains("done: Sources/App.swift") })
+    #expect(sentMessages.contains { $0.text.contains("handoff reviewer") })
+}
+
 @Test func daemonTelegramFailureFormatterExplainsModelTimeouts() {
     let error = NSError(domain: NSURLErrorDomain, code: NSURLErrorTimedOut)
     let message = DaemonTelegramFailureFormatter.message(for: error)
@@ -1081,6 +1391,29 @@ private struct ReasoningRuntime: RuntimeStreaming, Sendable {
             continuation.yield(.init(payload: .status(runID: runID, message: "Thinking about the reply")))
             continuation.yield(.init(payload: .status(runID: runID, message: "Reasoning summary: analyzed the request, considered what to inspect or use, and formed a short approach.")))
             continuation.yield(.init(payload: .finalAnswer(runID: runID, messageID: UUID(), text: "Final reply")))
+            continuation.finish()
+        }
+    }
+}
+
+private struct ProgressRuntime: RuntimeStreaming, Sendable {
+    func run(_ request: RunRequest) -> AsyncStream<RuntimeEvent> {
+        AsyncStream { continuation in
+            let threadID = request.threadID ?? UUID()
+            let runID = UUID()
+            continuation.yield(.init(payload: .runStarted(threadID: threadID, runID: runID)))
+            continuation.yield(.init(payload: .taskPlanCreated(runID: runID, steps: ["Inspect files", "Make change"])))
+            continuation.yield(.init(payload: .todoListUpdated(runID: runID, items: [
+                .init(index: 1, title: "Inspect files", status: .inProgress),
+                .init(index: 2, title: "Make change", status: .pending),
+            ])))
+            continuation.yield(.init(payload: .taskStepStarted(runID: runID, index: 1, total: 2, title: "Inspect files")))
+            continuation.yield(.init(payload: .patchPlanUpdated(runID: runID, paths: ["Sources/App.swift"], objectives: ["Add feature flag"])))
+            continuation.yield(.init(payload: .changedFilesTracked(runID: runID, paths: ["Sources/App.swift"])))
+            continuation.yield(.init(payload: .subagentAssigned(runID: runID, title: "Review change", role: "reviewer", goal: "Check the touched file.")))
+            continuation.yield(.init(payload: .subagentHandoff(runID: runID, title: "Review change", role: "reviewer", summary: "No blockers found.", remainingItems: ["Run full tests"])))
+            continuation.yield(.init(payload: .taskStepFinished(runID: runID, index: 1, total: 2, title: "Inspect files", outcome: "completed")))
+            continuation.yield(.init(payload: .finalAnswer(runID: runID, messageID: UUID(), text: "Final progress reply")))
             continuation.finish()
         }
     }

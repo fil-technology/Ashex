@@ -5,12 +5,29 @@ public struct DaemonSupervisorConfig: Sendable {
     public let connectorLabel: String
     public let provider: String
     public let model: String
+    public let workspaceRootPath: String
+    public let sandbox: SandboxPolicyConfig
+    public let executionPolicy: ConnectorExecutionPolicyMode
 
-    public init(maxIterations: Int = 8, connectorLabel: String = "connector", provider: String = "mock", model: String = "mock") {
+    public init(
+        maxIterations: Int = 8,
+        connectorLabel: String = "connector",
+        provider: String = "mock",
+        model: String = "mock",
+        workspaceRootPath: String = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Ashex", isDirectory: true)
+            .appendingPathComponent("DefaultWorkspace", isDirectory: true)
+            .path,
+        sandbox: SandboxPolicyConfig = .default,
+        executionPolicy: ConnectorExecutionPolicyMode = .assistantOnly
+    ) {
         self.maxIterations = maxIterations
         self.connectorLabel = connectorLabel
         self.provider = provider
         self.model = model
+        self.workspaceRootPath = workspaceRootPath
+        self.sandbox = sandbox
+        self.executionPolicy = executionPolicy
     }
 }
 
@@ -115,10 +132,15 @@ public actor DaemonSupervisor {
             /whoami - show your Telegram user ID and current chat ID
             /tasks - list active tasks across Telegram chats
             /chats - list known Telegram chats and their current thread info
+            /last - summarize the latest persisted run in this workspace
             /reset - start a fresh Ash conversation for this chat
             /new - start a fresh thread in this Telegram chat
             /threads - list threads in this Telegram chat
             /thread N - switch to thread number N from `/threads`
+            /pwd - show the active workspace root
+            /workspace - show workspace help and the daemon restart command for another root
+            /ls [path] - list files in the active workspace
+            /mkdir path - create a folder when Telegram execution is trusted
             /status - show whether Ash is running or waiting for approval
             /pending - show the current pending approval request
             /approve - allow the pending tool request in this chat
@@ -131,11 +153,24 @@ public actor DaemonSupervisor {
             /reasoningoff - disable safe reasoning summaries for this chat
             /model [name] - show or switch the active daemon model
             /models - list available models for the active provider
+            /progress [quiet|normal|verbose] - control live run progress updates in this chat
             /stop - stop the current reply or pending run
             """, for: event)
             return
         case .status:
             try await send(text: await statusMessage(for: event.conversation), for: event)
+            return
+        case .pwd:
+            try await send(text: workspaceStatusMessage(), for: event)
+            return
+        case .workspace:
+            try await send(text: workspaceHelpMessage(), for: event)
+            return
+        case .ls:
+            try await send(text: try listWorkspaceDirectory(path: commandArgument(from: event.text) ?? "."), for: event)
+            return
+        case .mkdir:
+            try await send(text: try createWorkspaceDirectory(path: commandArgument(from: event.text)), for: event)
             return
         case .whoami:
             try await send(text: identityMessage(for: event), for: event)
@@ -145,6 +180,9 @@ public actor DaemonSupervisor {
             return
         case .chats:
             try await handleChatsCommand(for: event)
+            return
+        case .last:
+            try await handleLastRunCommand(for: event)
             return
         case .thread:
             try await handleThreadCommand(for: event)
@@ -175,6 +213,9 @@ public actor DaemonSupervisor {
             return
         case .models:
             try await handleModelsCommand(for: event)
+            return
+        case .progress:
+            try await handleProgressCommand(for: event)
             return
         case .chunks:
             try await send(
@@ -256,6 +297,11 @@ public actor DaemonSupervisor {
             "conversation_id": .string(event.conversation.externalConversationID),
         ])
 
+        if let shortcut = SimpleWorkspaceCommand.parse(event.text) {
+            try await send(text: try executeSimpleWorkspaceCommand(shortcut), for: event)
+            return
+        }
+
         let cancellationToken = CancellationToken()
         guard await runStore.beginRun(
             for: event.conversation,
@@ -269,6 +315,12 @@ public actor DaemonSupervisor {
 
         let task = Task { [weak self] in
             guard let self else { return }
+            let progressTask = Task { [weak self] in
+                await self?.sendProgressReplies(for: event)
+            }
+            defer {
+                progressTask.cancel()
+            }
             do {
                 try await self.registry.beginActivity(.typing, for: event.conversation, connectorID: event.connectorID)
                 let result = try await self.dispatcher.dispatch(
@@ -305,6 +357,34 @@ public actor DaemonSupervisor {
         activeTasks[event.conversation] = task
     }
 
+    private func sendProgressReplies(for event: InboundConnectorEvent) async {
+        let checkpoints: [(UInt64, String)] = [
+            (15_000_000_000, "Still working on this. I will send the result here when the run finishes."),
+            (45_000_000_000, longRunningHintMessage()),
+        ]
+
+        for (delay, message) in checkpoints {
+            do {
+                try await Task.sleep(nanoseconds: delay)
+                try Task.checkCancellation()
+                try await send(text: message, for: event)
+            } catch {
+                return
+            }
+        }
+    }
+
+    private func longRunningHintMessage() -> String {
+        if activeProvider == "ollama" {
+            return """
+            This is still running through Ollama.
+
+            If it times out, try a smaller model, restart unused Ollama models with `ollama stop <model>`, or raise `ollama.requestTimeoutSeconds`.
+            """
+        }
+        return "Still running. Larger workspace tasks can take a little longer."
+    }
+
     private func send(text: String, for event: InboundConnectorEvent) async throws {
         try await registry.send(.init(connectorID: event.connectorID, conversation: event.conversation, text: text))
     }
@@ -321,7 +401,84 @@ public actor DaemonSupervisor {
         case .status(_, let message):
             if let summary = extractReasoningSummary(from: message) {
                 latestReasoningSummaryByConversation[conversation] = summary
+            } else if progressMode(for: conversation) == .verbose,
+                      !message.localizedCaseInsensitiveContains("thinking") {
+                try? await registry.send(.init(
+                    connectorID: connectorID,
+                    conversation: conversation,
+                    text: "Status: \(message)"
+                ))
             }
+        case .taskPlanCreated(_, let steps):
+            guard progressMode(for: conversation).showsStructuredProgress else { break }
+            try? await registry.send(.init(
+                connectorID: connectorID,
+                conversation: conversation,
+                text: TelegramRunProgressFormatter.taskPlan(steps)
+            ))
+        case .todoListUpdated(_, let items):
+            guard progressMode(for: conversation).showsStructuredProgress else { break }
+            guard items.contains(where: { $0.status == .inProgress || $0.status == .completed || $0.status == .skipped }) else {
+                break
+            }
+            try? await registry.send(.init(
+                connectorID: connectorID,
+                conversation: conversation,
+                text: TelegramRunProgressFormatter.todoList(items)
+            ))
+        case .taskStepStarted(_, let index, let total, let title):
+            guard progressMode(for: conversation).showsStructuredProgress else { break }
+            try? await registry.send(.init(
+                connectorID: connectorID,
+                conversation: conversation,
+                text: "Step \(index)/\(total) started: \(title)"
+            ))
+        case .taskStepFinished(_, let index, let total, let title, let outcome):
+            guard progressMode(for: conversation).showsStructuredProgress else { break }
+            try? await registry.send(.init(
+                connectorID: connectorID,
+                conversation: conversation,
+                text: "Step \(index)/\(total) \(outcome): \(title)"
+            ))
+        case .changedFilesTracked(_, let paths):
+            guard progressMode(for: conversation).showsStructuredProgress else { break }
+            guard !paths.isEmpty else { break }
+            try? await registry.send(.init(
+                connectorID: connectorID,
+                conversation: conversation,
+                text: "Changed files:\n\(paths.map { "- \($0)" }.joined(separator: "\n"))"
+            ))
+        case .patchPlanUpdated(_, let paths, let objectives):
+            guard progressMode(for: conversation).showsStructuredProgress else { break }
+            guard !paths.isEmpty || !objectives.isEmpty else { break }
+            try? await registry.send(.init(
+                connectorID: connectorID,
+                conversation: conversation,
+                text: TelegramRunProgressFormatter.patchPlan(paths: paths, objectives: objectives)
+            ))
+        case .subagentAssigned(_, let title, let role, let goal):
+            guard progressMode(for: conversation).showsStructuredProgress else { break }
+            try? await registry.send(.init(
+                connectorID: connectorID,
+                conversation: conversation,
+                text: """
+                Subagent assigned: \(role)
+                Task: \(title)
+                Goal: \(goal)
+                """
+            ))
+        case .subagentHandoff(_, let title, let role, let summary, let remainingItems):
+            guard progressMode(for: conversation).showsStructuredProgress else { break }
+            try? await registry.send(.init(
+                connectorID: connectorID,
+                conversation: conversation,
+                text: TelegramRunProgressFormatter.subagentHandoff(
+                    title: title,
+                    role: role,
+                    summary: summary,
+                    remainingItems: remainingItems
+                )
+            ))
         case .approvalRequested(let runID, let toolName, let summary, let reason, let risk):
             await runStore.setAwaitingApproval(true, for: runID)
             await registry.endActivity(.typing, for: conversation, connectorID: connectorID)
@@ -346,6 +503,63 @@ public actor DaemonSupervisor {
         default:
             break
         }
+    }
+
+    private enum TelegramProgressMode: String {
+        case quiet
+        case normal
+        case verbose
+
+        var showsStructuredProgress: Bool {
+            self != .quiet
+        }
+    }
+
+    private func handleProgressCommand(for event: InboundConnectorEvent) async throws {
+        let parts = event.text.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
+        if parts.count == 2 {
+            let requested = String(parts[1]).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard let mode = TelegramProgressMode(rawValue: requested) else {
+                try await send(text: "Usage: `/progress quiet`, `/progress normal`, or `/progress verbose`.", for: event)
+                return
+            }
+            try persistence.upsertSetting(
+                namespace: progressNamespace(for: event.conversation),
+                key: "mode",
+                value: .string(mode.rawValue),
+                now: Date()
+            )
+        }
+
+        let mode = progressMode(for: event.conversation)
+        let description: String
+        switch mode {
+        case .quiet:
+            description = "Only final replies and approval prompts are sent."
+        case .normal:
+            description = "Plans, steps, changed files, and subagent handoffs are sent."
+        case .verbose:
+            description = "Normal progress plus selected status updates are sent."
+        }
+        try await send(text: "Progress updates are \(mode.rawValue).\n\(description)", for: event)
+    }
+
+    private func handleLastRunCommand(for event: InboundConnectorEvent) async throws {
+        let inspector = SessionInspector(persistence: persistence)
+        guard let summary = try inspector.summarizeLatestRun(recentEventLimit: 500) else {
+            try await send(text: "No persisted runs were found for this workspace yet.", for: event)
+            return
+        }
+        try await send(text: SessionInspector.format(summary: summary), for: event)
+    }
+
+    private func progressMode(for conversation: ConnectorConversationReference) -> TelegramProgressMode {
+        let raw = (try? persistence.fetchSetting(namespace: progressNamespace(for: conversation), key: "mode")?.value.stringValue) ?? TelegramProgressMode.normal.rawValue
+        return TelegramProgressMode(rawValue: raw) ?? .normal
+    }
+
+    private func progressNamespace(for conversation: ConnectorConversationReference) -> String {
+        "connectors.telegram.progress.\(conversation.connectorID).\(conversation.externalConversationID)"
     }
 
     private func handleApprovalDecision(
@@ -390,7 +604,7 @@ public actor DaemonSupervisor {
             return "There is no pending approval request in this chat."
         }
         return """
-        Pending approval:
+        Approval card
         Tool: \(pending.toolName)
         Summary: \(pending.summary)
         Reason: \(pending.reason)
@@ -406,7 +620,14 @@ public actor DaemonSupervisor {
             if pending != nil {
                 return await pendingApprovalMessage(for: conversation)
             }
-            return "Ash is idle in this chat.\nModel: \(activeModel) via \(activeProvider)"
+            return """
+            Ash is idle in this chat.
+            Model: \(activeModel) via \(activeProvider)
+            Workspace: \(config.workspaceRootPath)
+            Progress: \(progressMode(for: conversation).rawValue)
+
+            Use `/last` to inspect the most recent run.
+            """
         }
 
         let stateLine = status.awaitingApproval
@@ -414,16 +635,84 @@ public actor DaemonSupervisor {
             : "Ash is running \(status.runID?.uuidString ?? "<starting>")"
         let statsState = statsEnabled(for: conversation) ? "enabled" : "disabled"
         let reasoningState = reasoningEnabled(for: conversation) ? "enabled" : "disabled"
+        let progress = progressMode(for: conversation)
         return """
+        Status card
         \(stateLine)
         Thread: \(status.threadID.uuidString)
         Prompt: \(status.prompt)
         Model: \(activeModel) via \(activeProvider)
+        Workspace: \(config.workspaceRootPath)
         Stats: \(statsState)
         Reasoning summaries: \(reasoningState)
+        Progress: \(progress.rawValue)
 
         Use `/stop` to cancel the run\(status.awaitingApproval ? ", `/approve`, or `/deny`." : ".")
         """
+    }
+
+    private func workspaceStatusMessage() -> String {
+        SimpleWorkspaceCommandExecutor.workspaceStatus(workspaceRoot: workspaceRootURL)
+    }
+
+    private func workspaceHelpMessage() -> String {
+        SimpleWorkspaceCommandExecutor.workspaceHelp(
+            workspaceRoot: workspaceRootURL,
+            startupCommand: daemonWorkspaceStartupCommand()
+        )
+    }
+
+    private func executeSimpleWorkspaceCommand(_ command: SimpleWorkspaceCommand) throws -> String {
+        try SimpleWorkspaceCommandExecutor.execute(
+            command,
+            workspaceRoot: workspaceRootURL,
+            sandbox: config.sandbox,
+            mutationDeniedReason: mutationDeniedReason(for: command)
+        )
+    }
+
+    private func listWorkspaceDirectory(path: String) throws -> String {
+        try SimpleWorkspaceCommandExecutor.execute(
+            .listDirectory(path: path),
+            workspaceRoot: workspaceRootURL,
+            sandbox: config.sandbox
+        )
+    }
+
+    private func createWorkspaceDirectory(path rawPath: String?) throws -> String {
+        try SimpleWorkspaceCommandExecutor.execute(
+            .createDirectory(path: rawPath ?? ""),
+            workspaceRoot: workspaceRootURL,
+            sandbox: config.sandbox,
+            mutationDeniedReason: mutationDeniedReason(for: .createDirectory(path: rawPath ?? ""))
+        )
+    }
+
+    private var workspaceRootURL: URL {
+        URL(fileURLWithPath: config.workspaceRootPath, isDirectory: true)
+    }
+
+    private func mutationDeniedReason(for command: SimpleWorkspaceCommand) -> String? {
+        guard case .createDirectory = command,
+              config.executionPolicy != .trustedFullAccess else {
+            return nil
+        }
+        return """
+        Folder creation is blocked because Telegram is configured as \(config.executionPolicy.rawValue).
+
+        Current workspace:
+        \(config.workspaceRootPath)
+        """
+    }
+
+    private func daemonWorkspaceStartupCommand() -> String {
+        "ashex daemon run --workspace \(config.workspaceRootPath) --provider \(activeProvider) --model \(activeModel)"
+    }
+
+    private func commandArgument(from text: String) -> String? {
+        let parts = text.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
+        guard parts.count == 2 else { return nil }
+        return String(parts[1]).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func busyMessage(for conversation: ConnectorConversationReference) async -> String {
@@ -814,6 +1103,63 @@ public actor DaemonSupervisor {
     private func formatUsedMoney(_ usedTokens: Int) -> String {
         let dollars = TokenSavingsEstimator.estimatedUsageMoneyUSD(for: usedTokens, provider: activeProvider, model: activeModel)
         return TokenSavingsEstimator.formatUSD(dollars)
+    }
+}
+
+enum TelegramRunProgressFormatter {
+    static func taskPlan(_ steps: [String]) -> String {
+        guard !steps.isEmpty else {
+            return "Plan created."
+        }
+        return (["Plan created:"] + steps.enumerated().map { index, step in
+            "\(index + 1). \(step)"
+        }).joined(separator: "\n")
+    }
+
+    static func todoList(_ items: [RunTodoItem]) -> String {
+        let lines = items.map { item in
+            let marker: String
+            switch item.status {
+            case .pending:
+                marker = "[ ]"
+            case .inProgress:
+                marker = "[>]"
+            case .completed:
+                marker = "[x]"
+            case .skipped:
+                marker = "[-]"
+            }
+            return "\(marker) \(item.index). \(item.title)"
+        }
+        return (["Current plan:"] + lines).joined(separator: "\n")
+    }
+
+    static func patchPlan(paths: [String], objectives: [String]) -> String {
+        var lines = ["Patch plan updated:"]
+        if !paths.isEmpty {
+            lines.append("Files:")
+            lines.append(contentsOf: paths.map { "- \($0)" })
+        }
+        if !objectives.isEmpty {
+            lines.append("Goals:")
+            lines.append(contentsOf: objectives.map { "- \($0)" })
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    static func subagentHandoff(title: String, role: String, summary: String, remainingItems: [String]) -> String {
+        var lines = [
+            "Subagent handoff: \(role)",
+            "Task: \(title)",
+            "",
+            summary
+        ]
+        if !remainingItems.isEmpty {
+            lines.append("")
+            lines.append("Remaining:")
+            lines.append(contentsOf: remainingItems.map { "- \($0)" })
+        }
+        return lines.joined(separator: "\n")
     }
 }
 

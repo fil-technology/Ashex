@@ -1,12 +1,16 @@
+import AshexCore
 import Foundation
 
 enum LocalPromptCommand: Equatable {
     case showWorkspace
+    case showWorkspaceHelp
+    case showLastRun
     case showSandbox
     case showToolPacks
     case installToolPack(String)
     case uninstallToolPack(String)
     case switchWorkspace(String)
+    case simpleWorkspace(SimpleWorkspaceCommand)
     case openWorkspaces
     case showHelp
 
@@ -17,16 +21,24 @@ enum LocalPromptCommand: Equatable {
         switch trimmed {
         case "pwd", ":pwd", "/pwd":
             return .showWorkspace
+        case "workspace", ":workspace", "/workspace":
+            return .showWorkspaceHelp
+        case "last", ":last", "/last":
+            return .showLastRun
         case "sandbox", ":sandbox", "/sandbox":
             return .showSandbox
         case "toolpacks", ":toolpacks", "/toolpacks":
             return .showToolPacks
         case ":workspaces", "/workspaces":
             return .openWorkspaces
-        case ":workspace", "/workspace", "workspace", ":cd", "/cd", "cd", ":install-pack", "/install-pack", ":uninstall-pack", "/uninstall-pack":
+        case ":cd", "/cd", "cd", ":mkdir", "/mkdir", "mkdir", ":install-pack", "/install-pack", ":uninstall-pack", "/uninstall-pack":
             return .showHelp
         default:
             break
+        }
+
+        if let simpleWorkspaceCommand = SimpleWorkspaceCommand.parse(trimmed) {
+            return .simpleWorkspace(simpleWorkspaceCommand)
         }
 
         for prefix in [":workspace ", "/workspace ", "workspace ", ":cd ", "/cd ", "cd "] {
@@ -63,6 +75,10 @@ enum LocalPromptCommand: Equatable {
             "Use /workspace /full/path/to/project",
             "Aliases: :workspace /path, workspace /path, cd /path, /cd /path",
             "Show current workspace: /pwd",
+            "Show workspace command help: /workspace",
+            "Inspect the latest run: /last",
+            "List files: /ls [path]",
+            "Create a folder: /mkdir path",
             "Show sandbox policy: /sandbox",
             "List installable tool packs: /toolpacks",
             "Enable a bundled pack: /install-pack swiftpm",

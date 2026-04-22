@@ -18,6 +18,7 @@ public enum ConnectorCommand: String, Sendable, Codable {
     case whoami
     case tasks
     case chats
+    case last
     case reset
     case newConversation = "new"
     case thread
@@ -25,6 +26,10 @@ public enum ConnectorCommand: String, Sendable, Codable {
     case stop
     case cancel
     case status
+    case pwd
+    case workspace
+    case ls
+    case mkdir
     case pending
     case approve
     case deny
@@ -39,6 +44,7 @@ public enum ConnectorCommand: String, Sendable, Codable {
     case chunks
     case chunksOn = "chunkson"
     case chunksOff = "chunksoff"
+    case progress
 }
 
 public struct InboundConnectorEvent: Sendable, Codable {

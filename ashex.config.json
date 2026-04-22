@@ -3,8 +3,35 @@
     "enabled" : false,
     "foregroundPollIntervalSeconds" : 2
   },
+  "debug" : {
+    "reasoningSummaries" : false
+  },
+  "dflash" : {
+    "baseURL" : "http:\/\/127.0.0.1:8000",
+    "enabled" : false,
+    "requestTimeoutSeconds" : 120
+  },
   "logging" : {
     "level" : "info"
+  },
+  "network" : {
+    "mode" : "allow",
+    "rules" : [
+
+    ]
+  },
+  "ollama" : {
+    "contextWindowTokens" : 4096,
+    "requestTimeoutSeconds" : 180
+  },
+  "optimization" : {
+    "backend" : "disabled",
+    "enabled" : false,
+    "esh" : {
+
+    },
+    "intent" : "agentrun",
+    "mode" : "auto"
   },
   "sandbox" : {
     "mode" : "workspace_write",
@@ -13,12 +40,6 @@
       ".ashex",
       ".codex",
       "ashex.config.json"
-    ]
-  },
-  "network" : {
-    "mode" : "allow",
-    "rules" : [
-
     ]
   },
   "shell" : {
@@ -41,14 +62,14 @@
     ]
   },
   "telegram" : {
+    "accessMode" : "open",
     "allowedChatIDs" : [
 
     ],
     "allowedUserIDs" : [
 
     ],
-    "botToken" : null,
-    "enabled" : false,
+    "enabled" : true,
     "executionPolicy" : "assistant_only",
     "pollingTimeoutSeconds" : 20,
     "responseMode" : "final_message"

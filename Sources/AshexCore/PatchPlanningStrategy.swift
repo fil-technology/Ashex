@@ -3,6 +3,7 @@ import Foundation
 struct PatchPlan: Sendable, Equatable {
     let targetPaths: [String]
     let objectives: [String]
+    let fileStatuses: [String]
     let summary: String
 }
 
@@ -60,6 +61,14 @@ enum PatchPlanningStrategy {
         }
 
         objectives = Array(orderedUniqueStrings(objectives).prefix(6))
+        let fileStatuses = targetPaths.map { path in
+            fileStatusLine(
+                path: path,
+                taskKind: taskKind,
+                changedPaths: changedPaths,
+                inspectedPaths: inspectedPaths
+            )
+        }
         let summary: String
         if targetPaths.isEmpty {
             summary = "Patch plan is still forming. Continue exploration before coordinating edits."
@@ -67,7 +76,53 @@ enum PatchPlanningStrategy {
             summary = "Planned file set: \(targetPaths.joined(separator: ", "))"
         }
 
-        return PatchPlan(targetPaths: targetPaths, objectives: objectives, summary: summary)
+        return PatchPlan(targetPaths: targetPaths, objectives: objectives, fileStatuses: fileStatuses, summary: summary)
+    }
+
+    private static func fileStatusLine(
+        path: String,
+        taskKind: TaskKind,
+        changedPaths: [String],
+        inspectedPaths: [String]
+    ) -> String {
+        let status: String
+        if changedPaths.contains(path) {
+            status = "completed"
+        } else if inspectedPaths.contains(path) {
+            status = "inspected"
+        } else {
+            status = "pending"
+        }
+
+        return "\(status): \(path) - \(intent(for: taskKind, path: path))"
+    }
+
+    private static func intent(for taskKind: TaskKind, path: String) -> String {
+        if path.hasSuffix(".md") {
+            return "keep documentation aligned with the requested behavior"
+        }
+        if path.hasSuffix("Tests.swift") || path.contains("/Tests/") || path.hasPrefix("Tests/") {
+            return "cover or verify the behavior touched by the change"
+        }
+
+        switch taskKind {
+        case .bugFix:
+            return "apply or verify the narrow fix path"
+        case .feature:
+            return "implement the requested behavior in the smallest relevant surface"
+        case .refactor:
+            return "preserve behavior while improving structure"
+        case .docs:
+            return "document the requested behavior clearly"
+        case .git:
+            return "verify repository state for this operation"
+        case .shell:
+            return "support the requested workspace operation"
+        case .analysis:
+            return "inspect for evidence before answering"
+        case .general:
+            return "coordinate the requested workspace change"
+        }
     }
 
     private static func extractPaths(from text: String) -> [String] {

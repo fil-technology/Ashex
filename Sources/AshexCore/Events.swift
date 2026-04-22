@@ -13,6 +13,7 @@ public enum RuntimeEventPayload: Codable, Sendable {
     case contextPrepared(runID: UUID, retainedMessages: Int, droppedMessages: Int, clippedMessages: Int, estimatedTokens: Int, estimatedContextWindow: Int)
     case contextCompacted(runID: UUID, droppedMessages: Int, summary: String)
     case taskPlanCreated(runID: UUID, steps: [String])
+    case todoListUpdated(runID: UUID, items: [RunTodoItem])
     case taskStepStarted(runID: UUID, index: Int, total: Int, title: String)
     case taskStepFinished(runID: UUID, index: Int, total: Int, title: String, outcome: String)
     case explorationPlanUpdated(runID: UUID, targets: [String], pendingTargets: [String], rejectedTargets: [String], suggestedQueries: [String])

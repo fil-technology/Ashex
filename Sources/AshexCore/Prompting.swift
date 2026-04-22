@@ -116,7 +116,7 @@ public enum ContextManager {
         let clippedCount = zip(retained, clippedRetained).reduce(0) { partial, pair in
             partial + (pair.0.content == pair.1.content ? 0 : 1)
         }
-        let compactionSummary = dropped.isEmpty ? nil : buildCompactionSummary(from: dropped)
+        let compactionSummary = dropped.isEmpty ? nil : buildCompactionSummary(from: dropped, workingMemory: context.workingMemory)
         let compaction: PreparedModelContext.Compaction? = compactionSummary.map {
             let droppedTokenEstimate = dropped.reduce(into: 0) { partial, message in
                 partial += estimateTokens(in: message.content) + 12
@@ -158,16 +158,13 @@ public enum ContextManager {
             if lowered.contains("claude") { return 200_000 }
             return 200_000
         case "ollama":
-            if lowered.contains("llama3") || lowered.contains("qwen") || lowered.contains("mistral") || lowered.contains("gemma") {
-                return 128_000
-            }
-            return 32_000
+            return 4_096
         default:
             return 8_000
         }
     }
 
-    private static func buildCompactionSummary(from messages: [MessageRecord]) -> (summary: String, deduplicatedToolSummaries: Int) {
+    private static func buildCompactionSummary(from messages: [MessageRecord], workingMemory: WorkingMemoryRecord?) -> (summary: String, deduplicatedToolSummaries: Int) {
         let userPoints = extractPoints(from: messages, role: .user, limit: 3)
         let stepPoints = extractStepResultPoints(from: messages, limit: 4)
         let toolSummary = extractToolOutcomePoints(from: messages, limit: 4)
@@ -196,8 +193,35 @@ public enum ContextManager {
             lines.append("- Earlier assistant conclusions:")
             lines.append(contentsOf: assistantPoints.map { "  - \($0)" })
         }
+        if let workingMemory {
+            let durablePoints = durableMemoryPoints(from: workingMemory)
+            if !durablePoints.isEmpty {
+                lines.append("- Durable working memory:")
+                lines.append(contentsOf: durablePoints.map { "  - \($0)" })
+            }
+        }
 
         return (lines.joined(separator: "\n"), toolSummary.deduplicatedCount)
+    }
+
+    private static func durableMemoryPoints(from memory: WorkingMemoryRecord) -> [String] {
+        var points: [String] = []
+        if !memory.changedPaths.isEmpty {
+            points.append("Changed paths: \(memory.changedPaths.prefix(6).joined(separator: ", "))")
+        }
+        if !memory.plannedChangeSet.isEmpty {
+            points.append("Patch plan: \(memory.plannedChangeSet.prefix(6).joined(separator: ", "))")
+        }
+        if !memory.unresolvedItems.isEmpty {
+            points.append("Unresolved: \(memory.unresolvedItems.prefix(4).joined(separator: " | "))")
+        }
+        if !memory.validationSuggestions.isEmpty {
+            points.append("Validation still relevant: \(memory.validationSuggestions.prefix(4).joined(separator: " | "))")
+        }
+        if !memory.carryForwardNotes.isEmpty {
+            points.append("Carry-forward: \(memory.carryForwardNotes.prefix(4).joined(separator: " | "))")
+        }
+        return points
     }
 
     private static func extractPoints(from messages: [MessageRecord], role: MessageRole, limit: Int) -> [String] {

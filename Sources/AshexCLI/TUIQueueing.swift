@@ -82,6 +82,51 @@ enum PromptFailureRouting {
     }
 }
 
+enum ProviderFailureRouting {
+    static func isOllamaModelResourceFailure(message: String) -> Bool {
+        let normalized = message.lowercased()
+        return normalized.contains("out of memory") ||
+            normalized.contains("failed to allocate") ||
+            normalized.contains("insufficient memory")
+    }
+
+    static func recoveryHint(provider: String, message: String? = nil) -> String {
+        if provider == "ollama",
+           let message,
+           isOllamaModelResourceFailure(message: message) {
+            return "Ollama is running. Choose a smaller installed model, stop other Ollama models with `ollama stop <model>`, or restart Ollama and refresh."
+        }
+
+        switch provider {
+        case "openai":
+            return "Set OPENAI_API_KEY, then open Provider Settings and refresh or keep using mock."
+        case "anthropic":
+            return "Add ANTHROPIC_API_KEY in Provider Settings or the environment, then refresh or keep using mock."
+        case "dflash":
+            return "Start `dflash-serve`, then open Provider Settings and refresh or keep using mock."
+        case "ollama":
+            return "Start Ollama with `ollama serve`, then open Provider Settings and refresh or switch to mock."
+        default:
+            return "Open Provider Settings to choose a working provider."
+        }
+    }
+
+    static func runtimeFailureDetails(provider: String, message: String) -> [String] {
+        if provider == "ollama", isOllamaModelResourceFailure(message: message) {
+            return [
+                "Selected Ollama model could not fit in available memory.",
+                message,
+                "Ashex is using the mock fallback until the selected model can load."
+            ]
+        }
+
+        return [
+            message,
+            "Ashex could not rebuild the selected provider runtime. The TUI stays alive and queued prompts will wait until the provider is available again."
+        ]
+    }
+}
+
 enum WorkspaceSelection {
     static let visibleRecentWorkspaceLimit = 8
 

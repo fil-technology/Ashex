@@ -102,9 +102,13 @@ In guarded mode:
 
 ## Live Workspace Commands
 
-- `/workspace /full/path/to/project`: switch the current session to a different workspace.
+- `/workspace`: show workspace command help.
+- `/workspace /full/path/to/project`: switch the current TUI session to a different workspace.
 - `/workspaces`: open the recent-workspaces picker.
 - `/pwd`: show the current active workspace.
+- `/last`: inspect the latest persisted run with patch status, validation confidence, remaining work, and subagent audit notes.
+- `/ls [path]`: list files from the active workspace without invoking the model.
+- `/mkdir path`: create a folder in the active workspace without invoking the model when the sandbox allows mutation.
 - `/sandbox`: show the current effective sandbox and command-policy state.
 - `/toolpacks`: show bundled and custom installable tool packs.
 - `/install-pack swiftpm`: enable a bundled installable tool pack.

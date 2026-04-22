@@ -6,6 +6,27 @@ The format is loosely based on Keep a Changelog and uses a simple `Added`, `Chan
 
 ## Unreleased
 
+## v0.2.18 - 2026-04-22
+
+### Added
+
+- Telegram and TUI run visibility for plans, todos, patch plans, changed files, and delegated subagent handoffs.
+- Deterministic workspace commands across Telegram, TUI, and one-shot CLI flows.
+- Last-run inspection summaries with patch status, validation confidence, remaining work, and subagent audit trails.
+- Per-file patch intent/status tracking for pending, inspected, and completed file work.
+- Framework-aware validation planning for Python, Ruby, and containerized projects.
+
+### Changed
+
+- Long-session compaction now carries durable working-memory details forward.
+- Validation summaries distinguish attempted, passed, failed, and partial verification more clearly.
+- Telegram progress verbosity is configurable per chat.
+
+### Fixed
+
+- Simple workspace listing and folder creation avoid unnecessary model calls.
+- Repeated read-only tool loops now return a user-facing result summary.
+
 ### Added
 
 - phased runtime execution with exploration, planning, mutation, and validation

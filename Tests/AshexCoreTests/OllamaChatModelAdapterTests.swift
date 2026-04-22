@@ -118,6 +118,52 @@ struct OllamaChatModelAdapterTests {
         #expect(abs(OllamaStubURLProtocol.state.lastRequestTimeout - 321) < 0.001)
     }
 
+    @Test func sendsConfiguredContextWindowToStructuredOllamaRequests() async throws {
+        let session = makeOllamaStubbedSession(statusCode: 200, body: """
+        {
+          "message": {
+            "content": "{\\"type\\":\\"final_answer\\",\\"final_answer\\":\\"done locally\\",\\"tool_name\\":null,\\"arguments\\":null}"
+          }
+        }
+        """)
+
+        let adapter = OllamaChatModelAdapter(
+            configuration: .init(
+                model: "llama3.2",
+                baseURL: URL(string: "http://localhost:11434/api/chat")!,
+                contextWindowTokens: 2048
+            ),
+            session: session
+        )
+
+        _ = try await adapter.nextAction(for: sampleModelContext())
+        #expect(OllamaStubURLProtocol.state.lastRequestBodyString?.contains(#""num_ctx":2048"#) == true)
+    }
+
+    @Test func sendsConfiguredContextWindowToDirectChatOllamaRequests() async throws {
+        let session = makeOllamaStubbedSession(statusCode: 200, body: """
+        {
+          "message": {
+            "content": "{\\"reply\\":\\"I'm doing well.\\"}"
+          }
+        }
+        """)
+
+        let adapter = OllamaChatModelAdapter(
+            configuration: .init(
+                model: "llama3.2",
+                baseURL: URL(string: "http://localhost:11434/api/chat")!,
+                contextWindowTokens: 3072
+            ),
+            session: session
+        )
+
+        _ = try await adapter.directReply(history: [
+            .init(id: UUID(), threadID: UUID(), runID: UUID(), role: .user, content: "Hello", createdAt: Date())
+        ], systemPrompt: "Reply briefly.")
+        #expect(OllamaStubURLProtocol.state.lastRequestBodyString?.contains(#""num_ctx":3072"#) == true)
+    }
+
     @Test func ollamaBackendErrorsIncludeModelAndRawMessage() async throws {
         let session = makeOllamaStubbedSession(statusCode: 500, body: """
         {

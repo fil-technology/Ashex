@@ -166,7 +166,10 @@ enum DaemonCLI {
                 maxIterations: configuration.maxIterations,
                 connectorLabel: "telegram",
                 provider: configuration.provider,
-                model: configuration.model
+                model: configuration.model,
+                workspaceRootPath: configuration.workspaceRoot.path,
+                sandbox: configuration.userConfig.sandbox,
+                executionPolicy: configuration.userConfig.telegram.executionPolicy
             )
         )
 

@@ -154,6 +154,16 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                 prompt: request.prompt,
                 workspaceSnapshot: initialWorkspaceSnapshotRecord
             )
+            let initialPatchPlan = PatchPlanningStrategy.build(
+                taskKind: taskKind,
+                prompt: request.prompt,
+                explorationTargets: initialExplorationPlan.targetPaths,
+                pendingExplorationTargets: initialExplorationPlan.targetPaths,
+                inspectedPaths: [],
+                changedPaths: [],
+                recentFindings: [],
+                workspaceSnapshot: initialWorkspaceSnapshotRecord
+            )
             _ = try persistence.upsertWorkingMemory(
                 runID: run.id,
                 currentTask: request.prompt,
@@ -168,16 +178,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                 unresolvedItems: [],
                 validationSuggestions: Self.validationSuggestions(for: request.prompt, taskKind: taskKind),
                 plannedChangeSet: initialExplorationPlan.targetPaths,
-                patchObjectives: PatchPlanningStrategy.build(
-                    taskKind: taskKind,
-                    prompt: request.prompt,
-                    explorationTargets: initialExplorationPlan.targetPaths,
-                    pendingExplorationTargets: initialExplorationPlan.targetPaths,
-                    inspectedPaths: [],
-                    changedPaths: [],
-                    recentFindings: [],
-                    workspaceSnapshot: initialWorkspaceSnapshotRecord
-                ).objectives,
+                patchObjectives: Self.orderedUniqueStrings(from: initialPatchPlan.objectives + initialPatchPlan.fileStatuses),
                 carryForwardNotes: [],
                 summary: "Run created and waiting for planning/execution.",
                 now: clock()
@@ -199,6 +200,8 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
 
             let steps = plan?.steps ?? [TaskPlanner.defaultSingleStep(for: request.prompt, taskKind: taskKind)]
             let stepRecords = try persistence.createRunSteps(runID: run.id, steps: steps.map(\.title), now: clock())
+            try emitTodoList(runID: run.id, steps: steps, statuses: [:], summaries: [:], emitter: emitter)
+            var skippedTodoIndices = Set<Int>()
             for (index, step) in steps.enumerated() {
                 try await cancellation.checkCancellation()
                 let workspaceSnapshotRecord = try persistence.fetchWorkspaceSnapshot(runID: run.id)
@@ -213,6 +216,14 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                     try persistence.transitionRunStep(stepID: stepRecords[index].id, to: .skipped, summary: "Skipped: \(step.title)", now: clock())
                     try emitter.emit(.taskStepFinished(runID: run.id, index: index + 1, total: steps.count, title: step.title, outcome: "skipped"), runID: run.id)
                     stepSummaries.append("Skipped: \(step.title)")
+                    skippedTodoIndices.insert(index)
+                    try emitTodoList(
+                        runID: run.id,
+                        steps: steps,
+                        statuses: Self.todoStatuses(currentIndex: nil, completedThrough: index, skippedIndices: skippedTodoIndices),
+                        summaries: [index: "Skipped: \(step.title)"],
+                        emitter: emitter
+                    )
                     continue
                 }
                 if let control = request.executionControl,
@@ -221,6 +232,13 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                 }
 
                 try persistence.transitionRunStep(stepID: stepRecords[index].id, to: .running, summary: nil, now: clock())
+                try emitTodoList(
+                    runID: run.id,
+                    steps: steps,
+                    statuses: Self.todoStatuses(currentIndex: index, completedThrough: index - 1, skippedIndices: skippedTodoIndices),
+                    summaries: Dictionary(uniqueKeysWithValues: stepSummaries.enumerated().map { ($0.offset, $0.element) }),
+                    emitter: emitter
+                )
                 try emitter.emit(.workflowPhaseChanged(runID: run.id, phase: step.phase.rawValue, title: step.title), runID: run.id)
                 if step.phase == .exploration {
                     try emitter.emit(
@@ -321,6 +339,13 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                 remainingItems.append(contentsOf: outcome.remainingItems)
                 changedFiles = Self.mergeChangedArtifacts(changedFiles, outcome.changedFiles)
                 try persistence.transitionRunStep(stepID: stepRecords[index].id, to: .completed, summary: outcome.summary, now: clock())
+                try emitTodoList(
+                    runID: run.id,
+                    steps: steps,
+                    statuses: Self.todoStatuses(currentIndex: nil, completedThrough: index, skippedIndices: skippedTodoIndices),
+                    summaries: Dictionary(uniqueKeysWithValues: stepSummaries.enumerated().map { ($0.offset, $0.element) }),
+                    emitter: emitter
+                )
                 if steps.count > 1 {
                     let stepSummaryMessage = try persistence.appendMessage(
                         threadID: thread.id,
@@ -334,11 +359,22 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                 try emitter.emit(.taskStepFinished(runID: run.id, index: index + 1, total: steps.count, title: step.title, outcome: "completed"), runID: run.id)
             }
 
+            let finalPatchPlan = PatchPlanningStrategy.build(
+                taskKind: taskKind,
+                prompt: request.prompt,
+                explorationTargets: initialExplorationPlan.targetPaths,
+                pendingExplorationTargets: initialExplorationPlan.targetPaths,
+                inspectedPaths: [],
+                changedPaths: Self.orderedUniqueChanges(from: changedFiles).map(\.path),
+                recentFindings: [],
+                workspaceSnapshot: try persistence.fetchWorkspaceSnapshot(runID: run.id)
+            )
             let finalAnswerText: String
             if steps.count == 1 {
                 finalAnswerText = Self.decorateFinalSummary(
                     base: stepSummaries.last ?? "Task finished.",
                     request: request.prompt,
+                    plannedFiles: finalPatchPlan.targetPaths,
                     changedFiles: changedFiles,
                     validationNotes: validationNotes,
                     remainingItems: remainingItems
@@ -347,6 +383,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                 finalAnswerText = Self.decorateFinalSummary(
                     base: Self.compilePlannedRunSummary(request: request.prompt, steps: steps, summaries: stepSummaries),
                     request: request.prompt,
+                    plannedFiles: finalPatchPlan.targetPaths,
                     changedFiles: changedFiles,
                     validationNotes: validationNotes,
                     remainingItems: remainingItems + stepSummaries.filter { $0.hasPrefix("Skipped:") }
@@ -882,9 +919,9 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                 if repeatedToolCallCount >= 2,
                    let lastSafeToolResult,
                    Self.isSafeRepeatedToolCall(toolName: call.toolName, arguments: call.arguments) {
-                    try emitter.emit(.status(runID: run.id, message: "Detected a repeated identical read-only tool call. Returning the previous result."), runID: run.id)
+                    try emitter.emit(.status(runID: run.id, message: "Detected a repeated identical read-only tool call. Reusing the previous result."), runID: run.id)
                     return .init(
-                        summary: "Using the latest tool result because the model repeated the same read-only call.\n\n\(lastSafeToolResult)",
+                        summary: Self.reusedReadOnlyToolResultSummary(toolName: call.toolName, result: lastSafeToolResult),
                         changedFiles: changedFiles,
                         validationNotes: [],
                         remainingItems: []
@@ -1137,7 +1174,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                    let lastSafeToolResult,
                    Self.isSafeRepeatedToolCall(toolName: call.toolName, arguments: call.arguments) {
                     return .init(
-                        summary: "Subagent reused the latest safe tool result after repeated identical read-only calls.\n\n\(lastSafeToolResult)",
+                        summary: Self.reusedReadOnlyToolResultSummary(toolName: call.toolName, result: lastSafeToolResult),
                         changedFiles: changedFiles,
                         validationNotes: [],
                         remainingItems: []
@@ -1254,6 +1291,10 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         return operation == "read_text_file" || operation == "list_directory" || operation == "find_files" || operation == "search_text" || operation == "file_info"
     }
 
+    private static func reusedReadOnlyToolResultSummary(toolName: String, result: String) -> String {
+        "Here is the latest \(toolName) result:\n\n\(result)"
+    }
+
     private static func compilePlannedRunSummary(request: String, steps: [PlannedStep], summaries: [String]) -> String {
         var lines = ["Completed planned task for: \(request)", ""]
         for (index, step) in steps.enumerated() {
@@ -1268,6 +1309,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
     private static func decorateFinalSummary(
         base: String,
         request: String,
+        plannedFiles: [String],
         changedFiles: [ChangedArtifact],
         validationNotes: [String],
         remainingItems: [String]
@@ -1285,6 +1327,15 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
             for change in uniqueChanges {
                 lines.append("- \(change.path): \(change.reason)")
             }
+        }
+
+        let changedPathSet = Set(uniqueChanges.map(\.path))
+        let pendingFiles = orderedUniqueStrings(from: plannedFiles).filter { !changedPathSet.contains($0) }
+        if !plannedFiles.isEmpty || !pendingFiles.isEmpty {
+            lines.append("")
+            lines.append("Patch status:")
+            lines.append(contentsOf: uniqueChanges.map { "- completed: \($0.path)" })
+            lines.append(contentsOf: pendingFiles.map { "- pending: \($0)" })
         }
 
         lines.append("")
@@ -1366,17 +1417,17 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
 
                 switch result {
                 case .retryableFailure:
-                    notes.append("Automatic validation requested a retry for \(action.call.toolName).")
+                    notes.append("Validation attempted but requested a retry for \(action.call.toolName).")
                 case .completed(let output, _, let metadata):
                     workflowState.record(metadata: metadata)
-                    let note = metadata.summary.isEmpty ? "Validated with \(action.call.toolName)." : metadata.summary
+                    let note = metadata.summary.isEmpty ? "Validation passed with \(action.call.toolName)." : "Validation passed: \(metadata.summary)"
                     notes.append(note)
                     if metadata.validationArtifacts.isEmpty, !output.isEmpty {
                         notes.append("Captured validation output from \(action.call.toolName).")
                     }
                 }
             } catch {
-                notes.append("Validation check failed: \(action.summary)")
+                notes.append("Validation failed: \(action.summary)")
             }
         }
 
@@ -1434,11 +1485,49 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
             unresolvedItems: unresolvedItems,
             validationSuggestions: suggestions,
             plannedChangeSet: patchPlan.targetPaths,
-            patchObjectives: patchPlan.objectives,
+            patchObjectives: Self.orderedUniqueStrings(from: patchPlan.objectives + patchPlan.fileStatuses),
             carryForwardNotes: Array(carryForward.suffix(8)),
             summary: summary,
             now: clock()
         )
+    }
+
+    private static func todoStatuses(
+        currentIndex: Int?,
+        completedThrough: Int,
+        skippedIndices: Set<Int>
+    ) -> [Int: RunTodoStatus] {
+        var statuses: [Int: RunTodoStatus] = [:]
+        if completedThrough >= 0 {
+            for index in 0...completedThrough {
+                statuses[index] = skippedIndices.contains(index) ? .skipped : .completed
+            }
+        }
+        for index in skippedIndices {
+            statuses[index] = .skipped
+        }
+        if let currentIndex {
+            statuses[currentIndex] = .inProgress
+        }
+        return statuses
+    }
+
+    private func emitTodoList(
+        runID: UUID,
+        steps: [PlannedStep],
+        statuses: [Int: RunTodoStatus],
+        summaries: [Int: String],
+        emitter: EventEmitter
+    ) throws {
+        let items = steps.enumerated().map { index, step in
+            RunTodoItem(
+                index: index + 1,
+                title: step.title,
+                status: statuses[index] ?? .pending,
+                summary: summaries[index]
+            )
+        }
+        try emitter.emit(.todoListUpdated(runID: runID, items: items), runID: runID)
     }
 
     private func emitPatchPlan(
@@ -1462,7 +1551,14 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
             recentFindings: recentFindings + (workflowState?.recentFindings ?? []) + (workingMemory?.recentFindings ?? []),
             workspaceSnapshot: try persistence.fetchWorkspaceSnapshot(runID: runID)
         )
-        try emitter.emit(.patchPlanUpdated(runID: runID, paths: patchPlan.targetPaths, objectives: patchPlan.objectives), runID: runID)
+        try emitter.emit(
+            .patchPlanUpdated(
+                runID: runID,
+                paths: patchPlan.targetPaths,
+                objectives: Self.orderedUniqueStrings(from: patchPlan.objectives + patchPlan.fileStatuses)
+            ),
+            runID: runID
+        )
     }
 
     private static func validationSuggestions(

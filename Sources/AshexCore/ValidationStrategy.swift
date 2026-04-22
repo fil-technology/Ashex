@@ -21,6 +21,11 @@ public enum ValidationStrategy {
         let hasYarnLock: Bool
         let hasCargoToml: Bool
         let hasGoMod: Bool
+        let hasPyProject: Bool
+        let hasRequirements: Bool
+        let hasGemfile: Bool
+        let hasDockerCompose: Bool
+        let hasDockerfile: Bool
         let xcodeWorkspace: String?
         let xcodeProject: String?
 
@@ -36,6 +41,11 @@ public enum ValidationStrategy {
             self.hasYarnLock = entries.contains("yarn.lock")
             self.hasCargoToml = entries.contains("Cargo.toml")
             self.hasGoMod = entries.contains("go.mod")
+            self.hasPyProject = entries.contains("pyproject.toml")
+            self.hasRequirements = entries.contains("requirements.txt")
+            self.hasGemfile = entries.contains("Gemfile")
+            self.hasDockerCompose = entries.contains("docker-compose.yml") || entries.contains("docker-compose.yaml") || entries.contains("compose.yml") || entries.contains("compose.yaml")
+            self.hasDockerfile = entries.contains("Dockerfile")
             self.xcodeWorkspace = markers.first(where: { $0.hasSuffix(".xcworkspace") })
             self.xcodeProject = markers.first(where: { $0.hasSuffix(".xcodeproj") })
         }
@@ -174,6 +184,16 @@ public enum ValidationStrategy {
         }
         let touchedRust = changedFiles.contains { $0.hasSuffix(".rs") || $0 == "Cargo.toml" }
         let touchedGo = changedFiles.contains { $0.hasSuffix(".go") || $0 == "go.mod" }
+        let touchedPython = changedFiles.contains { $0.hasSuffix(".py") || $0 == "pyproject.toml" || $0 == "requirements.txt" }
+        let touchedRuby = changedFiles.contains { $0.hasSuffix(".rb") || $0 == "Gemfile" || $0 == "Gemfile.lock" }
+        let touchedContainer = changedFiles.contains { path in
+            path == "Dockerfile"
+                || path.hasSuffix(".Dockerfile")
+                || path == "docker-compose.yml"
+                || path == "docker-compose.yaml"
+                || path == "compose.yml"
+                || path == "compose.yaml"
+        }
         let wantsTests = lowered.contains("test") || lowered.contains("bug") || lowered.contains("fix") || taskKind == .bugFix
         var actions: [ValidationAction] = []
 
@@ -257,6 +277,67 @@ public enum ValidationStrategy {
                     "timeout_seconds": .number(120),
                 ])
             ))
+        }
+
+        if (markers.hasPyProject || markers.hasRequirements || touchedPython) && (taskKind == .bugFix || taskKind == .feature || taskKind == .refactor || touchedPython) {
+            if wantsTests || taskKind == .bugFix {
+                actions.append(.init(
+                    summary: "Run `python -m pytest` to validate the Python tests.",
+                    call: .init(toolName: "shell", arguments: [
+                        "command": .string("python -m pytest"),
+                        "timeout_seconds": .number(120),
+                    ])
+                ))
+            } else {
+                actions.append(.init(
+                    summary: "Run `python -m compileall .` to validate Python syntax.",
+                    call: .init(toolName: "shell", arguments: [
+                        "command": .string("python -m compileall ."),
+                        "timeout_seconds": .number(120),
+                    ])
+                ))
+            }
+        }
+
+        if (markers.hasGemfile || touchedRuby) && (taskKind == .bugFix || taskKind == .feature || taskKind == .refactor || touchedRuby) {
+            if wantsTests || taskKind == .bugFix {
+                actions.append(.init(
+                    summary: "Run `bundle exec rake test` to validate the Ruby tests.",
+                    call: .init(toolName: "shell", arguments: [
+                        "command": .string("bundle exec rake test"),
+                        "timeout_seconds": .number(120),
+                    ])
+                ))
+            } else {
+                let rubySyntaxCommand = changedFiles.filter { $0.hasSuffix(".rb") }.prefix(4).map { "ruby -c \($0)" }.joined(separator: " && ")
+                actions.append(.init(
+                    summary: "Run `ruby -c` checks for changed Ruby files.",
+                    call: .init(toolName: "shell", arguments: [
+                        "command": .string(rubySyntaxCommand.isEmpty ? "bundle exec ruby -c Gemfile" : rubySyntaxCommand),
+                        "timeout_seconds": .number(120),
+                    ])
+                ))
+            }
+        }
+
+        if (markers.hasDockerCompose || markers.hasDockerfile || touchedContainer) && (taskKind == .bugFix || taskKind == .feature || taskKind == .refactor || touchedContainer) {
+            if markers.hasDockerCompose {
+                actions.append(.init(
+                    summary: "Run `docker compose config` to validate container configuration.",
+                    call: .init(toolName: "shell", arguments: [
+                        "command": .string("docker compose config"),
+                        "timeout_seconds": .number(120),
+                    ])
+                ))
+            } else {
+                actions.append(.init(
+                    summary: "Run `docker build --check .` to validate the Dockerfile when supported.",
+                    call: .init(toolName: "shell", arguments: [
+                        "command": .string("docker build --check ."),
+                        "timeout_seconds": .number(120),
+                    ])
+                ))
+            }
         }
 
         return actions

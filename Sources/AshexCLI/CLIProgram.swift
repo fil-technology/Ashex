@@ -24,6 +24,9 @@ struct AshexCLI {
             let configuration = try CLIConfiguration(arguments: CommandLine.arguments)
 
             if let prompt = configuration.prompt {
+                if try handleLocalPromptCommand(prompt, configuration: configuration) {
+                    return
+                }
                 try configuration.persistSessionSettings()
                 try await configuration.validateModelGuardrails()
                 let runtime = try configuration.makeRuntime()
@@ -44,6 +47,58 @@ struct AshexCLI {
             }
             Darwin.exit(1)
         }
+    }
+
+    static func handleLocalPromptCommand(_ prompt: String, configuration: CLIConfiguration) throws -> Bool {
+        guard let command = LocalPromptCommand.parse(prompt) else {
+            return false
+        }
+
+        switch command {
+        case .showWorkspace:
+            print(SimpleWorkspaceCommandExecutor.workspaceStatus(workspaceRoot: configuration.workspaceRoot))
+        case .showWorkspaceHelp:
+            print(SimpleWorkspaceCommandExecutor.workspaceHelp(
+                workspaceRoot: configuration.workspaceRoot,
+                startupCommand: "ashex daemon run --workspace \(configuration.workspaceRoot.path) --provider \(configuration.provider) --model \(configuration.model)"
+            ))
+        case .showLastRun:
+            let inspector = SessionInspector(persistence: try configuration.makePersistenceStore())
+            if let summary = try inspector.summarizeLatestRun(recentEventLimit: 500) {
+                print(SessionInspector.format(summary: summary))
+            } else {
+                print("No persisted runs were found for this workspace yet.")
+            }
+        case .simpleWorkspace(let workspaceCommand):
+            print(try SimpleWorkspaceCommandExecutor.execute(
+                workspaceCommand,
+                workspaceRoot: configuration.workspaceRoot,
+                sandbox: configuration.userConfig.sandbox
+            ))
+        case .showSandbox:
+            print("""
+            Sandbox policy
+            Mode: \(configuration.userConfig.sandbox.mode.rawValue)
+            Network mode: \(configuration.userConfig.network.mode.rawValue)
+            Protected paths: \(configuration.userConfig.sandbox.protectedPaths.isEmpty ? "none" : configuration.userConfig.sandbox.protectedPaths.joined(separator: ", "))
+            Unknown commands require approval: \(configuration.userConfig.shell.requireApprovalForUnknownCommands ? "yes" : "no")
+            Workspace config: \(configuration.userConfigFile.path)
+            Global config: \(configuration.globalUserConfigFile?.path ?? "<none>")
+            """)
+        case .showToolPacks:
+            let availablePacks = (try? ToolPackManager.availableBundledPacks()) ?? []
+            let enabledIDs = (try? ToolPackManager.enabledBundledPackIDs(persistence: configuration.makePersistenceStore())) ?? ToolPackSettings.defaultBundledPackIDs
+            if availablePacks.isEmpty {
+                print("No bundled tool packs found.")
+            } else {
+                for pack in availablePacks {
+                    print("\(pack.id): \(enabledIDs.contains(pack.id) ? "enabled" : "disabled")")
+                }
+            }
+        case .installToolPack, .uninstallToolPack, .openWorkspaces, .switchWorkspace, .showHelp:
+            print(LocalPromptCommand.helpLines.joined(separator: "\n"))
+        }
+        return true
     }
 
     static func isHelpRequested(arguments: [String]) -> Bool {
@@ -112,6 +167,18 @@ struct AshexCLI {
             for (index, step) in steps.enumerated() {
                 print("[plan] \(index + 1). \(step)")
             }
+        case .todoListUpdated(_, let items):
+            let summary = items.map { item in
+                let marker: String
+                switch item.status {
+                case .pending: marker = "todo"
+                case .inProgress: marker = "doing"
+                case .completed: marker = "done"
+                case .skipped: marker = "skip"
+                }
+                return "\(item.index):\(marker)"
+            }.joined(separator: ", ")
+            print("[todo] \(summary)")
         case .taskStepStarted(_, let index, let total, let title):
             print("[plan] step \(index)/\(total) started - \(title)")
         case .taskStepFinished(_, let index, let total, let title, let outcome):
@@ -334,7 +401,8 @@ struct CLIConfiguration {
                 configuration: .init(
                     model: model,
                     baseURL: URL(string: ProcessInfo.processInfo.environment["OLLAMA_BASE_URL"] ?? "http://localhost:11434/api/chat")!,
-                    requestTimeoutSeconds: Self.ollamaRequestTimeoutSeconds(config: userConfig.ollama)
+                    requestTimeoutSeconds: Self.ollamaRequestTimeoutSeconds(config: userConfig.ollama),
+                    contextWindowTokens: Self.ollamaContextWindowTokens(config: userConfig.ollama)
                 ),
                 audioTranscriber: audioTranscriber
             )
@@ -471,6 +539,15 @@ struct CLIConfiguration {
             return parsed
         }
         return config.requestTimeoutSeconds
+    }
+
+    static func ollamaContextWindowTokens(config: OllamaConfig) -> Int {
+        if let raw = ProcessInfo.processInfo.environment["OLLAMA_CONTEXT_WINDOW_TOKENS"],
+           let parsed = Int(raw),
+           parsed >= 512 {
+            return parsed
+        }
+        return config.contextWindowTokens
     }
 
     private func makeOptimizedAdapterIfNeeded(

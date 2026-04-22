@@ -9,6 +9,49 @@ public struct SessionRunSnapshot: Sendable {
     public let events: [RuntimeEvent]
 }
 
+public struct RunInspectionSummary: Sendable, Equatable {
+    public let runID: UUID
+    public let threadID: UUID
+    public let state: RunState
+    public let updatedAt: Date
+    public let task: String?
+    public let stepSummaries: [String]
+    public let changedFiles: [String]
+    public let pendingFiles: [String]
+    public let validationConfidence: String
+    public let validationNotes: [String]
+    public let remainingItems: [String]
+    public let subagentAudit: [String]
+
+    public init(
+        runID: UUID,
+        threadID: UUID,
+        state: RunState,
+        updatedAt: Date,
+        task: String?,
+        stepSummaries: [String],
+        changedFiles: [String],
+        pendingFiles: [String],
+        validationConfidence: String,
+        validationNotes: [String],
+        remainingItems: [String],
+        subagentAudit: [String]
+    ) {
+        self.runID = runID
+        self.threadID = threadID
+        self.state = state
+        self.updatedAt = updatedAt
+        self.task = task
+        self.stepSummaries = stepSummaries
+        self.changedFiles = changedFiles
+        self.pendingFiles = pendingFiles
+        self.validationConfidence = validationConfidence
+        self.validationNotes = validationNotes
+        self.remainingItems = remainingItems
+        self.subagentAudit = subagentAudit
+    }
+}
+
 public struct TokenSavingsSummary: Sendable, Equatable {
     public let compactionCount: Int
     public let savedTokenCount: Int
@@ -97,6 +140,103 @@ public struct SessionInspector: Sendable {
         )
     }
 
+    public func loadLatestRunSnapshot(recentEventLimit: Int? = nil) throws -> SessionRunSnapshot? {
+        guard let latestRunID = try persistence.listThreads(limit: 1_000).compactMap(\.latestRunID).first else {
+            return nil
+        }
+        return try loadRunSnapshot(runID: latestRunID, recentEventLimit: recentEventLimit)
+    }
+
+    public func summarizeLatestRun(recentEventLimit: Int? = nil) throws -> RunInspectionSummary? {
+        guard let snapshot = try loadLatestRunSnapshot(recentEventLimit: recentEventLimit) else {
+            return nil
+        }
+        return summarize(snapshot: snapshot)
+    }
+
+    public func summarize(snapshot: SessionRunSnapshot) -> RunInspectionSummary {
+        let memory = snapshot.workingMemory
+        let changedFromEvents = snapshot.events.flatMap { event -> [String] in
+            if case .changedFilesTracked(_, let paths) = event.payload {
+                return paths
+            }
+            return []
+        }
+        let changedFiles = orderedUnique((memory?.changedPaths ?? []) + changedFromEvents)
+        let plannedFiles = orderedUnique((memory?.plannedChangeSet ?? []) + patchPlanPaths(from: snapshot.events))
+        let pendingFiles = plannedFiles.filter { !changedFiles.contains($0) }
+        let validationNotes = orderedUnique(validationNotes(from: snapshot, changedFiles: changedFiles))
+        let remainingItems = orderedUnique((memory?.unresolvedItems ?? []) + remainingItems(from: snapshot.events))
+
+        return RunInspectionSummary(
+            runID: snapshot.run.id,
+            threadID: snapshot.run.threadID,
+            state: snapshot.run.state,
+            updatedAt: snapshot.run.updatedAt,
+            task: memory?.currentTask,
+            stepSummaries: snapshot.steps.map { step in
+                "\(step.index). \(step.title) - \(step.state.rawValue)\(step.summary.map { ": \($0)" } ?? "")"
+            },
+            changedFiles: changedFiles,
+            pendingFiles: pendingFiles,
+            validationConfidence: validationConfidence(
+                runState: snapshot.run.state,
+                changedFiles: changedFiles,
+                validationNotes: validationNotes,
+                remainingItems: remainingItems
+            ),
+            validationNotes: validationNotes,
+            remainingItems: remainingItems,
+            subagentAudit: subagentAudit(from: snapshot.events)
+        )
+    }
+
+    public static func format(summary: RunInspectionSummary) -> String {
+        var lines = [
+            "Last run",
+            "Run: \(summary.runID.uuidString)",
+            "Thread: \(summary.threadID.uuidString)",
+            "State: \(summary.state.rawValue)",
+        ]
+        if let task = summary.task, !task.isEmpty {
+            lines.append("Task: \(task)")
+        }
+        lines.append("Validation confidence: \(summary.validationConfidence)")
+
+        if !summary.stepSummaries.isEmpty {
+            lines.append("")
+            lines.append("Steps:")
+            lines.append(contentsOf: summary.stepSummaries.prefix(8).map { "- \($0)" })
+        }
+
+        if !summary.changedFiles.isEmpty || !summary.pendingFiles.isEmpty {
+            lines.append("")
+            lines.append("Patch status:")
+            lines.append(contentsOf: summary.changedFiles.prefix(12).map { "- done: \($0)" })
+            lines.append(contentsOf: summary.pendingFiles.prefix(12).map { "- pending: \($0)" })
+        }
+
+        if !summary.validationNotes.isEmpty {
+            lines.append("")
+            lines.append("Validation:")
+            lines.append(contentsOf: summary.validationNotes.prefix(8).map { "- \($0)" })
+        }
+
+        if !summary.remainingItems.isEmpty {
+            lines.append("")
+            lines.append("Remaining:")
+            lines.append(contentsOf: summary.remainingItems.prefix(8).map { "- \($0)" })
+        }
+
+        if !summary.subagentAudit.isEmpty {
+            lines.append("")
+            lines.append("Subagents:")
+            lines.append(contentsOf: summary.subagentAudit.prefix(8).map { "- \($0)" })
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
     public func loadTokenSavings(runID: UUID, now: Date = Date(), calendar: Calendar = .current) throws -> TokenSavingsSnapshot? {
         guard let run = try persistence.fetchRun(runID: runID) else {
             return nil
@@ -161,6 +301,117 @@ public struct SessionInspector: Sendable {
             if case .contextPrepared(_, _, _, _, let estimatedTokens, _) = event.payload {
                 partial = max(partial, estimatedTokens)
             }
+        }
+    }
+
+    private func patchPlanPaths(from events: [RuntimeEvent]) -> [String] {
+        events.flatMap { event -> [String] in
+            if case .patchPlanUpdated(_, let paths, _) = event.payload {
+                return paths
+            }
+            return []
+        }
+    }
+
+    private func validationNotes(from snapshot: SessionRunSnapshot, changedFiles: [String]) -> [String] {
+        var notes = snapshot.workingMemory?.validationSuggestions ?? []
+        for event in snapshot.events {
+            switch event.payload {
+            case .toolCallFinished(_, _, let success, let summary):
+                let lowered = summary.lowercased()
+                if success,
+                   lowered.contains("validat") || lowered.contains("test") || lowered.contains("build") || lowered.contains("git") {
+                    notes.append(summary)
+                }
+            case .status(_, let message):
+                if message.localizedCaseInsensitiveContains("Automatic validation") ||
+                    message.localizedCaseInsensitiveContains("validation gate") {
+                    notes.append(message)
+                }
+            default:
+                continue
+            }
+        }
+        if changedFiles.isEmpty {
+            notes.append("No changed files were tracked for this run.")
+        }
+        return notes
+    }
+
+    private func validationConfidence(
+        runState: RunState,
+        changedFiles: [String],
+        validationNotes: [String],
+        remainingItems: [String]
+    ) -> String {
+        guard runState == .completed else {
+            return "incomplete"
+        }
+        guard !changedFiles.isEmpty else {
+            return "not applicable"
+        }
+        if validationNotes.contains(where: { note in
+            let lowered = note.lowercased()
+            return lowered.contains("failed") || lowered.contains("blocked") || lowered.contains("incomplete")
+        }) {
+            return "needs attention"
+        }
+        let passedValidation = validationNotes.contains { note in
+            let lowered = note.lowercased()
+            return lowered.contains("validation passed")
+                || lowered.contains("validated with")
+                || lowered.contains("validation completed")
+                || lowered.contains("validated")
+                || lowered.contains("build succeeded")
+                || lowered.contains("tests passed")
+        }
+        let attemptedValidation = validationNotes.contains { note in
+            let lowered = note.lowercased()
+            return lowered.contains("validation attempted")
+                || lowered.contains("automatic validation")
+                || lowered.contains("captured validation output")
+                || lowered.contains("git diff")
+                || lowered.contains("read-back")
+        }
+        if passedValidation && remainingItems.isEmpty {
+            return "verified"
+        }
+        if passedValidation || attemptedValidation || !validationNotes.isEmpty {
+            return "partially verified"
+        }
+        return "unverified"
+    }
+
+    private func remainingItems(from events: [RuntimeEvent]) -> [String] {
+        events.flatMap { event -> [String] in
+            if case .subagentHandoff(_, _, _, _, let remainingItems) = event.payload {
+                return remainingItems
+            }
+            return []
+        }
+    }
+
+    private func subagentAudit(from events: [RuntimeEvent]) -> [String] {
+        events.compactMap { event -> String? in
+            switch event.payload {
+            case .subagentAssigned(_, let title, let role, _):
+                return "assigned \(role): \(title)"
+            case .subagentHandoff(_, let title, let role, let summary, _):
+                return "handoff \(role): \(title) - \(summary)"
+            case .subagentFinished(_, let title, let summary):
+                return "finished: \(title) - \(summary)"
+            default:
+                return nil
+            }
+        }
+    }
+
+    private func orderedUnique(_ values: [String]) -> [String] {
+        var seen = Set<String>()
+        return values.filter { value in
+            let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !normalized.isEmpty else { return false }
+            return seen.insert(normalized).inserted
         }
     }
 }
