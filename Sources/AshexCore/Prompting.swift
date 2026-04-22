@@ -368,6 +368,18 @@ public enum PromptBuilder {
         let workspaceSnapshotBlock = renderWorkspaceSnapshot(prepared.base.workspaceSnapshot)
         let workingMemoryBlock = renderWorkingMemory(prepared.base.workingMemory)
 
+        let usesNativeToolCalling = provider == "ollama-native-tools"
+        let actionFormatRules = usesNativeToolCalling
+            ? """
+            Use the native tool-calling interface when a tool is needed.
+            When the task is complete, answer directly in plain text.
+            """
+            : """
+            You must return exactly one JSON object matching the provided schema:
+            - If the task is complete, return `type = "final_answer"` and fill `final_answer`.
+            - If a tool is needed, return `type = "tool_call"` and fill `tool_name` and `arguments`.
+            """
+
         let staticRules = PromptSection(
             title: "Core Instructions",
             body: """
@@ -375,9 +387,7 @@ public enum PromptBuilder {
 
             Decide the next action for the current loop iteration.
 
-            You must return exactly one JSON object matching the provided schema:
-            - If the task is complete, return `type = "final_answer"` and fill `final_answer`.
-            - If a tool is needed, return `type = "tool_call"` and fill `tool_name` and `arguments`.
+            \(actionFormatRules)
 
             Rules:
             - Use only the tools listed below.
@@ -411,7 +421,8 @@ public enum PromptBuilder {
 
             Prefer `apply_patch` when multiple targeted edits are needed in the same file. Use `edits` as an array of objects with `old_text`, `new_text`, and `replace_all`.
 
-            Canonical tool-call examples:
+            \(usesNativeToolCalling ? "The native tool definitions include the canonical argument schemas." : "Canonical tool-call examples:")
+            \(usesNativeToolCalling ? "" : """
             {"type":"tool_call","final_answer":null,"tool_name":"filesystem","arguments":{"operation":"list_directory","path":"."}}
             {"type":"tool_call","final_answer":null,"tool_name":"filesystem","arguments":{"operation":"read_text_file","path":"README.md"}}
             {"type":"tool_call","final_answer":null,"tool_name":"filesystem","arguments":{"operation":"search_text","path":"Sources","query":"ApprovalPolicy","max_results":20}}
@@ -422,6 +433,7 @@ public enum PromptBuilder {
             {"type":"tool_call","final_answer":null,"tool_name":"git","arguments":{"operation":"add","paths":["README.md","Sources/App.swift"]}}
             {"type":"tool_call","final_answer":null,"tool_name":"git","arguments":{"operation":"commit","message":"Initial project setup","amend":false,"allow_empty":false}}
             {"type":"tool_call","final_answer":null,"tool_name":"shell","arguments":{"command":"ls -la","timeout_seconds":30}}
+            """)
             """,
             kind: .cachedStatic
         )

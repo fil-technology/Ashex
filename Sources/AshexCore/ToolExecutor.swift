@@ -227,7 +227,24 @@ struct ToolExecutor: Sendable {
             return "Tool error: the current workflow phase is \(preconditions.phase.rawValue). Mutating actions are only allowed during the implementation phase. Inspect, plan, or validate first."
         }
         guard isMutation(call: call, tool: tool), !preconditions.hasPriorInspection else { return nil }
+        if isExplicitNewPathCreation(call: call) {
+            return nil
+        }
         return "Tool error: inspect-before-mutate policy requires reading or searching relevant files before making changes. Inspect the target files or repository state first, then retry the mutation."
+    }
+
+    private func isExplicitNewPathCreation(call: ToolCallRequest) -> Bool {
+        guard call.toolName == "filesystem" else { return false }
+        switch call.arguments["operation"]?.stringValue {
+        case "create_directory":
+            return call.arguments["path"]?.stringValue?.isEmpty == false
+        case "write_text_file":
+            return call.arguments["path"]?.stringValue?.isEmpty == false
+                && call.arguments["content"]?.stringValue != nil
+                && call.arguments["create_directories"] == .bool(true)
+        default:
+            return false
+        }
     }
 
     private func isMutation(call: ToolCallRequest, tool: any Tool) -> Bool {

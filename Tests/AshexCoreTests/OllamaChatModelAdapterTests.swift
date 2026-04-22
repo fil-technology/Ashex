@@ -44,6 +44,87 @@ struct OllamaChatModelAdapterTests {
         #expect(action == expected)
     }
 
+    @Test func sendsOllamaNativeToolsAndParsesNativeToolCall() async throws {
+        let session = makeOllamaStubbedSession(statusCode: 200, body: """
+        {
+          "message": {
+            "tool_calls": [
+              {
+                "function": {
+                  "name": "filesystem",
+                  "arguments": {
+                    "operation": "write_text_file",
+                    "path": "site/index.html",
+                    "content": "<h1>Pets</h1>",
+                    "create_directories": true
+                  }
+                }
+              }
+            ]
+          }
+        }
+        """)
+
+        let adapter = OllamaChatModelAdapter(
+            configuration: .init(model: "llama3.2", baseURL: URL(string: "http://localhost:11434/api/chat")!),
+            session: session
+        )
+
+        let action = try await adapter.nextAction(for: nativeToolModelContext())
+
+        let expected = ModelAction.toolCall(.init(toolName: "filesystem", arguments: [
+            "operation": .string("write_text_file"),
+            "path": .string("site/index.html"),
+            "content": .string("<h1>Pets</h1>"),
+            "create_directories": .bool(true),
+        ]))
+        #expect(action == expected)
+
+        let body = try #require(OllamaStubURLProtocol.state.lastRequestBodyString)
+        #expect(body.contains(#""tools":["#))
+        #expect(body.contains(#""name":"filesystem__read_text_file""#))
+        #expect(body.contains(#""name":"filesystem__write_text_file""#))
+        #expect(!body.contains(#""name":"shell__execute""#))
+        #expect(!body.contains(#""enum":["read_text_file","write_text_file"]"#))
+        #expect(!body.contains(#""format":"#))
+        #expect(!body.contains(#""type":"final_answer""#))
+    }
+
+    @Test func parsesFlattenedOllamaNativeToolCall() async throws {
+        let session = makeOllamaStubbedSession(statusCode: 200, body: """
+        {
+          "message": {
+            "tool_calls": [
+              {
+                "function": {
+                  "name": "filesystem__write_text_file",
+                  "arguments": {
+                    "path": "site/index.html",
+                    "content": "<h1>Pets</h1>",
+                    "create_directories": true
+                  }
+                }
+              }
+            ]
+          }
+        }
+        """)
+
+        let adapter = OllamaChatModelAdapter(
+            configuration: .init(model: "llama3.2", baseURL: URL(string: "http://localhost:11434/api/chat")!),
+            session: session
+        )
+
+        let action = try await adapter.nextAction(for: nativeToolModelContext())
+        let expected = ModelAction.toolCall(.init(toolName: "filesystem", arguments: [
+            "operation": .string("write_text_file"),
+            "path": .string("site/index.html"),
+            "content": .string("<h1>Pets</h1>"),
+            "create_directories": .bool(true),
+        ]))
+        #expect(action == expected)
+    }
+
     @Test func retriesWhenStructuredOutputContentIsEmpty() async throws {
         let session = makeOllamaStubbedSession(responses: [
             (
@@ -430,6 +511,61 @@ private func sampleModelContext() -> ModelContext {
         availableTools: [
             .init(name: "filesystem", description: "Read/write text files and list or create directories within the workspace"),
             .init(name: "shell", description: "Execute shell commands inside the workspace with streaming stdout/stderr"),
+        ]
+    )
+}
+
+private func nativeToolModelContext() -> ModelContext {
+    let thread = ThreadRecord(id: UUID(), createdAt: Date())
+    let run = RunRecord(id: UUID(), threadID: thread.id, state: .running, createdAt: Date(), updatedAt: Date())
+    return ModelContext(
+        thread: thread,
+        run: run,
+        messages: [
+            .init(id: UUID(), threadID: thread.id, runID: run.id, role: .user, content: "Create site/index.html", createdAt: Date()),
+        ],
+        availableTools: [
+            .init(
+                name: "filesystem",
+                description: "Read/write text files and list or create directories within the workspace",
+                operationArgumentKey: "operation",
+                operations: [
+                    .init(
+                        name: "read_text_file",
+                        description: "Read a text file",
+                        mutatesWorkspace: false,
+                        arguments: [
+                            .init(name: "path", description: "Workspace-relative file path", type: .string, required: true)
+                        ]
+                    ),
+                    .init(
+                        name: "write_text_file",
+                        description: "Write a text file",
+                        mutatesWorkspace: true,
+                        arguments: [
+                            .init(name: "path", description: "Workspace-relative file path", type: .string, required: true),
+                            .init(name: "content", description: "Full replacement content", type: .string, required: true),
+                            .init(name: "create_directories", description: "Create parent directories", type: .bool, required: false),
+                        ]
+                    ),
+                ]
+            ),
+            .init(
+                name: "shell",
+                description: "Execute shell commands inside the workspace",
+                operationArgumentKey: "operation",
+                defaultOperationName: "execute",
+                operations: [
+                    .init(
+                        name: "execute",
+                        description: "Execute a shell command",
+                        mutatesWorkspace: true,
+                        arguments: [
+                            .init(name: "command", description: "Command to run", type: .string, required: true)
+                        ]
+                    )
+                ]
+            )
         ]
     )
 }

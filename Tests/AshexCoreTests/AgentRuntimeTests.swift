@@ -804,6 +804,65 @@ private final class RecordingExecutionRuntime: ExecutionRuntime, @unchecked Send
     #expect(finalAnswer.contains("Validated the file contents"))
 }
 
+@Test func runtimeRequiresConcreteWorkspaceMutationBeforeCompletingCreateStep() async throws {
+    let fileManager = FileManager.default
+    let root = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let dbURL = root.appendingPathComponent(".ashex/test.sqlite")
+    try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+
+    let runtime = try AgentRuntime(
+        modelAdapter: PlannedSequencedModelAdapter(
+            plan: TaskPlan(
+                steps: [
+                    PlannedStep(title: "Inspect workspace", phase: .exploration),
+                    PlannedStep(title: "Create note file", phase: .mutation),
+                ],
+                taskKind: .feature
+            ),
+            actions: [
+                .finalAnswer("Workspace is ready."),
+                .finalAnswer("I created note.txt."),
+                .toolCall(.init(toolName: "filesystem", arguments: [
+                    "operation": .string("list_directory"),
+                    "path": .string("."),
+                ])),
+                .toolCall(.init(toolName: "filesystem", arguments: [
+                    "operation": .string("write_text_file"),
+                    "path": .string("note.txt"),
+                    "content": .string("hello"),
+                ])),
+                .finalAnswer("Created note.txt."),
+            ]
+        ),
+        toolRegistry: ToolRegistry(tools: [
+            FileSystemTool(workspaceGuard: WorkspaceGuard(rootURL: root)),
+            ShellTool(executionRuntime: ProcessExecutionRuntime(), workspaceURL: root, executionPolicy: testShellExecutionPolicy),
+        ]),
+        persistence: SQLitePersistenceStore(databaseURL: dbURL)
+    )
+
+    var sawMutationGate = false
+    var finalAnswer = ""
+    for await event in runtime.run(RunRequest(prompt: "Create note.txt with hello")) {
+        switch event.payload {
+        case .status(_, let message):
+            if message.contains("Mutation gate blocked completion") {
+                sawMutationGate = true
+            }
+        case .finalAnswer(_, _, let text):
+            finalAnswer = text
+        default:
+            break
+        }
+    }
+
+    let written = try String(contentsOf: root.appendingPathComponent("note.txt"), encoding: .utf8)
+    #expect(sawMutationGate)
+    #expect(written == "hello")
+    #expect(finalAnswer.contains("Changed files:"))
+    #expect(finalAnswer.contains("note.txt"))
+}
+
 @Test func runtimeRecoversFromRepeatedUnproductiveRetries() async throws {
     let fileManager = FileManager.default
     let root = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)

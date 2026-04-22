@@ -684,35 +684,98 @@ public struct OllamaChatModelAdapter: ModelAdapter {
     }
 
     public func nextAction(for context: ModelContext) async throws -> ModelAction {
-        let assembly = PromptBuilder.build(for: context, provider: "ollama", model: configuration.model)
-        let responseSchema = ModelPromptRenderer.responseSchema(for: context.availableTools)
+        let assembly = Self.nativeToolPrompt(for: context)
         let baseMessages: [OllamaChatRequest.Message] = [
             .init(role: "system", content: assembly.systemPrompt),
             .init(role: "user", content: assembly.userPrompt),
         ]
+        let nativeTools = Self.ollamaTools(from: Self.preferredNativeTools(from: context.availableTools, prompt: assembly.userPrompt))
 
         do {
-            return try await requestStructuredAction(messages: baseMessages, schema: responseSchema)
+            return try await requestNativeAction(messages: baseMessages, tools: nativeTools)
         } catch let error as AshexError {
             guard shouldRetryStructuredOutput(for: error) else { throw error }
             let repairMessages = baseMessages + [
                 .init(role: "user", content: """
-                Your previous response was empty or did not match the required JSON schema.
-                Reply again with exactly one JSON object matching the requested schema and no surrounding prose or markdown fences.
+                Your previous response was empty or could not be used as an action.
+                If a tool is needed, call one of the provided tools. Otherwise reply with a direct final answer.
                 """)
             ]
-            return try await requestStructuredAction(messages: repairMessages, schema: responseSchema)
+            return try await requestNativeAction(messages: repairMessages, tools: nativeTools)
         }
     }
 
-    private func requestStructuredAction(
+    private static func nativeToolPrompt(for context: ModelContext) -> (systemPrompt: String, userPrompt: String) {
+        let currentTask = context.messages.reversed().first(where: { $0.role == .system })?.content
+            ?? context.messages.reversed().first(where: { $0.role == .user })?.content
+            ?? "Continue the current run."
+        let originalRequest = context.messages.first(where: { $0.role == .user })?.content ?? currentTask
+        let recentToolResults = context.messages
+            .filter { $0.role == .tool }
+            .suffix(4)
+            .map { $0.content }
+            .joined(separator: "\n\n")
+        let workspaceSummary: String
+        if let snapshot = context.workspaceSnapshot {
+            workspaceSummary = """
+            Workspace root: \(snapshot.workspaceRootPath)
+            Top-level entries: \(snapshot.topLevelEntries.joined(separator: ", "))
+            Source roots: \(snapshot.sourceRoots.joined(separator: ", "))
+            Test roots: \(snapshot.testRoots.joined(separator: ", "))
+            Git status: \(snapshot.gitStatusSummary ?? "unknown")
+            """
+        } else {
+            workspaceSummary = "Workspace snapshot unavailable."
+        }
+
+        return (
+            systemPrompt: """
+            You are Ashex, a local agent with native Ollama tool calling.
+            Return exactly one next action.
+            If the current step requires workspace inspection, creation, editing, validation, shell, or git state, call one of the provided tools.
+            If the current step asks to create or edit files, do not answer in text until after a file-changing tool has succeeded.
+            For new files call filesystem__write_text_file with path, content, and create_directories=true when needed.
+            For directories call filesystem__create_directory with path.
+            For inspection call filesystem__list_directory or filesystem__file_info.
+            Answer in plain text only when the step is actually complete or no tool is needed.
+            """,
+            userPrompt: """
+            Original user request:
+            \(originalRequest)
+
+            Current step:
+            \(currentTask)
+
+            Workspace:
+            \(workspaceSummary)
+
+            Recent tool results:
+            \(recentToolResults.isEmpty ? "none" : recentToolResults)
+            """
+        )
+    }
+
+    private static func preferredNativeTools(from tools: [ToolSchema], prompt: String) -> [ToolSchema] {
+        let lowercasedPrompt = prompt.lowercased()
+        let needsWorkspaceFiles = [
+            "create", "generate", "write", "make", "add", "implement", "edit",
+            "file", "folder", "directory", "website", "html", "css", "javascript",
+            "localization", "translation", "hebrew",
+        ].contains { lowercasedPrompt.contains($0) }
+        guard needsWorkspaceFiles, tools.contains(where: { $0.name == "filesystem" }) else {
+            return tools
+        }
+        return tools.filter { $0.name == "filesystem" }
+    }
+
+    private func requestNativeAction(
         messages: [OllamaChatRequest.Message],
-        schema: JSONObject
+        tools: [OllamaChatRequest.Tool]
     ) async throws -> ModelAction {
         let requestBody = OllamaChatRequest(
             model: configuration.model,
             messages: messages,
-            format: schema,
+            tools: tools,
             options: [
                 "num_ctx": .number(Double(configuration.contextWindowTokens)),
                 "temperature": .number(0),
@@ -737,17 +800,32 @@ public struct OllamaChatModelAdapter: ModelAdapter {
         }
 
         let envelope = try decoder.decode(OllamaChatResponseEnvelope.self, from: data)
-        let content = envelope.message.content.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !content.isEmpty else {
-            throw AshexError.model("Ollama response did not include structured output content")
+        if let toolCall = envelope.message.toolCalls?.first {
+            let decodedToolCall = Self.decodeOllamaNativeToolCall(
+                name: toolCall.function.name,
+                arguments: toolCall.function.arguments
+            )
+            let toolName = ToolCallArgumentNormalizer.canonicalToolName(for: decodedToolCall.toolName)
+            return .toolCall(.init(
+                toolName: toolName,
+                arguments: ToolCallArgumentNormalizer.normalize(arguments: decodedToolCall.arguments, for: toolName)
+            ))
         }
 
-        let candidate = DirectChatReplyParser.extractJSONObjectString(from: content) ?? content
-        do {
-            return try ToolInvocationParser.parseAction(from: candidate)
-        } catch {
-            throw AshexError.model("Ollama response did not decode into the expected structured output")
+        let content = (envelope.message.content ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !content.isEmpty else {
+            throw AshexError.model("Ollama response did not include a reply or tool call")
         }
+
+        if let candidate = DirectChatReplyParser.extractJSONObjectString(from: content),
+           let action = try? ToolInvocationParser.parseAction(from: candidate) {
+            if case .toolCall(let call) = action,
+               !Self.ollamaToolNames(from: tools).contains(ToolCallArgumentNormalizer.canonicalToolName(for: call.toolName)) {
+                throw AshexError.model("Ollama attempted to call a tool that was not available in the native tool list")
+            }
+            return action
+        }
+        return .finalAnswer(content)
     }
 
     private func shouldRetryStructuredOutput(for error: AshexError) -> Bool {
@@ -755,6 +833,132 @@ public struct OllamaChatModelAdapter: ModelAdapter {
         return message.contains("structured output content")
             || message.contains("structured output")
             || message.contains("did not decode")
+            || message.contains("reply or tool call")
+            || message.contains("not available in the native tool list")
+    }
+
+    private static func ollamaToolNames(from tools: [OllamaChatRequest.Tool]) -> Set<String> {
+        Set(tools.map { tool in
+            let decoded = decodeOllamaNativeToolCall(name: tool.function.name, arguments: [:])
+            return ToolCallArgumentNormalizer.canonicalToolName(for: decoded.toolName)
+        })
+    }
+
+    private static func ollamaTools(from tools: [ToolSchema]) -> [OllamaChatRequest.Tool] {
+        tools.flatMap { tool -> [OllamaChatRequest.Tool] in
+            if !tool.operations.isEmpty {
+                return tool.operations.map { operation -> OllamaChatRequest.Tool in
+                    var properties: JSONObject = [:]
+                    var required: [JSONValue] = []
+
+                    for argument in operation.arguments {
+                        var schema: JSONObject = [
+                            "type": .string(ollamaJSONType(for: argument.type)),
+                            "description": .string(argument.description),
+                        ]
+                        if !argument.enumValues.isEmpty {
+                            schema["enum"] = .array(argument.enumValues.map(JSONValue.string))
+                        }
+                        properties[argument.name] = .object(schema)
+                        if argument.required {
+                            required.append(.string(argument.name))
+                        }
+                    }
+
+                    return OllamaChatRequest.Tool(
+                        function: OllamaChatRequest.Tool.Function(
+                            name: nativeFunctionName(toolName: tool.name, operationName: operation.name),
+                            description: "\(tool.description). Operation: \(operation.name). \(operation.description)",
+                            parameters: [
+                                "type": .string("object"),
+                                "properties": .object(properties),
+                                "required": .array(required),
+                                "additionalProperties": .bool(false),
+                            ]
+                        )
+                    )
+                }
+            }
+
+            let operationNames = tool.operations.map(\.name)
+            var properties: JSONObject = [:]
+            var required: [JSONValue] = []
+
+            if let operationArgumentKey = tool.operationArgumentKey, !operationNames.isEmpty {
+                properties[operationArgumentKey] = .object([
+                    "type": .string("string"),
+                    "description": .string("Operation to perform"),
+                    "enum": .array(operationNames.map(JSONValue.string)),
+                ])
+                required.append(.string(operationArgumentKey))
+            }
+
+            for argument in tool.operations.flatMap(\.arguments) {
+                guard properties[argument.name] == nil else { continue }
+                var schema: JSONObject = [
+                    "type": .string(ollamaJSONType(for: argument.type)),
+                    "description": .string(argument.description),
+                ]
+                if !argument.enumValues.isEmpty {
+                    schema["enum"] = .array(argument.enumValues.map(JSONValue.string))
+                }
+                properties[argument.name] = .object(schema)
+                if argument.required {
+                    required.append(.string(argument.name))
+                }
+            }
+
+            return [OllamaChatRequest.Tool(
+                function: OllamaChatRequest.Tool.Function(
+                    name: tool.name,
+                    description: tool.description,
+                    parameters: [
+                        "type": .string("object"),
+                        "properties": .object(properties),
+                        "required": .array(required),
+                        "additionalProperties": .bool(true),
+                    ]
+                )
+            )]
+        }
+    }
+
+    private static func nativeFunctionName(toolName: String, operationName: String) -> String {
+        "\(sanitizeNativeFunctionComponent(toolName))__\(sanitizeNativeFunctionComponent(operationName))"
+    }
+
+    private static func sanitizeNativeFunctionComponent(_ value: String) -> String {
+        let sanitized = value.map { character -> Character in
+            if character.isLetter || character.isNumber || character == "_" || character == "-" {
+                return character
+            }
+            return "_"
+        }
+        let output = String(sanitized).trimmingCharacters(in: CharacterSet(charactersIn: "_-"))
+        return output.isEmpty ? "tool" : output
+    }
+
+    private static func decodeOllamaNativeToolCall(name: String, arguments: JSONObject) -> (toolName: String, arguments: JSONObject) {
+        let parts = name.split(separator: "__", maxSplits: 1, omittingEmptySubsequences: false)
+        guard parts.count == 2 else {
+            return (name, arguments)
+        }
+
+        var decodedArguments = arguments
+        if decodedArguments["operation"] == nil {
+            decodedArguments["operation"] = .string(String(parts[1]))
+        }
+        return (String(parts[0]), decodedArguments)
+    }
+
+    private static func ollamaJSONType(for type: ToolArgumentType) -> String {
+        switch type {
+        case .string: return "string"
+        case .number: return "number"
+        case .bool: return "boolean"
+        case .object: return "object"
+        case .array: return "array"
+        }
     }
 }
 
@@ -832,7 +1036,7 @@ extension OllamaChatModelAdapter: DirectChatModelAdapter {
             throw AshexError.model(ollamaErrorMessage(statusCode: httpResponse.statusCode, apiError: apiError?.error))
         }
         let envelope = try decoder.decode(OllamaChatResponseEnvelope.self, from: data)
-        let content = envelope.message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        let content = (envelope.message.content ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard let reply = DirectChatReplyParser.parseReply(from: content) else {
             throw AshexError.model("Ollama direct chat did not return a reply")
         }
@@ -893,7 +1097,7 @@ extension OllamaChatModelAdapter: TaskPlanningModelAdapter {
         }
 
         let envelope = try decoder.decode(OllamaChatResponseEnvelope.self, from: data)
-        let content = envelope.message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        let content = (envelope.message.content ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !content.isEmpty else {
             throw AshexError.model("Ollama planning response did not include structured output content")
         }
@@ -1689,9 +1893,26 @@ private struct OpenAIResponsesRequest: Encodable {
 private struct OllamaChatRequest: Encodable {
     let model: String
     let messages: [Message]
-    let format: JSONObject
+    let format: JSONObject?
+    let tools: [Tool]?
     let options: JSONObject?
     let stream: Bool
+
+    init(
+        model: String,
+        messages: [Message],
+        format: JSONObject? = nil,
+        tools: [Tool]? = nil,
+        options: JSONObject?,
+        stream: Bool
+    ) {
+        self.model = model
+        self.messages = messages
+        self.format = format
+        self.tools = tools
+        self.options = options
+        self.stream = stream
+    }
 
     struct Message: Encodable {
         let role: String
@@ -1702,6 +1923,17 @@ private struct OllamaChatRequest: Encodable {
             self.role = role
             self.content = content
             self.images = images
+        }
+    }
+
+    struct Tool: Encodable {
+        let type = "function"
+        let function: Function
+
+        struct Function: Encodable {
+            let name: String
+            let description: String
+            let parameters: JSONObject
         }
     }
 }
@@ -1783,7 +2015,22 @@ private struct OllamaChatResponseEnvelope: Decodable {
     let message: Message
 
     struct Message: Decodable {
-        let content: String
+        let content: String?
+        let toolCalls: [ToolCall]?
+
+        enum CodingKeys: String, CodingKey {
+            case content
+            case toolCalls = "tool_calls"
+        }
+    }
+
+    struct ToolCall: Decodable {
+        let function: Function
+
+        struct Function: Decodable {
+            let name: String
+            let arguments: JSONObject
+        }
     }
 }
 

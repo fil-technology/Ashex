@@ -339,7 +339,8 @@ struct CLIConfiguration {
         if providerOverride == nil, environmentProvider == nil, persistedProvider == "mock" {
             inferredPersistedProvider = try Self.inferProviderFromPersistedState(
                 persistedModel: persistedModel,
-                store: settingsStore
+                store: settingsStore,
+                secretStore: LocalJSONSecretStore(fileURL: self.storageRoot.appendingPathComponent("secrets.json"))
             )
         } else {
             inferredPersistedProvider = nil
@@ -648,11 +649,11 @@ struct CLIConfiguration {
 
     private static func inferProviderFromPersistedState(
         persistedModel: String?,
-        store: SQLitePersistenceStore
+        store: SQLitePersistenceStore,
+        secretStore: any SecretStore
     ) throws -> String? {
         guard let persistedModel, persistedModel != "mock" else { return nil }
 
-        let secretStore = KeychainSecretStore()
         let hasOpenAISecret = (try secretStore.readSecret(
             namespace: SessionSetting.credentialsNamespace,
             key: apiKeySettingKey(for: "openai")
@@ -685,7 +686,7 @@ struct CLIConfiguration {
     }
 
     func makeSecretStore() -> any SecretStore {
-        KeychainSecretStore()
+        LocalJSONSecretStore(fileURL: storageRoot.appendingPathComponent("secrets.json"))
     }
 
     private static func makeSettingsStore(storageRoot: URL) throws -> SQLitePersistenceStore {

@@ -297,7 +297,7 @@ Already implemented in the repo:
   - Anthropic
   - Ollama
 - Guarded approvals and shell policy config
-- Provider secrets moved to Keychain with legacy SQLite credential migration
+- Provider secrets moved to local JSON with legacy SQLite credential migration
 - Shell command policy can escalate unknown commands into guarded approval flow
 - Explicit workspace sandbox modes with protected-path enforcement
 - Rule-based shell command policy with allow / prompt / deny behavior
@@ -322,7 +322,7 @@ Most important remaining work:
 - stronger validation execution and check selection beyond the current automatic validation layer
 - deeper multi-file patch planning and execution status tracking
 - even stronger longer-session memory quality and thread continuation behavior beyond the current carry-forward notes
-- deeper secrets, safety, and sandboxing hardening beyond the current Keychain storage and shell-policy enforcement
+- deeper secrets, safety, and sandboxing hardening beyond the current local JSON storage and shell-policy enforcement
 - richer multi-workspace/session UX beyond the new recent-workspace picker and previews
 - richer delegated-agent orchestration beyond the current bounded subtask flow
 - bounded subagents later

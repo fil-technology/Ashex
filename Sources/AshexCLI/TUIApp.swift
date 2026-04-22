@@ -1158,7 +1158,7 @@ final class TUIApp {
             ]
         case .apiKey:
             return [
-                .init(title: "Enter API key", subtitle: "Save it securely in Keychain"),
+                .init(title: "Enter API key", subtitle: "Save it in local secrets JSON"),
                 .init(title: "Skip API key", subtitle: "Keep configuring; prompts will wait until a key is added")
             ]
         case .model:
@@ -1361,7 +1361,7 @@ final class TUIApp {
             do {
                 let normalized = normalizeAPIKeyInput(trimmed, for: sessionProvider)
                 try secretStore.writeSecret(namespace: "provider.credentials", key: CLIConfiguration.apiKeySettingKey(for: sessionProvider), value: normalized)
-                onboardingStatus = "\(sessionProvider.capitalized) API key saved in Keychain"
+                onboardingStatus = "\(sessionProvider.capitalized) API key saved in local secrets JSON"
             } catch {
                 onboardingStatus = "Failed to save API key: \(error.localizedDescription)"
             }
@@ -1402,7 +1402,7 @@ final class TUIApp {
             sessionUserConfig.telegram.botToken = nil
             sessionUserConfig.telegram.enabled = true
             persistUserConfig()
-            onboardingStatus = "Telegram token saved in Keychain"
+            onboardingStatus = "Telegram token saved in local secrets JSON"
         } catch {
             onboardingStatus = "Failed to save Telegram token: \(error.localizedDescription)"
         }
@@ -1603,7 +1603,7 @@ final class TUIApp {
             telegramTokenInput = ""
             inputMode = .prompt
             focus = .settings
-            statusLine = "Telegram token saved in Keychain"
+            statusLine = "Telegram token saved in local secrets JSON"
         } catch {
             statusLine = "Failed to save Telegram token"
         }
@@ -3102,7 +3102,7 @@ final class TUIApp {
         case .experimentalProvider:
             return "These providers are useful for local experiments, but may need extra services or have rougher model behavior than the main provider list."
         case .apiKey:
-            return "Keys are stored in Keychain, not in the project config. You can also skip and add one later from Assistant Setup."
+            return "Keys are stored in `.ashex/secrets.json`, not in the project config. You can also skip and add one later from Assistant Setup."
         case .model:
             return "Pick a discovered model, enter one manually, or download an Ollama model if you are using Ollama."
         case .modelDownload:
@@ -3110,9 +3110,9 @@ final class TUIApp {
         case .telegram:
             return "Telegram lets you send tasks to Ashex remotely. For privacy and routing, each user should create their own bot with BotFather; a shared bot would mix users behind the same token and is not the safe default."
         case .telegramToken:
-            return "Create a Telegram bot by messaging @BotFather, copy the token, and paste it here. Ashex saves the token in Keychain and uses it only for your local daemon."
+            return "Create a Telegram bot by messaging @BotFather, copy the token, and paste it here. Ashex saves the token in local secrets JSON and uses it only for your local daemon."
         case .daemon:
-            return "The daemon is needed for background Telegram polling. macOS may show a password or Keychain prompt so the background daemon can read the Telegram token you saved locally."
+            return "The daemon is needed for background Telegram polling. It reads the Telegram token from environment, config, or local secrets JSON."
         case .done:
             return "You can open Assistant Setup anytime to change provider, model, Telegram, daemon, or safety settings."
         }
@@ -3446,7 +3446,7 @@ final class TUIApp {
 
         do {
             if try secretStore.containsSecret(namespace: "provider.credentials", key: CLIConfiguration.apiKeySettingKey(for: provider)) {
-                return "Saved in Keychain"
+                return "Saved in local secrets JSON"
             }
         } catch {
             return "Lookup failed"
@@ -3469,7 +3469,7 @@ final class TUIApp {
                 namespace: DaemonCLI.telegramSecretNamespace,
                 key: DaemonCLI.telegramSecretKey
             ) {
-                return "Saved in Keychain"
+                return "Saved in local secrets JSON"
             }
         } catch {
             return "Lookup failed"

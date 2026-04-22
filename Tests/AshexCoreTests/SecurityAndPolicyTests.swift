@@ -14,6 +14,20 @@ import Testing
     #expect(try store.containsSecret(namespace: "provider.credentials", key: "openai_api_key") == false)
 }
 
+@Test func localJSONSecretStorePersistsSecretsAcrossInstances() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let fileURL = root.appendingPathComponent("secrets.json")
+    let firstStore = LocalJSONSecretStore(fileURL: fileURL)
+
+    try firstStore.writeSecret(namespace: "connector.credentials", key: "telegram_bot_token", value: "123:abc")
+
+    let secondStore = LocalJSONSecretStore(fileURL: fileURL)
+    #expect(try secondStore.readSecret(namespace: "connector.credentials", key: "telegram_bot_token") == "123:abc")
+
+    let attributes = try FileManager.default.attributesOfItem(atPath: fileURL.path)
+    #expect((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600)
+}
+
 @Test func shellCommandPolicyRequiresApprovalForUnknownCommandsWhenConfigured() {
     let policy = ShellCommandPolicy(config: .init(
         allowList: [],

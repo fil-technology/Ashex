@@ -282,6 +282,11 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                     Step \(index + 1) of \(steps.count): \(step.title)
                     Task kind: \(taskKind.rawValue)
                     Phase guidance: \(Self.phaseGuidance(for: taskKind, phase: step.phase))
+                    \(Self.phaseExecutionBlock(
+                        prompt: request.prompt,
+                        taskKind: taskKind,
+                        phase: step.phase
+                    ))
                     \(Self.phaseStrategyBlock(
                         prompt: request.prompt,
                         taskKind: taskKind,
@@ -298,7 +303,8 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                 }
 
                 let outcome: StepExecutionOutcome
-                if Self.shouldDelegateStep(
+                if modelAdapter.providerID != "ollama",
+                   Self.shouldDelegateStep(
                     phase: step.phase,
                     taskKind: taskKind,
                     totalSteps: steps.count,
@@ -769,6 +775,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         var lastSafeToolResult: String?
         var noProgressIterations = 0
         var validationBlocks = 0
+        var mutationBlocks = 0
         var automaticValidationAttempted = false
         var workflowState = StepWorkflowState(targetArtifacts: explorationPlan.targetPaths)
         var changedFiles: [ChangedArtifact] = existingChangedFiles
@@ -855,6 +862,27 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                     try emitter.emit(.status(runID: run.id, message: "The model echoed raw tool output. Asking it to summarize the result instead."), runID: run.id)
                     continue
                 }
+                if stepPhase == .mutation,
+                   Self.requiresWorkspaceMutationEvidence(prompt: stepPrompt, taskKind: taskKind),
+                   Self.orderedUniqueChanges(from: changedFiles).count <= Self.orderedUniqueChanges(from: existingChangedFiles).count {
+                    mutationBlocks += 1
+                    let mutationReminder = """
+                    Mutation is incomplete: the user asked for workspace files or edits, but no changed files were recorded in this step.
+                    Do not answer in text yet. First call an inspection tool such as filesystem.list_directory or filesystem.file_info, then call a mutating tool such as filesystem.write_text_file, filesystem.create_directory, filesystem.apply_patch, or shell.
+                    """
+                    let reminderMessage = try persistence.appendMessage(threadID: thread.id, runID: run.id, role: .system, content: mutationReminder, now: clock())
+                    try emitter.emit(.messageAppended(runID: run.id, messageID: reminderMessage.id, role: .system), runID: run.id)
+                    try emitter.emit(.status(runID: run.id, message: "Mutation gate blocked completion. Asking the model to create or edit real workspace files first."), runID: run.id)
+                    if mutationBlocks >= 3 {
+                        return .init(
+                            summary: "Stopped mutation early because no workspace files were changed.",
+                            changedFiles: changedFiles,
+                            validationNotes: [],
+                            remainingItems: ["Create or edit the requested workspace files for step: \(stepTitle)"]
+                        )
+                    }
+                    continue
+                }
                 if stepPhase == .validation,
                    !changedFiles.isEmpty,
                    !workflowState.hasValidationEvidence(for: changedFiles.map(\.path)) {
@@ -919,6 +947,18 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                 if repeatedToolCallCount >= 2,
                    let lastSafeToolResult,
                    Self.isSafeRepeatedToolCall(toolName: call.toolName, arguments: call.arguments) {
+                    if stepPhase == .mutation,
+                       Self.requiresWorkspaceMutationEvidence(prompt: stepPrompt, taskKind: taskKind),
+                       Self.orderedUniqueChanges(from: changedFiles).count <= Self.orderedUniqueChanges(from: existingChangedFiles).count {
+                        let mutationReminder = """
+                        Inspection is complete, but the mutation step has not changed any files.
+                        Do not call the same read-only tool again. Call filesystem.write_text_file, filesystem.create_directory, filesystem.apply_patch, or shell to create or edit the requested workspace files.
+                        """
+                        let reminderMessage = try persistence.appendMessage(threadID: thread.id, runID: run.id, role: .system, content: mutationReminder, now: clock())
+                        try emitter.emit(.messageAppended(runID: run.id, messageID: reminderMessage.id, role: .system), runID: run.id)
+                        try emitter.emit(.status(runID: run.id, message: "Repeated inspection cannot complete a mutation step. Asking the model to edit files."), runID: run.id)
+                        continue
+                    }
                     try emitter.emit(.status(runID: run.id, message: "Detected a repeated identical read-only tool call. Reusing the previous result."), runID: run.id)
                     return .init(
                         summary: Self.reusedReadOnlyToolResultSummary(toolName: call.toolName, result: lastSafeToolResult),
@@ -928,15 +968,34 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                     )
                 }
 
-                let execution = try await toolExecutor.execute(
-                    call: call,
-                    threadID: thread.id,
-                    runID: run.id,
-                    attachments: attachments,
-                    preconditions: .init(hasPriorInspection: workflowState.hasPriorInspection, phase: stepPhase),
-                    cancellation: cancellation,
-                    emitter: emitter
-                )
+                let execution: ToolExecutionResult
+                do {
+                    execution = try await toolExecutor.execute(
+                        call: call,
+                        threadID: thread.id,
+                        runID: run.id,
+                        attachments: attachments,
+                        preconditions: .init(hasPriorInspection: workflowState.hasPriorInspection, phase: stepPhase),
+                        cancellation: cancellation,
+                        emitter: emitter
+                    )
+                } catch {
+                    guard Self.canRecoverFromToolError(error) else {
+                        throw error
+                    }
+                    lastSafeToolResult = nil
+                    noProgressIterations += 1
+                    try emitter.emit(.status(runID: run.id, message: "Tool failed in a recoverable way. Asking the model to choose a different next action."), runID: run.id)
+                    if noProgressIterations >= 3 {
+                        return .init(
+                            summary: "Stopped the current step after repeated recoverable tool failures.",
+                            changedFiles: changedFiles,
+                            validationNotes: [],
+                            remainingItems: ["Revisit step: \(stepTitle)"]
+                        )
+                    }
+                    continue
+                }
                 switch execution {
                 case .retryableFailure:
                     lastSafeToolResult = nil
@@ -1277,6 +1336,16 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         case .invalidToolArguments, .toolNotFound:
             return true
         default:
+            return false
+        }
+    }
+
+    private static func canRecoverFromToolError(_ error: Error) -> Bool {
+        guard let error = error as? AshexError else { return false }
+        switch error {
+        case .invalidToolArguments, .toolNotFound, .fileSystem, .shell, .model:
+            return true
+        case .workspaceViolation, .persistence, .approvalDenied, .maxIterationsReached, .cancelled:
             return false
         }
     }
@@ -1667,6 +1736,22 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         }
     }
 
+    private static func phaseExecutionBlock(prompt: String, taskKind: TaskKind, phase: PlannedStepPhase) -> String {
+        guard phase == .mutation,
+              requiresWorkspaceMutationEvidence(prompt: "Overall user request: \(prompt)", taskKind: taskKind) else {
+            return ""
+        }
+
+        return """
+        Mutation tool requirement:
+        - This step must create or edit real workspace files before any final answer.
+        - If this step has not inspected the workspace yet, first call filesystem.list_directory with path "." or filesystem.file_info for the target path.
+        - Then call filesystem.create_directory or filesystem.write_text_file/apply_patch for the requested files.
+        - For new nested files, set create_directories to true when using filesystem.write_text_file.
+        - A text-only answer is incomplete until a changed file is recorded.
+        """
+    }
+
     private static func explorationSuggestion(for taskKind: TaskKind) -> String {
         switch taskKind {
         case .bugFix:
@@ -1703,6 +1788,35 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         case .analysis, .general:
             return "confirm changed files match intent before concluding"
         }
+    }
+
+    private static func requiresWorkspaceMutationEvidence(prompt: String, taskKind: TaskKind) -> Bool {
+        if taskKind == .analysis || taskKind == .git {
+            return false
+        }
+        let lowered = userRequestSlice(from: prompt).lowercased()
+        let mutationIntents = [
+            "create", "build", "generate", "write", "make", "add", "implement", "edit", "update",
+            "localize", "localise", "translation", "translate"
+        ]
+        let workspaceArtifacts = [
+            "file", "folder", "directory", "website", "web site", "html", "css", "javascript",
+            ".html", ".css", ".js", ".txt", ".md", ".json", ".swift", "readme", "project",
+            "site", "localization", "hebrew"
+        ]
+        if mutationIntents.contains(where: lowered.contains),
+           workspaceArtifacts.contains(where: lowered.contains) {
+            return true
+        }
+        return false
+    }
+
+    private static func userRequestSlice(from prompt: String) -> String {
+        let marker = "Overall user request:"
+        guard let range = prompt.range(of: marker, options: [.caseInsensitive]) else {
+            return prompt
+        }
+        return String(prompt[range.upperBound...])
     }
 
     private static func mergeChangedArtifacts(_ lhs: [ChangedArtifact], _ rhs: [ChangedArtifact]) -> [ChangedArtifact] {

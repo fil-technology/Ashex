@@ -31,6 +31,18 @@ public enum ConnectorMessageIntentClassifier {
             return .workspaceTask
         }
 
+        let workspaceCreationVerbs = [
+            "create ", "build ", "generate ", "write ", "make ", "add "
+        ]
+        let workspaceCreationObjects = [
+            "html", "website", "web site", "page", "landing page", "app", "project",
+            "file", "folder", "directory", "localization", "translation", "css", "javascript"
+        ]
+        if workspaceCreationVerbs.contains(where: lowered.hasPrefix),
+           workspaceCreationObjects.contains(where: lowered.contains) {
+            return .workspaceTask
+        }
+
         let directChatPrefixes = [
             "how are you", "who are you", "what can you do", "hello", "hi", "hey", "thanks",
             "thank you", "good morning", "good evening", "explain", "what is", "what's", "why is",

@@ -8,7 +8,7 @@ Ashex can run against local, hosted, and mock providers. You can change the acti
 ashex onboard
 ```
 
-The onboarding flow lets you choose a provider, choose or type a model, save hosted-provider API keys in macOS Keychain, and skip anything you want to configure later.
+The onboarding flow lets you choose a provider, choose or type a model, save hosted-provider API keys in local secrets JSON, and skip anything you want to configure later.
 
 ## Provider Options
 
@@ -25,7 +25,7 @@ export OPENAI_API_KEY=your_key_here
 ashex --provider openai --model gpt-5.4-mini "list the files in this workspace"
 ```
 
-You can also save the API key from `Assistant Setup`; Ashex stores it in macOS Keychain.
+You can also save the API key from `Assistant Setup`; Ashex stores it in `.ashex/secrets.json`.
 
 ## Anthropic
 
@@ -34,7 +34,7 @@ export ANTHROPIC_API_KEY=your_key_here
 ashex --provider anthropic --model claude-sonnet-4.5 "summarize this repository"
 ```
 
-You can also save the API key from `Assistant Setup`; Ashex stores it in macOS Keychain.
+You can also save the API key from `Assistant Setup`; Ashex stores it in `.ashex/secrets.json`.
 
 ## Ollama
 
@@ -64,8 +64,8 @@ More design notes live in [DFlash provider plan](../providers/dflash-provider-pl
 
 ## Environment Variables
 
-- `OPENAI_API_KEY`: required for `--provider openai` unless saved in Keychain.
-- `ANTHROPIC_API_KEY`: required for `--provider anthropic` unless saved in Keychain.
+- `OPENAI_API_KEY`: required for `--provider openai` unless saved in local secrets JSON.
+- `ANTHROPIC_API_KEY`: required for `--provider anthropic` unless saved in local secrets JSON.
 - `OPENAI_MODEL`: optional default model for `openai`.
 - `OLLAMA_MODEL`: optional default model for `ollama`.
 - `OLLAMA_BASE_URL`: optional Ollama chat endpoint, default `http://localhost:11434/api/chat`.
@@ -77,5 +77,5 @@ More design notes live in [DFlash provider plan](../providers/dflash-provider-pl
 ## Secret Storage
 
 - Environment variables take precedence over saved local secrets.
-- API keys entered in the TUI are stored in macOS Keychain.
+- API keys entered in the TUI are stored in `.ashex/secrets.json` for the selected workspace.
 - Older SQLite-stored provider secrets are migrated forward automatically when read.

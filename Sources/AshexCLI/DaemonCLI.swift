@@ -91,7 +91,7 @@ enum DaemonCLI {
         try stateStore.writeCurrentProcess(logPath: stateStore.logFileURL.path)
         defer { try? stateStore.clearIfOwnedByCurrentProcess() }
 
-        let token = resolvedTelegramToken(from: configuration.userConfig.telegram)
+        let token = resolvedTelegramToken(from: configuration.userConfig.telegram, storageRoot: configuration.storageRoot)
         let cronStore = CronJobStore(persistence: persistence)
         let hasCronJobs = (try? cronStore.listJobs().contains { $0.isEnabled }) ?? false
         let connectors: [any Connector]
@@ -246,7 +246,7 @@ enum DaemonCLI {
 
     private static func telegramTest(extraArguments: [String]) async throws {
         let configuration = try CLIConfiguration(arguments: [CommandLine.arguments[0]] + extraArguments)
-        let token = resolvedTelegramToken(from: configuration.userConfig.telegram)
+        let token = resolvedTelegramToken(from: configuration.userConfig.telegram, storageRoot: configuration.storageRoot)
         guard let token, !token.isEmpty else {
             throw AshexError.model("Missing Telegram bot token. Set `telegram.botToken` in config or ASHEX_TELEGRAM_BOT_TOKEN.")
         }
@@ -332,7 +332,7 @@ enum DaemonCLI {
         return arguments[index + 1]
     }
 
-    private static func resolvedTelegramToken(from config: TelegramConfig) -> String? {
+    private static func resolvedTelegramToken(from config: TelegramConfig, storageRoot: URL) -> String? {
         let envToken = ProcessInfo.processInfo.environment["ASHEX_TELEGRAM_BOT_TOKEN"]
         if envToken?.isEmpty == false {
             return envToken
@@ -340,7 +340,7 @@ enum DaemonCLI {
         if let configToken = config.botToken, !configToken.isEmpty {
             return configToken
         }
-        let secretStore = KeychainSecretStore()
+        let secretStore = LocalJSONSecretStore(fileURL: storageRoot.appendingPathComponent("secrets.json"))
         if let stored = try? secretStore.readSecret(namespace: telegramSecretNamespace, key: telegramSecretKey),
            !stored.isEmpty {
             return stored

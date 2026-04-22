@@ -55,7 +55,7 @@ In guarded mode:
 - `daemon.enabled`: reserved toggle for daemon-oriented deployments.
 - `logging.level`: `debug`, `info`, `warning`, or `error`.
 - `telegram.enabled`: enables the Telegram connector for daemon runs.
-- `telegram.botToken`: optional bot token if you do not want to use `ASHEX_TELEGRAM_BOT_TOKEN` or Keychain.
+- `telegram.botToken`: optional bot token if you do not want to use `ASHEX_TELEGRAM_BOT_TOKEN` or local secrets JSON.
 - `telegram.pollingTimeoutSeconds`: long-poll timeout for `getUpdates`.
 - `telegram.accessMode`: `open` or `allowlist_only`.
 - `telegram.allowedChatIDs`: optional allowlist of Telegram private chat IDs.
