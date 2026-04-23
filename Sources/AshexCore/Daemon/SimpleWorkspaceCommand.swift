@@ -2,19 +2,40 @@ import Foundation
 
 public enum SimpleWorkspaceCommand: Sendable, Equatable {
     case listDirectory(path: String)
+    case listFolders(path: String)
     case createDirectory(path: String)
 
     public static func parse(_ text: String) -> SimpleWorkspaceCommand? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let lowered = trimmed.lowercased()
 
-        if ["ls", "/ls", ":ls", "list files", "list the files", "show files", "show the files", "what files are here"].contains(lowered) {
+        if ["ls", "/ls", ":ls", "list files", "list the files", "show files", "show the files", "what files are here", "what are the files in the current workspace"].contains(lowered) {
             return .listDirectory(path: ".")
+        }
+
+        if [
+            "list folders",
+            "list the folders",
+            "show folders",
+            "show the folders",
+            "what folders are here",
+            "what are the folders in the current workspace",
+            "what are the folders in current workspace",
+            "what are the folders in the current directory",
+            "what are the folders in current directory",
+        ].contains(lowered.trimmingCharacters(in: CharacterSet(charactersIn: "?."))) {
+            return .listFolders(path: ".")
         }
 
         for prefix in ["/ls ", ":ls ", "ls ", "list files in "] {
             if lowered.hasPrefix(prefix) {
                 return .listDirectory(path: cleanPath(String(trimmed.dropFirst(prefix.count))))
+            }
+        }
+
+        for prefix in ["list folders in ", "show folders in "] {
+            if lowered.hasPrefix(prefix) {
+                return .listFolders(path: cleanPath(String(trimmed.dropFirst(prefix.count))))
             }
         }
 
@@ -62,7 +83,9 @@ public enum SimpleWorkspaceCommandExecutor {
     ) throws -> String {
         switch command {
         case .listDirectory(let path):
-            return try listDirectory(path: path, workspaceRoot: workspaceRoot, sandbox: sandbox)
+            return try listDirectory(path: path, directoriesOnly: false, workspaceRoot: workspaceRoot, sandbox: sandbox)
+        case .listFolders(let path):
+            return try listDirectory(path: path, directoriesOnly: true, workspaceRoot: workspaceRoot, sandbox: sandbox)
         case .createDirectory(let path):
             return try createDirectory(
                 path: path,
@@ -99,23 +122,27 @@ public enum SimpleWorkspaceCommandExecutor {
         return lines.joined(separator: "\n")
     }
 
-    private static func listDirectory(path: String, workspaceRoot: URL, sandbox: SandboxPolicyConfig) throws -> String {
+    private static func listDirectory(path: String, directoriesOnly: Bool, workspaceRoot: URL, sandbox: SandboxPolicyConfig) throws -> String {
         let displayPath = path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "." : path
         let guardrail = WorkspaceGuard(rootURL: workspaceRoot, sandbox: sandbox)
         let url = try guardrail.resolve(path: displayPath)
         let names = try FileManager.default.contentsOfDirectory(atPath: url.path).sorted()
-        let entries = names.isEmpty
+        let entries = names.compactMap { name -> String? in
+            let childURL = url.appendingPathComponent(name)
+            let isDirectory = (try? childURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+            if directoriesOnly, !isDirectory {
+                return nil
+            }
+            return "\(isDirectory ? "dir" : "file") \(name)"
+        }
+        let renderedEntries = entries.isEmpty
             ? "(empty)"
-            : names.map { name -> String in
-                let childURL = url.appendingPathComponent(name)
-                let isDirectory = (try? childURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
-                return "\(isDirectory ? "dir " : "file") \(name)"
-            }.joined(separator: "\n")
+            : entries.joined(separator: "\n")
         return """
         Workspace: \(workspaceRoot.path)
         Path: \(displayPath)
 
-        \(entries)
+        \(renderedEntries)
         """
     }
 

@@ -94,7 +94,7 @@ public struct OllamaConfig: Codable, Sendable {
     public var requestTimeoutSeconds: Int
     public var contextWindowTokens: Int
 
-    public init(requestTimeoutSeconds: Int = 180, contextWindowTokens: Int = 4096) {
+    public init(requestTimeoutSeconds: Int = 300, contextWindowTokens: Int = 4096) {
         self.requestTimeoutSeconds = requestTimeoutSeconds
         self.contextWindowTokens = contextWindowTokens
     }

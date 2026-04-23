@@ -381,6 +381,24 @@ import Testing
     #expect(ConnectorMessageIntentClassifier.classify("What this repo is about: https://github.com/Eronred/aso-skills") == .workspaceTask)
 }
 
+@Test func simpleWorkspaceCommandParsesNaturalFolderListing() throws {
+    #expect(SimpleWorkspaceCommand.parse("List folders") == .listFolders(path: "."))
+    #expect(SimpleWorkspaceCommand.parse("What are the folders in the current workspace?") == .listFolders(path: "."))
+    #expect(SimpleWorkspaceCommand.parse("Show folders in Sources") == .listFolders(path: "Sources"))
+
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: root.appendingPathComponent("Sources"), withIntermediateDirectories: true)
+    try "hello".write(to: root.appendingPathComponent("note.txt"), atomically: true, encoding: .utf8)
+
+    let output = try SimpleWorkspaceCommandExecutor.execute(
+        .listFolders(path: "."),
+        workspaceRoot: root,
+        sandbox: .default
+    )
+    #expect(output.contains("dir Sources"))
+    #expect(!output.contains("note.txt"))
+}
+
 @Test func runDispatcherDirectChatModeAvoidsToolLoopForCasualMessage() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     let persistence = SQLitePersistenceStore(databaseURL: root.appendingPathComponent("ashex.sqlite"))
@@ -590,6 +608,7 @@ import Testing
 @Test func daemonSupervisorWorkspaceCommandsUseConfiguredRoot() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: root.appendingPathComponent("Sources"), withIntermediateDirectories: true)
     try "hello".write(to: root.appendingPathComponent("note.txt"), atomically: true, encoding: .utf8)
     let persistence = SQLitePersistenceStore(databaseURL: root.appendingPathComponent(".ashex/ashex.sqlite"))
     try persistence.initialize()
@@ -630,10 +649,20 @@ import Testing
         text: "/ls",
         command: .ls
     ))
+    try await supervisor.handle(.init(
+        connectorKind: "telegram",
+        connectorID: "telegram",
+        messageID: "workspace-3",
+        conversation: conversation,
+        externalUserID: "44",
+        text: "What are the folders in the current workspace?",
+        command: nil
+    ))
 
     let sentMessages = await connector.recordedMessages()
     #expect(sentMessages.contains { $0.text.contains(root.path) })
     #expect(sentMessages.contains { $0.text.contains("note.txt") })
+    #expect(sentMessages.contains { $0.text.contains("dir Sources") })
 }
 
 @Test func daemonSupervisorSimpleCreateFolderFailsFastInAssistantOnlyMode() async throws {

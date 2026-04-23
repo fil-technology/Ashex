@@ -73,6 +73,10 @@ public enum TaskPlanner {
             return .analysis
         }
 
+        if isReadOnlyWorkspaceQuestion(lowered) {
+            return .analysis
+        }
+
         if ["bug", "fix", "error", "regression", "failing", "broken", "issue"].contains(where: lowered.contains) {
             return .bugFix
         }
@@ -274,6 +278,22 @@ public enum TaskPlanner {
             "understand this codebase"
         ]
         return overviewMarkers.contains(where: lowered.contains)
+    }
+
+    private static func isReadOnlyWorkspaceQuestion(_ lowered: String) -> Bool {
+        let listSignals = [
+            "list files", "list folders", "list directories",
+            "show files", "show folders", "show directories",
+            "what files", "what folders", "what directories",
+            "what are the files", "what are the folders", "what are the directories",
+            "read file", "open file", "inspect file",
+        ]
+        let workspaceSignals = [
+            "workspace", "current directory", "current folder", "project", "repo", "repository",
+            "files", "folders", "directories",
+        ]
+        return listSignals.contains(where: lowered.contains)
+            && workspaceSignals.contains(where: lowered.contains)
     }
 
     private static func stripRequestPreamble(from prompt: String) -> String {

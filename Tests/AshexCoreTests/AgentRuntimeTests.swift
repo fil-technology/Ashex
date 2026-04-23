@@ -48,6 +48,8 @@ private final class RecordingExecutionRuntime: ExecutionRuntime, @unchecked Send
     #expect(TaskPlanner.classify(prompt: "update README and docs for installation") == .docs)
     #expect(TaskPlanner.classify(prompt: "show git diff and branch status") == .git)
     #expect(TaskPlanner.classify(prompt: "what is this project about?") == .analysis)
+    #expect(TaskPlanner.classify(prompt: "What are the folders in the current workspace?") == .analysis)
+    #expect(TaskPlanner.defaultSingleStep(for: "List folders", taskKind: .analysis).phase == .exploration)
 }
 
 @Test func taskPlannerUsesTaskAwareDefaultSteps() {

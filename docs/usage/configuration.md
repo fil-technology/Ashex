@@ -62,7 +62,7 @@ In guarded mode:
 - `telegram.allowedUserIDs`: optional allowlist of Telegram user IDs.
 - `telegram.responseMode`: currently `final_message`.
 - `telegram.executionPolicy`: `assistant_only`, `approval_required`, or `trusted_full_access`.
-- `ollama.requestTimeoutSeconds`: request timeout for Ollama chat and agent-mode requests, default `180`.
+- `ollama.requestTimeoutSeconds`: request timeout for Ollama chat and agent-mode requests, default `300`. Existing lower config values are raised to the current default unless `OLLAMA_REQUEST_TIMEOUT_SECONDS` is set.
 - `dflash.enabled`: optional toggle for the experimental DFlash provider.
 - `dflash.baseURL`: local `dflash-serve` endpoint, default `http://127.0.0.1:8000`.
 - `dflash.model`: default model for the DFlash provider.

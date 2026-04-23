@@ -69,7 +69,7 @@ More design notes live in [DFlash provider plan](../providers/dflash-provider-pl
 - `OPENAI_MODEL`: optional default model for `openai`.
 - `OLLAMA_MODEL`: optional default model for `ollama`.
 - `OLLAMA_BASE_URL`: optional Ollama chat endpoint, default `http://localhost:11434/api/chat`.
-- `OLLAMA_REQUEST_TIMEOUT_SECONDS`: optional Ollama request timeout override for slower agent-mode calls.
+- `OLLAMA_REQUEST_TIMEOUT_SECONDS`: optional Ollama request timeout override for slower agent-mode calls. The built-in default is 300 seconds.
 - `DFLASH_MODEL`: optional default model for `dflash`.
 - `DFLASH_BASE_URL`: optional DFlash server endpoint, default `http://127.0.0.1:8000`.
 - `ASHEX_ALLOW_LARGE_MODELS=1`: bypass local-model memory guardrails.

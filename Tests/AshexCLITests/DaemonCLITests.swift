@@ -88,3 +88,9 @@ import Testing
 
     #expect(adapter.name.hasPrefix("esh-bridge:ollama:qwen2.5-coder:7b"))
 }
+
+@Test func ollamaRequestTimeoutUsesCurrentDefaultAsFloor() {
+    #expect(CLIConfiguration.ollamaRequestTimeoutSeconds(config: .init()) == 300)
+    #expect(CLIConfiguration.ollamaRequestTimeoutSeconds(config: .init(requestTimeoutSeconds: 180)) == 300)
+    #expect(CLIConfiguration.ollamaRequestTimeoutSeconds(config: .init(requestTimeoutSeconds: 420)) == 420)
+}

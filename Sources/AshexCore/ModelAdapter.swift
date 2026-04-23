@@ -825,6 +825,9 @@ public struct OllamaChatModelAdapter: ModelAdapter {
             }
             return action
         }
+        if Self.shouldRepairFalseLimitationReply(content) {
+            throw AshexError.model("Ollama falsely claimed narrow limitations")
+        }
         return .finalAnswer(content)
     }
 
@@ -1043,15 +1046,19 @@ extension OllamaChatModelAdapter: DirectChatModelAdapter {
         return .init(text: reply, reasoningSummary: ReasoningSummaryExtractor.summary(fromExposedThinkingIn: content))
     }
 
-    private static func shouldRepairFalseLimitationReply(_ reply: String) -> Bool {
+    fileprivate static func shouldRepairFalseLimitationReply(_ reply: String) -> Bool {
         let lowered = reply.lowercased()
         let falseLimitationSignals = [
             "my current capabilities are limited",
             "my available tools are focused",
             "i cannot assist with asking",
+            "i cannot assist with planning or executing tasks",
+            "i cannot assist with creating or modifying",
             "i cannot provide personal or professional name information",
             "limited to assisting with messages",
             "limited to virtual assistants",
+            "limited to managing chat and file management",
+            "within a virtual workspace",
             "cannot assist with retrieving weather information",
             "file and directory operations"
         ]

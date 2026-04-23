@@ -539,7 +539,7 @@ struct CLIConfiguration {
            parsed >= 15 {
             return parsed
         }
-        return config.requestTimeoutSeconds
+        return max(config.requestTimeoutSeconds, OllamaConfig.default.requestTimeoutSeconds)
     }
 
     static func ollamaContextWindowTokens(config: OllamaConfig) -> Int {
