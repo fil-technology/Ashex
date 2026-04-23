@@ -106,3 +106,33 @@ import Testing
 
     #expect(selected == "gemma4:latest")
 }
+
+@Test func ollamaOnboardingSafestModelPrefersGranite4OneBWhenInstalled() {
+    let selected = OllamaModelDisplayOrdering.safestInstalledModelName(
+        from: [
+            "qwen3:0.6b • 522 MB",
+            "granite4:1b • 3.3 GB",
+            "gemma4:latest • 9.6 GB"
+        ]
+    )
+
+    #expect(selected == "granite4:1b")
+}
+
+@Test func ollamaModelOrderingShowsCuratedOnboardingModelsFirst() {
+    let ordered = OllamaModelDisplayOrdering.orderedDisplayNames(
+        [
+            "gemma4:latest • 9.6 GB",
+            "qwen3:0.6b • 522 MB",
+            "granite4:1b • 3.3 GB",
+            "granite4:350m • 708 MB"
+        ],
+        selectedModel: "llama3.2"
+    )
+
+    #expect(ordered.prefix(3) == [
+        "granite4:1b • 3.3 GB",
+        "qwen3:0.6b • 522 MB",
+        "granite4:350m • 708 MB"
+    ])
+}

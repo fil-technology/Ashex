@@ -6342,6 +6342,11 @@ enum OllamaModelDisplayOrdering {
         let usableCandidates = candidates.filter { !isDiscouragedChatModel($0.name.lowercased()) }
         return (usableCandidates.isEmpty ? candidates : usableCandidates)
             .sorted { lhs, rhs in
+                let lhsPreference = preferredOnboardingRank(modelName: lhs.name)
+                let rhsPreference = preferredOnboardingRank(modelName: rhs.name)
+                if lhsPreference != rhsPreference {
+                    return lhsPreference < rhsPreference
+                }
                 switch (lhs.sizeBytes, rhs.sizeBytes) {
                 case let (lhsSize?, rhsSize?) where lhsSize != rhsSize:
                     return lhsSize < rhsSize
@@ -6363,12 +6368,16 @@ enum OllamaModelDisplayOrdering {
             return 0
         }
         if isDiscouragedChatModel(normalized) {
-            return 30
+            return 1_000
+        }
+        let onboardingPreference = preferredOnboardingRank(modelName: normalized)
+        if onboardingPreference < 1_000 {
+            return 10 + onboardingPreference
         }
         if isPreferredGeneralModel(normalized) {
-            return 10
+            return 200
         }
-        return 20
+        return 500
     }
 
     private static func selectableName(from displayName: String) -> String {
@@ -6406,10 +6415,44 @@ enum OllamaModelDisplayOrdering {
             "llama",
             "qwen",
             "gemma",
+            "granite",
             "mistral",
             "codellama",
             "deepseek-coder"
         ].contains { modelName.contains($0) }
+    }
+
+    private static func preferredOnboardingRank(modelName: String) -> Int {
+        let normalized = modelName.lowercased()
+        let curatedPreferences = [
+            "granite4:1b",
+            "granite4:latest",
+            "qwen3:0.6b",
+            "qwen2.5:1.5b",
+            "gemma3:1b",
+            "gemma3:latest",
+            "llama3.2:1b",
+            "llama3.2"
+        ]
+
+        if let exactIndex = curatedPreferences.firstIndex(where: { normalized == $0 }) {
+            return exactIndex
+        }
+
+        let familyPreferences = [
+            "granite4",
+            "qwen3",
+            "qwen2.5",
+            "gemma3",
+            "llama3.2",
+            "gemma4",
+            "mistral"
+        ]
+        if let familyIndex = familyPreferences.firstIndex(where: { normalized.contains($0) }) {
+            return 100 + familyIndex
+        }
+
+        return 1_000
     }
 
     static func isDiscouragedChatModel(_ modelName: String) -> Bool {
