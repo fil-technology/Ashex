@@ -2238,6 +2238,12 @@ final class TUIApp {
 
     private func startRun(prompt: String) {
         refreshSessionRuntime()
+        if let providerStartupIssue,
+           providerStartupIssue.provider == sessionProvider,
+           !StorageFailureRouting.isStoragePressure(message: providerStartupIssue.message),
+           Self.providerStatusAllowsRuntimeRetry(providerStatus, provider: sessionProvider) {
+            self.providerStartupIssue = nil
+        }
         if let providerStartupIssue, providerStartupIssue.provider == sessionProvider {
             runLines = [
                 "Prompt: \(prompt)",
@@ -2560,6 +2566,7 @@ final class TUIApp {
         case .approvalResolved(_, let toolName, let allowed, let reason):
             return ["[approval] \(toolName) \(allowed ? "approved" : "denied"): \(reason)"]
         case .toolCallStarted(_, _, let toolName, let arguments):
+            currentRunActivity = conciseToolActivity(toolName: toolName, arguments: arguments)
             var lines = [summarizeToolStart(toolName: toolName, arguments: arguments)]
             if showToolDetails {
                 lines.append(contentsOf: JSONValue.object(arguments).prettyPrinted.split(separator: "\n").map(String.init))
@@ -2574,6 +2581,9 @@ final class TUIApp {
                 .filter { !$0.isEmpty }
                 .map { "[\(prefix)] \($0)" }
         case .toolCallFinished(_, _, let success, let summary):
+            currentRunActivity = success
+                ? (currentRunPhase.map(friendlyActivityTitle(for:)) ?? "Reviewing results")
+                : "Handling tool error"
             let normalizedSummary = normalizeStoredTranscriptText(summary)
             if let data = normalizedSummary.data(using: .utf8),
                let structured = try? JSONDecoder().decode(JSONValue.self, from: data) {
@@ -2585,6 +2595,7 @@ final class TUIApp {
             }
             return ["[\(success ? "done" : "error")] \(normalizedSummary)"]
         case .finalAnswer(_, _, let text):
+            currentRunActivity = "Preparing final reply"
             let normalizedText = normalizeStoredTranscriptText(text)
             if let structured = formattedStructuredLines(from: normalizedText) {
                 return ["", "Assistant:"] + structured
@@ -2638,6 +2649,46 @@ final class TUIApp {
             return "Running tool"
         }
         return message
+    }
+
+    private func conciseToolActivity(toolName: String, arguments: JSONObject) -> String {
+        if toolName == "filesystem" {
+            switch arguments["operation"]?.stringValue ?? "" {
+            case "list_directory", "file_info", "find_files", "search_text":
+                return "Inspecting files"
+            case "read_text_file":
+                return "Reading file"
+            case "write_text_file", "replace_in_file", "apply_patch", "create_directory", "move_path", "copy_path", "delete_path":
+                return "Editing files"
+            default:
+                return "Using filesystem tool"
+            }
+        }
+
+        if toolName == "git" {
+            return "Checking git state"
+        }
+
+        if toolName == "build" {
+            let operation = arguments["operation"]?.stringValue ?? ""
+            if operation.contains("test") {
+                return "Running tests"
+            }
+            return "Building project"
+        }
+
+        if toolName == "shell" {
+            let command = arguments["command"]?.stringValue?.lowercased() ?? ""
+            if command.contains("test") {
+                return "Running tests"
+            }
+            if command.contains("build") {
+                return "Building project"
+            }
+            return "Running command"
+        }
+
+        return "Running \(toolName)"
     }
 
     private func friendlyOutcome(_ outcome: String) -> String {
@@ -2975,8 +3026,9 @@ final class TUIApp {
         let viewport = Array(expanded[startIndex..<endIndex])
 
         var output = [transcriptHeader(width: width, totalLines: expanded.count, visibleLines: bodyLimit), ""]
-        if let progressLine = transcriptProgressLine(width: width) {
-            output.append(progressLine)
+        let progressLines = liveProgressLines(width: width)
+        if !progressLines.isEmpty {
+            output.append(contentsOf: progressLines)
             output.append("")
         }
         let todoLines = renderRunTodoLines(width: width)
@@ -4134,10 +4186,55 @@ final class TUIApp {
         return expanded
     }
 
-    private func transcriptProgressLine(width: Int) -> String? {
-        guard !runFinished else { return nil }
-        let progress = TerminalUIStyle.truncateVisible(displayStatusLine, limit: width)
-        return "\(TerminalUIStyle.amber)\(progress)\(TerminalUIStyle.reset)"
+    private func recentWrappedRunLines(width: Int, limit: Int) -> [String] {
+        let expanded = wrappedRunLines(width: width)
+        guard expanded.count > limit else { return expanded }
+        return Array(expanded.suffix(limit))
+    }
+
+    private func liveProgressLines(width: Int) -> [String] {
+        guard !runFinished else { return [] }
+
+        var lines = [
+            "\(TerminalUIStyle.amber)\(TerminalUIStyle.truncateVisible(displayStatusLine, limit: width))\(TerminalUIStyle.reset)"
+        ]
+        if let detail = liveProgressDetailLine(width: width) {
+            lines.append(detail)
+        }
+        return lines
+    }
+
+    private func liveProgressDetailLine(width: Int) -> String? {
+        if let activeTodo = currentRunTodos.first(where: { $0.status == .inProgress }) {
+            let detail = "Now: \(activeTodo.index). \(activeTodo.title)"
+            return "\(TerminalUIStyle.faint)\(TerminalUIStyle.truncateVisible(detail, limit: width))\(TerminalUIStyle.reset)"
+        }
+
+        if currentRunPhase?.lowercased() == "exploration" {
+            let targets = currentPendingExplorationTargets.isEmpty ? currentExplorationTargets : currentPendingExplorationTargets
+            if !targets.isEmpty {
+                let preview = targets.prefix(2).joined(separator: ", ")
+                let suffix = targets.count > 2 ? " +\(targets.count - 2)" : ""
+                let detail = "Next: \(preview)\(suffix)"
+                return "\(TerminalUIStyle.faint)\(TerminalUIStyle.truncateVisible(detail, limit: width))\(TerminalUIStyle.reset)"
+            }
+        }
+
+        if !currentPlannedFiles.isEmpty {
+            let preview = currentPlannedFiles.prefix(2).joined(separator: ", ")
+            let suffix = currentPlannedFiles.count > 2 ? " +\(currentPlannedFiles.count - 2)" : ""
+            let detail = "Plan: \(preview)\(suffix)"
+            return "\(TerminalUIStyle.faint)\(TerminalUIStyle.truncateVisible(detail, limit: width))\(TerminalUIStyle.reset)"
+        }
+
+        if !currentChangedFiles.isEmpty {
+            let preview = currentChangedFiles.prefix(2).joined(separator: ", ")
+            let suffix = currentChangedFiles.count > 2 ? " +\(currentChangedFiles.count - 2)" : ""
+            let detail = "Changed: \(preview)\(suffix)"
+            return "\(TerminalUIStyle.faint)\(TerminalUIStyle.truncateVisible(detail, limit: width))\(TerminalUIStyle.reset)"
+        }
+
+        return nil
     }
 
     private func renderRunTodoLines(width: Int) -> [String] {
@@ -4236,8 +4333,14 @@ final class TUIApp {
             }
             lines.append("\(TerminalUIStyle.faint)Ready for your next message.\(TerminalUIStyle.reset)")
         } else if !runLines.isEmpty {
-            lines.append("\(TerminalUIStyle.ink)Activity\(TerminalUIStyle.reset)")
-            lines.append(contentsOf: wrappedRunLines(width: width))
+            let progressLines = liveProgressLines(width: width)
+            if !progressLines.isEmpty {
+                lines.append("\(TerminalUIStyle.ink)Live Progress\(TerminalUIStyle.reset)")
+                lines.append(contentsOf: progressLines)
+                lines.append("")
+            }
+            lines.append("\(TerminalUIStyle.ink)Recent Activity\(TerminalUIStyle.reset)")
+            lines.append(contentsOf: recentWrappedRunLines(width: width, limit: 3))
         }
         return lines
     }
@@ -5708,6 +5811,9 @@ final class TUIApp {
         snapshot: ProviderStatusSnapshot,
         provider: String
     ) -> String {
+        if StorageFailureRouting.isStoragePressure(message: startupIssue.message) {
+            return startupIssue.message
+        }
         if provider == "ollama",
            let assessment = snapshot.guardrailAssessment,
            assessment.severity == .blocked {

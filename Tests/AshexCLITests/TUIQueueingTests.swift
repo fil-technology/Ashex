@@ -37,6 +37,15 @@ import Testing
     #expect(!ProviderFailureRouting.recoveryHint(provider: "ollama", message: message).contains("ollama serve"))
 }
 
+@Test func providerFailureRoutingPrioritizesStoragePressure() {
+    let message = "Ashex could not write to its local history database at /tmp/ashex.sqlite because the storage volume is nearly full (120 MB free). Free disk space or launch Ashex with `--storage` pointing to a roomier location."
+
+    #expect(StorageFailureRouting.isStoragePressure(message: message))
+    #expect(ProviderFailureRouting.runtimeFailureDetails(provider: "ollama", message: message).first == "Ashex could not write to its local history database because storage is nearly full.")
+    #expect(ProviderFailureRouting.recoveryHint(provider: "ollama", message: message).contains("--storage"))
+    #expect(!ProviderFailureRouting.recoveryHint(provider: "ollama", message: message).contains("ollama serve"))
+}
+
 @Test func versionFlagIsRecognized() {
     #expect(AshexCLI.isVersionRequested(arguments: ["ashex", "--version"]))
     #expect(AshexCLI.isVersionRequested(arguments: ["ashex", "-v"]))

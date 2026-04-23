@@ -1,5 +1,27 @@
 import Foundation
 
+enum StorageFailureRouting {
+    static func isStoragePressure(message: String) -> Bool {
+        let normalized = message.lowercased()
+        return normalized.contains("storage volume is nearly full") ||
+            normalized.contains("database or disk is full") ||
+            normalized.contains("no space left on device") ||
+            normalized.contains("disk full")
+    }
+
+    static func recoveryHint(message _: String? = nil) -> String {
+        "Free disk space or restart Ashex with `--storage` pointing to a volume with more room."
+    }
+
+    static func runtimeFailureDetails(message: String) -> [String] {
+        [
+            "Ashex could not write to its local history database because storage is nearly full.",
+            message,
+            "Ashex is keeping the UI alive, but chat history and run state will stay unreliable until storage pressure is resolved."
+        ]
+    }
+}
+
 struct QueuedPrompt: Equatable, Sendable {
     let id: Int
     let text: String
@@ -91,6 +113,10 @@ enum ProviderFailureRouting {
     }
 
     static func recoveryHint(provider: String, message: String? = nil) -> String {
+        if let message, StorageFailureRouting.isStoragePressure(message: message) {
+            return StorageFailureRouting.recoveryHint(message: message)
+        }
+
         if provider == "ollama",
            let message,
            isOllamaModelResourceFailure(message: message) {
@@ -112,6 +138,10 @@ enum ProviderFailureRouting {
     }
 
     static func runtimeFailureDetails(provider: String, message: String) -> [String] {
+        if StorageFailureRouting.isStoragePressure(message: message) {
+            return StorageFailureRouting.runtimeFailureDetails(message: message)
+        }
+
         if provider == "ollama", isOllamaModelResourceFailure(message: message) {
             return [
                 "Selected Ollama model could not fit in available memory.",

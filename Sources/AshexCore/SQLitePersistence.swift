@@ -21,11 +21,14 @@ public final class SQLitePersistenceStore: PersistenceStore, @unchecked Sendable
             }
             try FileManager.default.createDirectory(at: databaseURL.deletingLastPathComponent(), withIntermediateDirectories: true)
             if sqlite3_open(databaseURL.path, &db) != SQLITE_OK {
-                throw AshexError.persistence("Failed to open database at \(databaseURL.path)")
+                throw sqliteError(code: sqlite3_errcode(db), fallbackMessage: "Failed to open database at \(databaseURL.path)")
             }
 
             try exec("""
             PRAGMA journal_mode = WAL;
+            PRAGMA temp_store = MEMORY;
+            PRAGMA wal_autocheckpoint = 64;
+            PRAGMA journal_size_limit = 1048576;
             CREATE TABLE IF NOT EXISTS threads (
                 id TEXT PRIMARY KEY,
                 created_at REAL NOT NULL
@@ -755,10 +758,11 @@ public final class SQLitePersistenceStore: PersistenceStore, @unchecked Sendable
     private func exec(_ sql: String, bind: [SQLiteBindValue] = []) throws {
         var errorMessage: UnsafeMutablePointer<Int8>?
         if bind.isEmpty {
-            if sqlite3_exec(db, sql, nil, nil, &errorMessage) != SQLITE_OK {
-                let message = errorMessage.map { String(cString: $0) } ?? "Unknown SQLite error"
+            let result = sqlite3_exec(db, sql, nil, nil, &errorMessage)
+            if result != SQLITE_OK {
+                let fallbackMessage = errorMessage.map { String(cString: $0) } ?? "Unknown SQLite error"
                 sqlite3_free(errorMessage)
-                throw AshexError.persistence(message)
+                throw sqliteError(code: result, fallbackMessage: fallbackMessage)
             }
             return
         }
@@ -768,7 +772,7 @@ public final class SQLitePersistenceStore: PersistenceStore, @unchecked Sendable
         try prepare(sql, statement: &statement)
         try bindValues(bind, to: statement)
         if sqlite3_step(statement) != SQLITE_DONE {
-            throw AshexError.persistence(String(cString: sqlite3_errmsg(db)))
+            throw sqliteError(code: sqlite3_errcode(db), fallbackMessage: String(cString: sqlite3_errmsg(db)))
         }
     }
 
@@ -825,8 +829,18 @@ public final class SQLitePersistenceStore: PersistenceStore, @unchecked Sendable
 
     private func prepare(_ sql: String, statement: inout OpaquePointer?) throws {
         if sqlite3_prepare_v2(db, sql, -1, &statement, nil) != SQLITE_OK {
-            throw AshexError.persistence(String(cString: sqlite3_errmsg(db)))
+            throw sqliteError(code: sqlite3_errcode(db), fallbackMessage: String(cString: sqlite3_errmsg(db)))
         }
+    }
+
+    private func sqliteError(code: Int32, fallbackMessage: String) -> AshexError {
+        AshexError.persistence(
+            SQLitePersistenceDiagnostics.userFacingMessage(
+                code: code,
+                fallbackMessage: fallbackMessage,
+                databaseURL: databaseURL
+            )
+        )
     }
 
     private func bindText(_ text: String, to statement: OpaquePointer?, index: Int32) {
@@ -877,6 +891,46 @@ public final class SQLitePersistenceStore: PersistenceStore, @unchecked Sendable
 
     private func decodeStringArrayJSON(_ string: String) throws -> [String] {
         try JSONDecoder().decode([String].self, from: Data(string.utf8))
+    }
+}
+
+enum SQLitePersistenceDiagnostics {
+    static func userFacingMessage(
+        code: Int32,
+        fallbackMessage: String,
+        databaseURL: URL,
+        fileManager: FileManager = .default
+    ) -> String {
+        guard isStoragePressure(code: code, message: fallbackMessage) else {
+            return fallbackMessage
+        }
+
+        let directoryPath = databaseURL.deletingLastPathComponent().path
+        let availableSpace = availableSpaceDescription(at: directoryPath, fileManager: fileManager)
+        let location = "Ashex could not write to its local history database at \(databaseURL.path)"
+        let hint = "Free disk space or launch Ashex with `--storage` pointing to a roomier location."
+
+        if let availableSpace, !availableSpace.isEmpty {
+            return "\(location) because the storage volume is nearly full (\(availableSpace) free). \(hint)"
+        }
+        return "\(location) because the storage volume is nearly full. \(hint)"
+    }
+
+    private static func isStoragePressure(code: Int32, message: String) -> Bool {
+        let normalized = message.lowercased()
+        return code == SQLITE_FULL ||
+            code == SQLITE_IOERR ||
+            normalized.contains("database or disk is full") ||
+            normalized.contains("no space left on device") ||
+            normalized.contains("disk full")
+    }
+
+    private static func availableSpaceDescription(at path: String, fileManager: FileManager) -> String? {
+        guard let attributes = try? fileManager.attributesOfFileSystem(forPath: path),
+              let freeBytes = attributes[.systemFreeSize] as? NSNumber else {
+            return nil
+        }
+        return ByteCountFormatter.string(fromByteCount: freeBytes.int64Value, countStyle: .file)
     }
 }
 
