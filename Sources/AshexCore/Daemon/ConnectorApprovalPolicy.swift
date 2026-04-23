@@ -37,9 +37,15 @@ public struct ConnectorApprovalPolicy: ApprovalPolicy {
             guard let conversation = await runStore.conversation(for: request.runID) else {
                 return .deny("Could not resolve the connector conversation for this approval request.")
             }
+            if let cachedDecision = await remoteApprovalInbox.cachedDecision(for: request, conversation: conversation) {
+                return cachedDecision
+            }
             await runStore.setAwaitingApproval(true, for: request.runID)
             let decision = await remoteApprovalInbox.awaitDecision(for: request, conversation: conversation)
             await runStore.setAwaitingApproval(false, for: request.runID)
+            if decision.allowed {
+                await remoteApprovalInbox.rememberReusableApproval(for: request, conversation: conversation)
+            }
             return decision
         case .trustedFullAccess:
             return .allow("\(connectorName) is configured for trusted_full_access. Tool '\(request.toolName)' is allowed.")

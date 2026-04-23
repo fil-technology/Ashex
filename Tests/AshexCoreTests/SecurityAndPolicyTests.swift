@@ -200,6 +200,60 @@ import Testing
     #expect(await runStore.status(for: conversation)?.awaitingApproval == false)
 }
 
+@Test func connectorApprovalPolicyReusesLowRiskFilesystemApprovalForSameRun() async throws {
+    let databaseURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString)
+        .appendingPathComponent("ashex.sqlite")
+    let persistence = SQLitePersistenceStore(databaseURL: databaseURL)
+    try persistence.initialize()
+
+    let inbox = RemoteApprovalInbox(persistence: persistence)
+    let runStore = DaemonConversationRunStore()
+    let conversation = ConnectorConversationReference(
+        connectorKind: "telegram",
+        connectorID: "telegram",
+        externalConversationID: "chat-1"
+    )
+    let runID = UUID()
+    let token = CancellationToken()
+    _ = await runStore.beginRun(for: conversation, threadID: UUID(), prompt: "create files", cancellationToken: token)
+    await runStore.bind(runID: runID, to: conversation)
+
+    let policy = ConnectorApprovalPolicy(
+        policyMode: .approvalRequired,
+        connectorName: "telegram",
+        remoteApprovalInbox: inbox,
+        runStore: runStore
+    )
+    let firstRequest = ApprovalRequest(
+        runID: runID,
+        toolName: "filesystem",
+        arguments: ["operation": .string("create_directory"), "path": .string("landing")],
+        summary: "Create directory",
+        reason: "landing",
+        risk: .low
+    )
+
+    async let firstDecision = policy.evaluate(firstRequest)
+    try await Task.sleep(nanoseconds: 50_000_000)
+    _ = await inbox.resolvePendingApproval(for: conversation, allowed: true, reason: "Approved from Telegram")
+    _ = await firstDecision
+
+    let secondRequest = ApprovalRequest(
+        runID: runID,
+        toolName: "filesystem",
+        arguments: ["operation": .string("write_text_file"), "path": .string("landing/index.html")],
+        summary: "Write file",
+        reason: "landing/index.html",
+        risk: .medium
+    )
+    let secondDecision = await policy.evaluate(secondRequest)
+
+    #expect(secondDecision.allowed)
+    #expect(secondDecision.reason.contains("approved earlier in this run"))
+    #expect(await inbox.pendingApproval(for: conversation) == nil)
+}
+
 @Test func workspaceGuardBlocksMutationsInReadOnlyMode() throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

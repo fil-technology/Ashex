@@ -89,6 +89,14 @@ private final class RecordingExecutionRuntime: ExecutionRuntime, @unchecked Send
     #expect(plan?.steps[2].phase == .validation)
 }
 
+@Test func taskPlannerKeepsSimpleFolderAndFileCreationConcise() {
+    let prompt = "Create now folder called landing and create here html simple website for the globe, and style sheet file with styles for that."
+    let plan = TaskPlanner.plan(for: prompt)
+
+    #expect(TaskPlanner.shouldAttemptModelPlanning(for: prompt) == false)
+    #expect(plan?.steps.map(\.phase) == [.mutation, .validation])
+}
+
 @Test func runtimePrefersModelGeneratedPlanWhenAvailable() async throws {
     let fileManager = FileManager.default
     let root = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -674,6 +682,75 @@ private final class RecordingExecutionRuntime: ExecutionRuntime, @unchecked Send
     #expect(updatedContent == "updated")
     #expect(finalAnswer.contains("Changed files:"))
     #expect(finalAnswer.contains("note.txt"))
+}
+
+@Test func runtimeRejectsRootFileWritesWhenRequestNamesNestedFolder() async throws {
+    let fileManager = FileManager.default
+    let root = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let dbURL = root.appendingPathComponent(".ashex/test.sqlite")
+    try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+
+    let runtime = try AgentRuntime(
+        modelAdapter: PlannedSequencedModelAdapter(
+            plan: TaskPlan(
+                steps: [PlannedStep(title: "Create nested landing website files", phase: .mutation)],
+                taskKind: .feature
+            ),
+            actions: [
+            .toolCall(.init(toolName: "filesystem", arguments: [
+                "operation": .string("create_directory"),
+                "path": .string("landing"),
+            ])),
+            .toolCall(.init(toolName: "filesystem", arguments: [
+                "operation": .string("write_text_file"),
+                "path": .string("index.html"),
+                "content": .string("<!doctype html><html><head><link rel=\"stylesheet\" href=\"styles.css\"></head><body>Globe</body></html>"),
+                "create_directories": .bool(true),
+            ])),
+            .toolCall(.init(toolName: "filesystem", arguments: [
+                "operation": .string("write_text_file"),
+                "path": .string("landing/index.html"),
+                "content": .string("<!doctype html><html><head><link rel=\"stylesheet\" href=\"styles.css\"></head><body>Globe</body></html>"),
+                "create_directories": .bool(true),
+            ])),
+            .toolCall(.init(toolName: "filesystem", arguments: [
+                "operation": .string("create_directory"),
+                "path": .string("styles.css"),
+            ])),
+            .toolCall(.init(toolName: "filesystem", arguments: [
+                "operation": .string("write_text_file"),
+                "path": .string("landing/styles.css"),
+                "content": .string("body { font-family: sans-serif; }"),
+                "create_directories": .bool(true),
+            ])),
+            .toolCall(.init(toolName: "filesystem", arguments: [
+                "operation": .string("write_text_file"),
+                "path": .string(root.appendingPathComponent("index.html").path),
+                "content": .string("<!doctype html><html><body>Wrong root</body></html>"),
+                "create_directories": .bool(true),
+            ])),
+            .finalAnswer("Created the landing website."),
+            ]
+        ),
+        toolRegistry: ToolRegistry(tools: [
+            FileSystemTool(workspaceGuard: WorkspaceGuard(rootURL: root)),
+            ShellTool(executionRuntime: ProcessExecutionRuntime(), workspaceURL: root, executionPolicy: testShellExecutionPolicy),
+        ]),
+        persistence: SQLitePersistenceStore(databaseURL: dbURL)
+    )
+
+    var statuses: [String] = []
+    for await event in runtime.run(RunRequest(prompt: "Create now folder called landing and create here html simple website for the globe, and style sheet file with styles for that.")) {
+        if case .status(_, let message) = event.payload {
+            statuses.append(message)
+        }
+    }
+
+    #expect(!fileManager.fileExists(atPath: root.appendingPathComponent("index.html").path))
+    #expect(!fileManager.fileExists(atPath: root.appendingPathComponent("styles.css").path))
+    #expect(fileManager.fileExists(atPath: root.appendingPathComponent("landing/index.html").path))
+    #expect(fileManager.fileExists(atPath: root.appendingPathComponent("landing/styles.css").path))
+    #expect(statuses.contains { $0.localizedCaseInsensitiveContains("path looked inconsistent") })
 }
 
 @Test func runtimeEmitsExplorationPlanForLargeCodingTask() async throws {

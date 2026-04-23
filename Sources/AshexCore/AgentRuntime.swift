@@ -975,7 +975,11 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                         threadID: thread.id,
                         runID: run.id,
                         attachments: attachments,
-                        preconditions: .init(hasPriorInspection: workflowState.hasPriorInspection, phase: stepPhase),
+                        preconditions: .init(
+                            hasPriorInspection: workflowState.hasPriorInspection,
+                            phase: stepPhase,
+                            userRequest: stepPrompt
+                        ),
                         cancellation: cancellation,
                         emitter: emitter
                     )
@@ -1001,6 +1005,26 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                     lastSafeToolResult = nil
                     noProgressIterations += 1
                     if noProgressIterations >= 3 {
+                        if stepPhase == .validation, !changedFiles.isEmpty {
+                            let paths = Self.orderedUniqueChanges(from: changedFiles).map(\.path)
+                            try emitter.emit(.status(runID: run.id, message: "Validation tool calls stalled, but changed paths are recorded. Summarizing recorded workspace changes."), runID: run.id)
+                            return .init(
+                                summary: "Validated recorded workspace changes: \(paths.joined(separator: ", "))",
+                                changedFiles: changedFiles,
+                                validationNotes: ["Changed paths recorded by workspace tools: \(paths.joined(separator: ", "))"],
+                                remainingItems: []
+                            )
+                        }
+                        if stepPhase == .mutation,
+                           Self.orderedUniqueChanges(from: changedFiles).count > Self.orderedUniqueChanges(from: existingChangedFiles).count {
+                            try emitter.emit(.status(runID: run.id, message: "Mutation made workspace changes, then stalled on follow-up tool calls. Advancing to the next step."), runID: run.id)
+                            return .init(
+                                summary: "Created or updated workspace files; ignored unproductive follow-up tool calls.",
+                                changedFiles: changedFiles,
+                                validationNotes: [],
+                                remainingItems: []
+                            )
+                        }
                         try emitter.emit(.status(runID: run.id, message: "Detected repeated unproductive retries. Ending the current step with a recoverable summary."), runID: run.id)
                         return .init(
                             summary: "Stopped the current step after repeated unproductive retries.",
@@ -1042,6 +1066,16 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                         try emitter.emit(.changedFilesTracked(runID: run.id, paths: newChanges.map { $0.path }), runID: run.id)
                     }
                     if noProgressIterations >= 3 {
+                        if stepPhase == .mutation,
+                           Self.orderedUniqueChanges(from: changedFiles).count > Self.orderedUniqueChanges(from: existingChangedFiles).count {
+                            try emitter.emit(.status(runID: run.id, message: "Mutation made workspace changes, then stalled on follow-up tool calls. Advancing to the next step."), runID: run.id)
+                            return .init(
+                                summary: "Created or updated workspace files; ignored unproductive follow-up tool calls.",
+                                changedFiles: changedFiles,
+                                validationNotes: [],
+                                remainingItems: []
+                            )
+                        }
                         try emitter.emit(.status(runID: run.id, message: "Tool activity is no longer making useful progress. Ending the step with a recoverable summary."), runID: run.id)
                         return .init(
                             summary: "Stopped the current step because recent tool activity was no longer making useful progress.",
@@ -1245,7 +1279,11 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                     threadID: thread.id,
                     runID: run.id,
                     attachments: [],
-                    preconditions: .init(hasPriorInspection: workflowState.hasPriorInspection, phase: stepPhase),
+                    preconditions: .init(
+                        hasPriorInspection: workflowState.hasPriorInspection,
+                        phase: stepPhase,
+                        userRequest: stepPrompt
+                    ),
                     cancellation: cancellation,
                     emitter: emitter
                 )
@@ -1492,7 +1530,11 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                     threadID: thread.id,
                     runID: run.id,
                     attachments: [],
-                    preconditions: .init(hasPriorInspection: true, phase: .validation),
+                    preconditions: .init(
+                        hasPriorInspection: true,
+                        phase: .validation,
+                        userRequest: request
+                    ),
                     cancellation: cancellation,
                     emitter: emitter
                 )

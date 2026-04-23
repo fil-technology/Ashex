@@ -126,6 +126,13 @@ public enum TaskPlanner {
         let taskKind = classify(prompt: trimmed)
         guard shouldPlan(prompt: trimmed) else { return nil }
 
+        if isSimpleFilesystemCreationPrompt(trimmed.lowercased()) {
+            return TaskPlan(steps: [
+                PlannedStep(title: "Create the requested folders and files in the workspace", phase: .mutation),
+                PlannedStep(title: "Validate the created paths and summarize the result", phase: .validation),
+            ], taskKind: taskKind)
+        }
+
         let explicitParts = splitExplicitSteps(in: trimmed)
         if explicitParts.count >= 2 {
             return TaskPlan(steps: explicitParts.enumerated().map { index, part in
@@ -138,6 +145,9 @@ public enum TaskPlanner {
 
     public static func shouldAttemptModelPlanning(for prompt: String) -> Bool {
         let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        if isSimpleFilesystemCreationPrompt(trimmed.lowercased()) {
+            return false
+        }
         return shouldPlan(prompt: trimmed)
     }
 
@@ -161,6 +171,22 @@ public enum TaskPlanner {
             || largeTaskMarkers.contains(where: lowered.contains)
             || connectiveMarkers.contains(where: lowered.contains)
             || splitExplicitSteps(in: prompt).count >= 2
+    }
+
+    private static func isSimpleFilesystemCreationPrompt(_ lowered: String) -> Bool {
+        let creationSignals = ["create", "make", "write", "add"]
+        let folderSignals = ["folder", "directory"]
+        let fileSignals = [
+            " file", "html", "css", "style sheet", "stylesheet", "index.", ".html", ".css"
+        ]
+        let broadEngineeringSignals = [
+            "implement support", "refactor", "fix bug", "investigate", "debug", "release",
+            "commit", "push", "test suite", "api", "daemon"
+        ]
+        return creationSignals.contains(where: lowered.contains)
+            && folderSignals.contains(where: lowered.contains)
+            && fileSignals.contains(where: lowered.contains)
+            && !broadEngineeringSignals.contains(where: lowered.contains)
     }
 
     private static func splitExplicitSteps(in prompt: String) -> [String] {

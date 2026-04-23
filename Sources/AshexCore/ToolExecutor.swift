@@ -8,6 +8,7 @@ enum ToolExecutionResult: Sendable {
 struct ToolExecutionPreconditions: Sendable {
     let hasPriorInspection: Bool
     let phase: PlannedStepPhase
+    let userRequest: String
 }
 
 struct ToolExecutionMetadata: Sendable {
@@ -54,6 +55,19 @@ struct ToolExecutor: Sendable {
             )
             try emitter.emit(.messageAppended(runID: runID, messageID: toolMessage.id, role: .tool), runID: runID)
             try emitter.emit(.status(runID: runID, message: "Inspect-before-mutate policy blocked a write action. Asking the model to inspect relevant files first."), runID: runID)
+            return .retryableFailure
+        }
+
+        if let pathReason = filesystemPathIntentViolation(for: call, preconditions: preconditions) {
+            let toolMessage = try persistence.appendMessage(
+                threadID: threadID,
+                runID: runID,
+                role: .tool,
+                content: ToolResultMessageFormatter.blocked(call: call, reason: pathReason),
+                now: clock()
+            )
+            try emitter.emit(.messageAppended(runID: runID, messageID: toolMessage.id, role: .tool), runID: runID)
+            try emitter.emit(.status(runID: runID, message: "A filesystem path looked inconsistent with the request. Asking the model to correct the target path."), runID: runID)
             return .retryableFailure
         }
 
@@ -231,6 +245,105 @@ struct ToolExecutor: Sendable {
             return nil
         }
         return "Tool error: inspect-before-mutate policy requires reading or searching relevant files before making changes. Inspect the target files or repository state first, then retry the mutation."
+    }
+
+    private func filesystemPathIntentViolation(for call: ToolCallRequest, preconditions: ToolExecutionPreconditions) -> String? {
+        guard call.toolName == "filesystem",
+              let operation = call.arguments["operation"]?.stringValue else {
+            return nil
+        }
+
+        if operation == "create_directory",
+           let path = call.arguments["path"]?.stringValue,
+           Self.pathLooksLikeFile(path) {
+            return "Tool error: '\(path)' looks like a file path, not a directory. Create its parent folder if needed, then use filesystem.write_text_file with path '\(path)' for file contents."
+        }
+
+        guard ["write_text_file", "replace_in_file", "apply_patch"].contains(operation),
+              let path = call.arguments["path"]?.stringValue,
+              Self.pathLooksLikeFile(path),
+              let targetDirectory = Self.requestedNestedDirectory(in: preconditions.userRequest) else {
+            return nil
+        }
+
+        guard !Self.path(path, includesDirectoryComponent: targetDirectory) else {
+            return nil
+        }
+
+        return "Tool error: the user request names '\(targetDirectory)' as the target folder, but this write targets '\(path)' outside that folder. Write the file under '\(targetDirectory)/...' unless the user explicitly asks for a root-level file."
+    }
+
+    private static func path(_ path: String, includesDirectoryComponent targetDirectory: String) -> Bool {
+        let target = targetDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !target.isEmpty else { return false }
+        let components = path
+            .replacingOccurrences(of: "\\", with: "/")
+            .split(separator: "/")
+            .map(String.init)
+        return components.contains(target)
+    }
+
+    private static func pathLooksLikeFile(_ path: String) -> Bool {
+        let lastComponent = NSString(string: path).lastPathComponent
+        guard !lastComponent.hasPrefix(".") else { return false }
+        let ext = NSString(string: lastComponent).pathExtension.lowercased()
+        guard !ext.isEmpty else { return false }
+        return fileLikeExtensions.contains(ext)
+    }
+
+    private static let fileLikeExtensions: Set<String> = [
+        "bash", "c", "cc", "cpp", "cs", "css", "csv", "env", "gif", "go", "h", "hpp",
+        "htm", "html", "java", "jpeg", "jpg", "js", "json", "jsx", "kt", "m", "md",
+        "mm", "pdf", "php", "plist", "png", "py", "rb", "rs", "scss", "sh", "svg",
+        "swift", "toml", "ts", "tsx", "txt", "webp", "xcstrings", "xml", "yaml",
+        "yml", "zsh"
+    ]
+
+    private static func requestedNestedDirectory(in request: String) -> String? {
+        let lowered = request.lowercased()
+        guard lowered.contains("inside")
+            || lowered.contains("in that")
+            || lowered.contains("into that")
+            || lowered.contains("there")
+            || lowered.contains("here")
+            || lowered.contains("html")
+            || lowered.contains("css")
+            || lowered.contains("style sheet")
+            || lowered.contains("stylesheet")
+        else {
+            return nil
+        }
+
+        let patterns = [
+            #"(?i)\b(?:folder|directory)\s+(?:called|named)\s+['"]?([A-Za-z0-9._-]+)['"]?"#,
+            #"(?i)\b(?:create|make)\s+(?:a\s+|an\s+)?['"]?([A-Za-z0-9._-]+)['"]?\s+(?:folder|directory)\b"#,
+            #"(?i)\b(?:inside|in|under)\s+(?:the\s+)?['"]?([A-Za-z0-9._-]+)['"]?\s+(?:folder|directory)\b"#
+        ]
+
+        for pattern in patterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+            let range = NSRange(request.startIndex..<request.endIndex, in: request)
+            guard let match = regex.firstMatch(in: request, range: range),
+                  match.numberOfRanges > 1,
+                  let capture = Range(match.range(at: 1), in: request) else {
+                continue
+            }
+            let candidate = String(request[capture]).trimmingCharacters(in: CharacterSet(charactersIn: "'\"` "))
+            if isPlausibleDirectoryName(candidate) {
+                return candidate
+            }
+        }
+        return nil
+    }
+
+    private static func isPlausibleDirectoryName(_ name: String) -> Bool {
+        guard !name.isEmpty,
+              !name.contains("/"),
+              !name.contains("\\"),
+              !pathLooksLikeFile(name) else {
+            return false
+        }
+        return true
     }
 
     private func isExplicitNewPathCreation(call: ToolCallRequest) -> Bool {

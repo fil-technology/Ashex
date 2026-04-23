@@ -201,6 +201,9 @@ public struct FileSystemTool: Tool {
 
         case "create_directory":
             let path = try requiredString("path", in: arguments)
+            if Self.pathLooksLikeFile(path) {
+                throw AshexError.invalidToolArguments("filesystem.create_directory received '\(path)', which looks like a file path. Use filesystem.write_text_file for file contents.")
+            }
             let url = try workspaceGuard.resolveForMutation(path: path)
             do {
                 let previousExists = FileManager.default.fileExists(atPath: url.path)
@@ -445,6 +448,22 @@ public struct FileSystemTool: Tool {
         diff.append(contentsOf: added.map { "+ \($0)" })
         return diff
     }
+
+    private static func pathLooksLikeFile(_ path: String) -> Bool {
+        let lastComponent = NSString(string: path).lastPathComponent
+        guard !lastComponent.hasPrefix(".") else { return false }
+        let ext = NSString(string: lastComponent).pathExtension.lowercased()
+        guard !ext.isEmpty else { return false }
+        return fileLikeExtensions.contains(ext)
+    }
+
+    private static let fileLikeExtensions: Set<String> = [
+        "bash", "c", "cc", "cpp", "cs", "css", "csv", "env", "gif", "go", "h", "hpp",
+        "htm", "html", "java", "jpeg", "jpg", "js", "json", "jsx", "kt", "m", "md",
+        "mm", "pdf", "php", "plist", "png", "py", "rb", "rs", "scss", "sh", "svg",
+        "swift", "toml", "ts", "tsx", "txt", "webp", "xcstrings", "xml", "yaml",
+        "yml", "zsh"
+    ]
 }
 
 private struct PatchEdit {

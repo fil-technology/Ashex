@@ -109,6 +109,7 @@ public actor RemoteApprovalInbox {
     private let clock: @Sendable () -> Date
     private var pendingApprovals: [ConnectorConversationReference: PendingRemoteApproval] = [:]
     private var continuations: [UUID: CheckedContinuation<ApprovalDecision, Never>] = [:]
+    private var approvedFilesystemMutationRuns: Set<ApprovalRunScope> = []
     private let namespace = "daemon.remote_approvals"
 
     public init(
@@ -133,6 +134,26 @@ public actor RemoteApprovalInbox {
         }
         pendingApprovals.removeAll()
         continuations.removeAll()
+        approvedFilesystemMutationRuns.removeAll()
+    }
+
+    public func cachedDecision(
+        for request: ApprovalRequest,
+        conversation: ConnectorConversationReference
+    ) -> ApprovalDecision? {
+        guard Self.canReuseApproval(for: request),
+              approvedFilesystemMutationRuns.contains(.init(conversation: conversation, runID: request.runID)) else {
+            return nil
+        }
+        return .allow("Allowed because low-risk filesystem changes were approved earlier in this run.")
+    }
+
+    public func rememberReusableApproval(
+        for request: ApprovalRequest,
+        conversation: ConnectorConversationReference
+    ) {
+        guard Self.canReuseApproval(for: request) else { return }
+        approvedFilesystemMutationRuns.insert(.init(conversation: conversation, runID: request.runID))
     }
 
     public func awaitDecision(
@@ -198,6 +219,27 @@ public actor RemoteApprovalInbox {
             now: approval.updatedAt
         )
     }
+
+    private static func canReuseApproval(for request: ApprovalRequest) -> Bool {
+        guard request.toolName == "filesystem",
+              request.risk != .high,
+              let operation = request.arguments["operation"]?.stringValue else {
+            return false
+        }
+        return [
+            "create_directory",
+            "write_text_file",
+            "replace_in_file",
+            "apply_patch",
+            "copy_path",
+            "move_path",
+        ].contains(operation)
+    }
+}
+
+private struct ApprovalRunScope: Hashable {
+    let conversation: ConnectorConversationReference
+    let runID: UUID
 }
 
 private extension PendingRemoteApproval {
