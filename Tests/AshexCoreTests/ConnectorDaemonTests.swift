@@ -84,6 +84,33 @@ import Testing
     #expect(event?.externalUserID == "22")
 }
 
+@Test func telegramConnectorNormalizesEditedMessages() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let persistence = SQLitePersistenceStore(databaseURL: root.appendingPathComponent("ashex.sqlite"))
+    try persistence.initialize()
+
+    let connector = TelegramConnector(
+        token: "test-token",
+        config: TelegramConfig(enabled: true),
+        client: MockTelegramBotClient(),
+        persistence: persistence
+    )
+
+    let event = try await connector.normalize(update: TelegramUpdate(
+        updateID: 88,
+        editedMessage: TelegramMessage(
+            messageID: 22,
+            from: TelegramUser(id: 44, isBot: false, firstName: "Sam", username: "sam"),
+            chat: TelegramChat(id: 55, type: "private"),
+            date: 0,
+            text: "List files in the current directory"
+        )
+    ))
+
+    #expect(event?.text == "List files in the current directory")
+    #expect(event?.metadata["telegram_update_kind"] == .string("edited_message"))
+}
+
 @Test func telegramConnectorNormalizesWhoAmICommand() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     let persistence = SQLitePersistenceStore(databaseURL: root.appendingPathComponent("ashex.sqlite"))
@@ -382,6 +409,8 @@ import Testing
 }
 
 @Test func simpleWorkspaceCommandParsesNaturalFolderListing() throws {
+    #expect(SimpleWorkspaceCommand.parse("List files in the current directory") == .listDirectory(path: "."))
+    #expect(SimpleWorkspaceCommand.parse("list files in here") == .listDirectory(path: "."))
     #expect(SimpleWorkspaceCommand.parse("List folders") == .listFolders(path: "."))
     #expect(SimpleWorkspaceCommand.parse("What are the folders in the current workspace?") == .listFolders(path: "."))
     #expect(SimpleWorkspaceCommand.parse("Show folders in Sources") == .listFolders(path: "Sources"))

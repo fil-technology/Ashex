@@ -133,9 +133,23 @@ public actor TelegramConnector: Connector, ConnectorActivityControlling {
     }
 
     func normalize(update: TelegramUpdate) async throws -> InboundConnectorEvent? {
-        guard let message = update.message else {
-            await logger?.log(.debug, subsystem: "telegram", message: "Skipping non-message update", metadata: [
+        let updateKind: String
+        let message: TelegramMessage?
+        if let updateMessage = update.message {
+            updateKind = "message"
+            message = updateMessage
+        } else if let editedMessage = update.editedMessage {
+            updateKind = "edited_message"
+            message = editedMessage
+        } else {
+            updateKind = "unknown"
+            message = nil
+        }
+
+        guard let message else {
+            await logger?.log(.info, subsystem: "telegram", message: "Skipping non-message update", metadata: [
                 "update_id": .string(String(update.updateID)),
+                "update_kind": .string(updateKind),
             ])
             return nil
         }
@@ -178,6 +192,7 @@ public actor TelegramConnector: Connector, ConnectorActivityControlling {
         var metadata: JSONObject = [
             "telegram_update_id": .string(String(update.updateID)),
             "telegram_message_id": .string(String(message.messageID)),
+            "telegram_update_kind": .string(updateKind),
         ]
         for (key, value) in normalized.metadata {
             metadata[key] = value

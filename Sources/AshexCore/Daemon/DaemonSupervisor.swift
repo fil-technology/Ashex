@@ -96,6 +96,10 @@ public actor DaemonSupervisor {
                         "conversation_id": .string(event.conversation.externalConversationID),
                         "error": .string(error.localizedDescription),
                     ])
+                    try? await self.send(
+                        text: DaemonTelegramFailureFormatter.message(for: error),
+                        for: event
+                    )
                 }
             }
         }

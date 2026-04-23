@@ -9,7 +9,24 @@ public enum SimpleWorkspaceCommand: Sendable, Equatable {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let lowered = trimmed.lowercased()
 
-        if ["ls", "/ls", ":ls", "list files", "list the files", "show files", "show the files", "what files are here", "what are the files in the current workspace"].contains(lowered) {
+        if [
+            "ls",
+            "/ls",
+            ":ls",
+            "list files",
+            "list the files",
+            "show files",
+            "show the files",
+            "what files are here",
+            "what are the files in the current workspace",
+            "what are the files in current workspace",
+            "what are the files in the current directory",
+            "what are the files in current directory",
+            "list files in the current directory",
+            "list files in current directory",
+            "list files in the current workspace",
+            "list files in current workspace",
+        ].contains(lowered.trimmingCharacters(in: CharacterSet(charactersIn: "?."))) {
             return .listDirectory(path: ".")
         }
 
@@ -66,11 +83,17 @@ public enum SimpleWorkspaceCommand: Sendable, Equatable {
     }
 
     private static func cleanPath(_ raw: String) -> String {
-        raw
+        let cleaned = raw
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .trimmingCharacters(in: CharacterSet(charactersIn: "`\"'"))
             .trimmingCharacters(in: CharacterSet(charactersIn: "."))
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        switch cleaned.lowercased() {
+        case "here", "current directory", "the current directory", "current workspace", "the current workspace":
+            return "."
+        default:
+            return cleaned
+        }
     }
 }
 

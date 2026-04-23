@@ -27,10 +27,18 @@ public struct TelegramUpdatesResponse: Codable, Sendable {
 public struct TelegramUpdate: Codable, Sendable, Equatable {
     public let updateID: Int64
     public let message: TelegramMessage?
+    public let editedMessage: TelegramMessage?
 
     enum CodingKeys: String, CodingKey {
         case updateID = "update_id"
         case message
+        case editedMessage = "edited_message"
+    }
+
+    public init(updateID: Int64, message: TelegramMessage? = nil, editedMessage: TelegramMessage? = nil) {
+        self.updateID = updateID
+        self.message = message
+        self.editedMessage = editedMessage
     }
 }
 
