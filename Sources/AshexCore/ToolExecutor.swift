@@ -328,6 +328,9 @@ struct ToolExecutor: Sendable {
             let validationArtifacts = operation == "read_text_file" || operation == "file_info" ? inspected : []
             return .init(inspectedPaths: inspected, changedPaths: [], validationArtifacts: validationArtifacts, summary: "inspected \(inspected.joined(separator: ", "))", representsProgress: true)
         case "write_text_file", "replace_in_file", "apply_patch", "create_directory", "delete_path":
+            if isUnchangedMutationResult(result) {
+                return .init(inspectedPaths: [], changedPaths: [], validationArtifacts: [], summary: "no workspace change from \(operation)", representsProgress: false)
+            }
             let changed = [path].compactMap { $0 }
             return .init(inspectedPaths: [], changedPaths: changed, validationArtifacts: [], summary: "changed \(changed.joined(separator: ", "))", representsProgress: true)
         case "move_path", "copy_path":
@@ -336,6 +339,14 @@ struct ToolExecutor: Sendable {
         default:
             return .init(inspectedPaths: [], changedPaths: [], validationArtifacts: [], summary: result.displayText, representsProgress: false)
         }
+    }
+
+    private func isUnchangedMutationResult(_ result: ToolContent) -> Bool {
+        guard case .structured(let value) = result,
+              let status = value.objectValue?["status"]?.stringValue?.lowercased() else {
+            return false
+        }
+        return ["unchanged", "existing", "noop", "no_op"].contains(status)
     }
 
     private func gitValidationArtifacts(operation: String) -> [String] {

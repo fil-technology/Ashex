@@ -5,7 +5,8 @@ public protocol TelegramBotClient: Sendable {
     func getUpdates(token: String, offset: Int64?, timeoutSeconds: Int) async throws -> [TelegramUpdate]
     func getFile(token: String, fileID: String) async throws -> TelegramFile
     func downloadFile(token: String, filePath: String) async throws -> Data
-    func sendMessage(token: String, chatID: Int64, text: String, parseMode: String?) async throws
+    func sendMessage(token: String, chatID: Int64, text: String, parseMode: String?) async throws -> TelegramMessage
+    func editMessageText(token: String, chatID: Int64, messageID: Int64, text: String, parseMode: String?) async throws
     func sendChatAction(token: String, chatID: Int64, action: String) async throws
 }
 
@@ -54,7 +55,7 @@ public struct URLSessionTelegramBotClient: TelegramBotClient {
         return data
     }
 
-    public func sendMessage(token: String, chatID: Int64, text: String, parseMode: String?) async throws {
+    public func sendMessage(token: String, chatID: Int64, text: String, parseMode: String?) async throws -> TelegramMessage {
         var request = try makeRequest(token: token, method: "sendMessage")
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -67,7 +68,24 @@ public struct URLSessionTelegramBotClient: TelegramBotClient {
         }
         request.httpBody = try JSONSerialization.data(withJSONObject: payload)
         let (data, _) = try await session.data(for: request)
-        _ = try JSONDecoder().decode(TelegramSendMessageResponse.self, from: data)
+        return try JSONDecoder().decode(TelegramSendMessageResponse.self, from: data).result
+    }
+
+    public func editMessageText(token: String, chatID: Int64, messageID: Int64, text: String, parseMode: String?) async throws {
+        var request = try makeRequest(token: token, method: "editMessageText")
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var payload: [String: Any] = [
+            "chat_id": chatID,
+            "message_id": messageID,
+            "text": text,
+        ]
+        if let parseMode, !parseMode.isEmpty {
+            payload["parse_mode"] = parseMode
+        }
+        request.httpBody = try JSONSerialization.data(withJSONObject: payload)
+        let (data, _) = try await session.data(for: request)
+        _ = try JSONDecoder().decode(TelegramEditMessageResponse.self, from: data)
     }
 
     public func sendChatAction(token: String, chatID: Int64, action: String) async throws {

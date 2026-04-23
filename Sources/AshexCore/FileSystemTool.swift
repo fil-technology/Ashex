@@ -59,6 +59,16 @@ public struct FileSystemTool: Tool {
                 if createDirectories {
                     try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
                 }
+                if previousContent == content {
+                    return .structured(.object([
+                        "operation": .string("write_text_file"),
+                        "path": .string(path),
+                        "status": .string("unchanged"),
+                        "bytes_written": .number(Double(content.count)),
+                        "previous_exists": .bool(true),
+                        "diff": .array([.string("<no content changes>")]),
+                    ]))
+                }
                 try content.write(to: url, atomically: true, encoding: .utf8)
                 let payload: JSONValue = .object([
                     "operation": .string("write_text_file"),
@@ -167,7 +177,7 @@ public struct FileSystemTool: Tool {
             }
 
         case "list_directory":
-            let path = arguments["path"]?.stringValue ?? "."
+            let path = readOnlyDirectoryPath(from: arguments)
             let url = try workspaceGuard.resolve(path: path)
             do {
                 let entryNames = try FileManager.default.contentsOfDirectory(atPath: url.path).sorted()
@@ -193,8 +203,14 @@ public struct FileSystemTool: Tool {
             let path = try requiredString("path", in: arguments)
             let url = try workspaceGuard.resolveForMutation(path: path)
             do {
+                let previousExists = FileManager.default.fileExists(atPath: url.path)
                 try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-                return .text("Created directory \(path)")
+                return .structured(.object([
+                    "operation": .string("create_directory"),
+                    "path": .string(path),
+                    "status": .string(previousExists ? "existing" : "created"),
+                    "previous_exists": .bool(previousExists),
+                ]))
             } catch {
                 throw AshexError.fileSystem("Failed to create directory \(path): \(error.localizedDescription)")
             }
@@ -250,7 +266,7 @@ public struct FileSystemTool: Tool {
             }
 
         case "file_info":
-            let path = arguments["path"]?.stringValue ?? "."
+            let path = readOnlyDirectoryPath(from: arguments)
             let url = try workspaceGuard.resolve(path: path)
             do {
                 let values = try url.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey])
@@ -267,7 +283,7 @@ public struct FileSystemTool: Tool {
             }
 
         case "find_files":
-            let path = arguments["path"]?.stringValue ?? "."
+            let path = readOnlyDirectoryPath(from: arguments)
             let query = try requiredString("query", in: arguments)
             let maxResults = arguments["max_results"]?.intValue ?? 100
             let rootURL = try workspaceGuard.resolve(path: path)
@@ -284,7 +300,7 @@ public struct FileSystemTool: Tool {
             }
 
         case "search_text":
-            let path = arguments["path"]?.stringValue ?? "."
+            let path = readOnlyDirectoryPath(from: arguments)
             let query = try requiredString("query", in: arguments)
             let maxResults = arguments["max_results"]?.intValue ?? 50
             let rootURL = try workspaceGuard.resolve(path: path)
@@ -316,6 +332,15 @@ public struct FileSystemTool: Tool {
             throw AshexError.invalidToolArguments("filesystem.\(key) must be a non-empty string")
         }
         return value
+    }
+
+    private func readOnlyDirectoryPath(from arguments: JSONObject) -> String {
+        let rawPath = arguments["path"]?.stringValue ?? "."
+        let trimmed = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty || trimmed == "/" {
+            return "."
+        }
+        return rawPath
     }
 
     private func requiredPatchEdits(in arguments: JSONObject) throws -> [PatchEdit] {

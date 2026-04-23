@@ -1365,7 +1365,20 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
     }
 
     private static func compilePlannedRunSummary(request: String, steps: [PlannedStep], summaries: [String]) -> String {
-        var lines = ["Completed planned task for: \(request)", ""]
+        let hasUnresolvedWork = summaries.contains { summary in
+            let lowered = summary.lowercased()
+            return lowered.contains("stopped")
+                || lowered.contains("skipped")
+                || lowered.contains("revisit")
+                || lowered.contains("remaining")
+                || lowered.contains("incomplete")
+        }
+        var lines = [
+            hasUnresolvedWork
+                ? "Partially completed planned task for: \(request)"
+                : "Completed planned task for: \(request)",
+            "",
+        ]
         for (index, step) in steps.enumerated() {
             let summary = index < summaries.count ? summaries[index] : "No summary recorded"
             lines.append("\(index + 1). \(step.title)")

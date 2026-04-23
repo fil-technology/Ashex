@@ -404,16 +404,19 @@ import Testing
     #expect(ConnectorMessageIntentClassifier.classify("Search for the weather in Petah Tikva Israel") == .workspaceTask)
     #expect(ConnectorMessageIntentClassifier.classify("Give me simple swift hello world app code") == .directChat)
     #expect(ConnectorMessageIntentClassifier.classify("Create a simple html website for pet store and add Hebrew localization, split into tasks") == .workspaceTask)
+    #expect(ConnectorMessageIntentClassifier.classify("Edit this html file to have a simple but beautiful page about the earth") == .workspaceTask)
     #expect(ConnectorMessageIntentClassifier.classify("What this repo is about?") == .directChat)
     #expect(ConnectorMessageIntentClassifier.classify("What this repo is about: https://github.com/Eronred/aso-skills") == .workspaceTask)
 }
 
-@Test func simpleWorkspaceCommandParsesNaturalFolderListing() throws {
-    #expect(SimpleWorkspaceCommand.parse("List files in the current directory") == .listDirectory(path: "."))
-    #expect(SimpleWorkspaceCommand.parse("list files in here") == .listDirectory(path: "."))
-    #expect(SimpleWorkspaceCommand.parse("List folders") == .listFolders(path: "."))
-    #expect(SimpleWorkspaceCommand.parse("What are the folders in the current workspace?") == .listFolders(path: "."))
-    #expect(SimpleWorkspaceCommand.parse("Show folders in Sources") == .listFolders(path: "Sources"))
+@Test func simpleWorkspaceCommandKeepsOnlyExplicitShortcuts() throws {
+    #expect(SimpleWorkspaceCommand.parse("List files in the current directory") == nil)
+    #expect(SimpleWorkspaceCommand.parse("create an hello folder") == nil)
+    #expect(SimpleWorkspaceCommand.parse("ls") == .listDirectory(path: "."))
+    #expect(SimpleWorkspaceCommand.parse("/ls Sources") == .listDirectory(path: "Sources"))
+    #expect(SimpleWorkspaceCommand.parse("folders") == .listFolders(path: "."))
+    #expect(SimpleWorkspaceCommand.parse("/folders Sources") == .listFolders(path: "Sources"))
+    #expect(SimpleWorkspaceCommand.parse("/mkdir hello") == .createDirectory(path: "hello"))
 
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: root.appendingPathComponent("Sources"), withIntermediateDirectories: true)
@@ -724,8 +727,8 @@ import Testing
         messageID: "workspace-3",
         conversation: conversation,
         externalUserID: "44",
-        text: "create a folder named Reports",
-        command: nil
+        text: "/mkdir Reports",
+        command: .mkdir
     ))
 
     let sentMessages = await connector.recordedMessages()
@@ -1243,12 +1246,14 @@ import Testing
     try await Task.sleep(nanoseconds: 150_000_000)
 
     let sentMessages = await connector.recordedMessages()
+    let editedMessages = await connector.recordedEdits()
+    #expect(sentMessages.filter { $0.text.contains("Plan created") }.count == 1)
     #expect(sentMessages.contains { $0.text.contains("Plan created") && $0.text.contains("Inspect files") })
-    #expect(sentMessages.contains { $0.text.contains("Current plan") && $0.text.contains("[>] 1. Inspect files") })
-    #expect(sentMessages.contains { $0.text.contains("Patch plan updated") && $0.text.contains("Sources/App.swift") })
-    #expect(sentMessages.contains { $0.text.contains("Changed files") && $0.text.contains("Sources/App.swift") })
-    #expect(sentMessages.contains { $0.text.contains("Subagent assigned") && $0.text.contains("reviewer") })
-    #expect(sentMessages.contains { $0.text.contains("Subagent handoff") && $0.text.contains("No blockers") })
+    #expect(editedMessages.contains { $0.1.contains("Current plan") && $0.1.contains("[>] 1. Inspect files") })
+    #expect(editedMessages.contains { $0.1.contains("Patch plan updated") && $0.1.contains("Sources/App.swift") })
+    #expect(editedMessages.contains { $0.1.contains("Changed files") && $0.1.contains("Sources/App.swift") })
+    #expect(editedMessages.contains { $0.1.contains("Subagent assigned") && $0.1.contains("reviewer") })
+    #expect(editedMessages.contains { $0.1.contains("Subagent handoff") && $0.1.contains("No blockers") })
     #expect(sentMessages.contains { $0.text.contains("Final progress reply") })
 }
 
@@ -1378,10 +1383,12 @@ private actor Counter {
     }
 }
 
-private actor RecordingConnector: Connector, ConnectorActivityControlling {
+private actor RecordingConnector: Connector, ConnectorActivityControlling, ConnectorMessageEditing {
     let id = "telegram"
     let kind = "telegram"
     private var messages: [OutboundConnectorMessage] = []
+    private var edits: [(ConnectorSentMessageReference, String)] = []
+    private var nextMessageID = 1
 
     func start(handler: @escaping @Sendable (InboundConnectorEvent) async throws -> Void) async throws {}
 
@@ -1391,12 +1398,31 @@ private actor RecordingConnector: Connector, ConnectorActivityControlling {
         messages.append(message)
     }
 
+    func sendEditable(_ message: OutboundConnectorMessage) async throws -> ConnectorSentMessageReference {
+        messages.append(message)
+        let reference = ConnectorSentMessageReference(
+            connectorID: message.connectorID,
+            conversation: message.conversation,
+            externalMessageID: String(nextMessageID)
+        )
+        nextMessageID += 1
+        return reference
+    }
+
+    func editMessage(_ reference: ConnectorSentMessageReference, text: String) async throws {
+        edits.append((reference, text))
+    }
+
     func beginActivity(_ activity: ConnectorActivity, for conversation: ConnectorConversationReference) async throws {}
 
     func endActivity(_ activity: ConnectorActivity, for conversation: ConnectorConversationReference) async {}
 
     func recordedMessages() -> [OutboundConnectorMessage] {
         messages
+    }
+
+    func recordedEdits() -> [(ConnectorSentMessageReference, String)] {
+        edits
     }
 }
 
@@ -1483,6 +1509,7 @@ private actor MockTelegramBotClient: TelegramBotClient {
     private let filesByID: [String: TelegramFile]
     private let fileDataByPath: [String: Data]
     private(set) var sentMessages: [(Int64, String, String?)] = []
+    private(set) var editedMessages: [(Int64, Int64, String, String?)] = []
     private(set) var chatActions: [(Int64, String)] = []
 
     init(
@@ -1521,8 +1548,19 @@ private actor MockTelegramBotClient: TelegramBotClient {
         return data
     }
 
-    func sendMessage(token: String, chatID: Int64, text: String, parseMode: String?) async throws {
+    func sendMessage(token: String, chatID: Int64, text: String, parseMode: String?) async throws -> TelegramMessage {
         sentMessages.append((chatID, text, parseMode))
+        return TelegramMessage(
+            messageID: Int64(sentMessages.count),
+            from: nil,
+            chat: TelegramChat(id: chatID, type: "private"),
+            date: 0,
+            text: text
+        )
+    }
+
+    func editMessageText(token: String, chatID: Int64, messageID: Int64, text: String, parseMode: String?) async throws {
+        editedMessages.append((chatID, messageID, text, parseMode))
     }
 
     func sendChatAction(token: String, chatID: Int64, action: String) async throws {

@@ -425,6 +425,73 @@ private final class RecordingExecutionRuntime: ExecutionRuntime, @unchecked Send
     #expect((object["diff"]?.arrayValue?.count ?? 0) > 0)
 }
 
+@Test func filesystemToolTreatsSlashAsWorkspaceRootForReadOnlyDirectoryOperations() async throws {
+    let fileManager = FileManager.default
+    let root = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+    try "hello".write(to: root.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
+
+    let tool = FileSystemTool(workspaceGuard: WorkspaceGuard(rootURL: root))
+    let result = try await tool.execute(
+        arguments: [
+            "operation": .string("list_directory"),
+            "path": .string("/"),
+        ],
+        context: ToolContext(runID: UUID(), emit: { _ in }, cancellation: CancellationToken())
+    )
+
+    guard case .structured(let payload) = result,
+          let object = payload.objectValue,
+          let entries = object["entries"]?.arrayValue else {
+        Issue.record("Expected structured directory listing")
+        return
+    }
+
+    #expect(object["path"]?.stringValue == ".")
+    #expect(entries.contains(.string("index.html")))
+}
+
+@Test func runtimeDoesNotCountExistingDirectoryAsWorkspaceMutation() async throws {
+    let fileManager = FileManager.default
+    let root = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let dbURL = root.appendingPathComponent(".ashex/test.sqlite")
+    try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+
+    let runtime = try AgentRuntime(
+        modelAdapter: SequencedModelAdapter(actions: [
+            .toolCall(.init(toolName: "filesystem", arguments: [
+                "operation": .string("list_directory"),
+                "path": .string("."),
+            ])),
+            .toolCall(.init(toolName: "filesystem", arguments: [
+                "operation": .string("create_directory"),
+                "path": .string("."),
+            ])),
+            .finalAnswer("Done"),
+            .finalAnswer("Still no real edit"),
+            .finalAnswer("No real edit"),
+        ]),
+        toolRegistry: ToolRegistry(tools: [
+            FileSystemTool(workspaceGuard: WorkspaceGuard(rootURL: root)),
+        ]),
+        persistence: SQLitePersistenceStore(databaseURL: dbURL)
+    )
+
+    var sawMutationBlockedStatus = false
+    for await event in runtime.run(RunRequest(
+        prompt: "Create an html website in the workspace",
+        maxIterations: 5
+    )) {
+        if case .status(_, let message) = event.payload,
+           message.contains("Mutation gate blocked completion") {
+            sawMutationBlockedStatus = true
+        }
+    }
+
+    #expect(sawMutationBlockedStatus)
+    #expect(!fileManager.fileExists(atPath: root.appendingPathComponent("index.html").path))
+}
+
 @Test func runtimeRecoversFromMalformedToolCall() async throws {
     let fileManager = FileManager.default
     let root = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)

@@ -55,6 +55,7 @@ public actor DaemonSupervisor {
     private let remoteApprovalInbox: RemoteApprovalInbox
     private let modelControl: DaemonModelControl?
     private var activeTasks: [ConnectorConversationReference: Task<Void, Never>] = [:]
+    private var progressMessages: [ConnectorConversationReference: ProgressMessageState] = [:]
     private var latestReasoningSummaryByConversation: [ConnectorConversationReference: String] = [:]
     private var activeProvider: String
     private var activeModel: String
@@ -355,6 +356,7 @@ public actor DaemonSupervisor {
 
             await self.registry.endActivity(.typing, for: event.conversation, connectorID: event.connectorID)
             await self.runStore.clearRun(for: event.conversation)
+            await self.clearProgressMessage(for: event.conversation)
             await self.clearReasoningSummary(for: event.conversation)
             await self.clearActiveTask(for: event.conversation)
         }
@@ -371,7 +373,8 @@ public actor DaemonSupervisor {
             do {
                 try await Task.sleep(nanoseconds: delay)
                 try Task.checkCancellation()
-                try await send(text: message, for: event)
+                guard activeTasks[event.conversation] != nil else { return }
+                await updateProgressMessage(message, for: event.conversation, connectorID: event.connectorID)
             } catch {
                 return
             }
@@ -393,6 +396,56 @@ public actor DaemonSupervisor {
         try await registry.send(.init(connectorID: event.connectorID, conversation: event.conversation, text: text))
     }
 
+    private struct ProgressMessageState: Sendable {
+        var reference: ConnectorSentMessageReference?
+        var text: String
+    }
+
+    private func updateProgressMessage(
+        _ text: String,
+        for conversation: ConnectorConversationReference,
+        connectorID: String
+    ) async {
+        guard progressMode(for: conversation).showsStructuredProgress else { return }
+        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return }
+
+        if var state = progressMessages[conversation] {
+            guard state.text != normalized else { return }
+            state.text = normalized
+            progressMessages[conversation] = state
+            guard let reference = state.reference else { return }
+            do {
+                try await registry.editMessage(reference, text: normalized)
+            } catch {
+                progressMessages[conversation] = .init(reference: nil, text: normalized)
+                await logger.log(.warning, subsystem: "daemon.telegram", message: "Failed to edit progress message", metadata: [
+                    "conversation_id": .string(conversation.externalConversationID),
+                    "error": .string(error.localizedDescription),
+                ])
+            }
+            return
+        }
+
+        do {
+            let reference = try await registry.sendEditable(.init(
+                connectorID: connectorID,
+                conversation: conversation,
+                text: normalized
+            ))
+            progressMessages[conversation] = .init(reference: reference, text: normalized)
+        } catch {
+            await logger.log(.warning, subsystem: "daemon.telegram", message: "Failed to send progress message", metadata: [
+                "conversation_id": .string(conversation.externalConversationID),
+                "error": .string(error.localizedDescription),
+            ])
+        }
+    }
+
+    private func clearProgressMessage(for conversation: ConnectorConversationReference) {
+        progressMessages[conversation] = nil
+    }
+
     private func handleRuntimeEvent(
         _ event: RuntimeEvent,
         for conversation: ConnectorConversationReference,
@@ -407,82 +460,51 @@ public actor DaemonSupervisor {
                 latestReasoningSummaryByConversation[conversation] = summary
             } else if progressMode(for: conversation) == .verbose,
                       !message.localizedCaseInsensitiveContains("thinking") {
-                try? await registry.send(.init(
-                    connectorID: connectorID,
-                    conversation: conversation,
-                    text: "Status: \(message)"
-                ))
+                await updateProgressMessage("Status: \(message)", for: conversation, connectorID: connectorID)
             }
         case .taskPlanCreated(_, let steps):
-            guard progressMode(for: conversation).showsStructuredProgress else { break }
-            try? await registry.send(.init(
-                connectorID: connectorID,
-                conversation: conversation,
-                text: TelegramRunProgressFormatter.taskPlan(steps)
-            ))
+            await updateProgressMessage(TelegramRunProgressFormatter.taskPlan(steps), for: conversation, connectorID: connectorID)
         case .todoListUpdated(_, let items):
             guard progressMode(for: conversation).showsStructuredProgress else { break }
             guard items.contains(where: { $0.status == .inProgress || $0.status == .completed || $0.status == .skipped }) else {
                 break
             }
-            try? await registry.send(.init(
-                connectorID: connectorID,
-                conversation: conversation,
-                text: TelegramRunProgressFormatter.todoList(items)
-            ))
+            await updateProgressMessage(TelegramRunProgressFormatter.todoList(items), for: conversation, connectorID: connectorID)
         case .taskStepStarted(_, let index, let total, let title):
-            guard progressMode(for: conversation).showsStructuredProgress else { break }
-            try? await registry.send(.init(
-                connectorID: connectorID,
-                conversation: conversation,
-                text: "Step \(index)/\(total) started: \(title)"
-            ))
+            await updateProgressMessage("Step \(index)/\(total) started: \(title)", for: conversation, connectorID: connectorID)
         case .taskStepFinished(_, let index, let total, let title, let outcome):
-            guard progressMode(for: conversation).showsStructuredProgress else { break }
-            try? await registry.send(.init(
-                connectorID: connectorID,
-                conversation: conversation,
-                text: "Step \(index)/\(total) \(outcome): \(title)"
-            ))
+            await updateProgressMessage("Step \(index)/\(total) \(outcome): \(title)", for: conversation, connectorID: connectorID)
         case .changedFilesTracked(_, let paths):
             guard progressMode(for: conversation).showsStructuredProgress else { break }
             guard !paths.isEmpty else { break }
-            try? await registry.send(.init(
-                connectorID: connectorID,
-                conversation: conversation,
-                text: "Changed files:\n\(paths.map { "- \($0)" }.joined(separator: "\n"))"
-            ))
+            await updateProgressMessage("Changed files:\n\(paths.map { "- \($0)" }.joined(separator: "\n"))", for: conversation, connectorID: connectorID)
         case .patchPlanUpdated(_, let paths, let objectives):
             guard progressMode(for: conversation).showsStructuredProgress else { break }
             guard !paths.isEmpty || !objectives.isEmpty else { break }
-            try? await registry.send(.init(
-                connectorID: connectorID,
-                conversation: conversation,
-                text: TelegramRunProgressFormatter.patchPlan(paths: paths, objectives: objectives)
-            ))
+            await updateProgressMessage(TelegramRunProgressFormatter.patchPlan(paths: paths, objectives: objectives), for: conversation, connectorID: connectorID)
         case .subagentAssigned(_, let title, let role, let goal):
             guard progressMode(for: conversation).showsStructuredProgress else { break }
-            try? await registry.send(.init(
-                connectorID: connectorID,
-                conversation: conversation,
-                text: """
+            await updateProgressMessage(
+                """
                 Subagent assigned: \(role)
                 Task: \(title)
                 Goal: \(goal)
-                """
-            ))
+                """,
+                for: conversation,
+                connectorID: connectorID
+            )
         case .subagentHandoff(_, let title, let role, let summary, let remainingItems):
             guard progressMode(for: conversation).showsStructuredProgress else { break }
-            try? await registry.send(.init(
-                connectorID: connectorID,
-                conversation: conversation,
-                text: TelegramRunProgressFormatter.subagentHandoff(
+            await updateProgressMessage(
+                TelegramRunProgressFormatter.subagentHandoff(
                     title: title,
                     role: role,
                     summary: summary,
                     remainingItems: remainingItems
-                )
-            ))
+                ),
+                for: conversation,
+                connectorID: connectorID
+            )
         case .approvalRequested(let runID, let toolName, let summary, let reason, let risk):
             await runStore.setAwaitingApproval(true, for: runID)
             await registry.endActivity(.typing, for: conversation, connectorID: connectorID)
@@ -541,9 +563,9 @@ public actor DaemonSupervisor {
         case .quiet:
             description = "Only final replies and approval prompts are sent."
         case .normal:
-            description = "Plans, steps, changed files, and subagent handoffs are sent."
+            description = "A single live progress message is updated with plans, steps, changed files, and subagent handoffs."
         case .verbose:
-            description = "Normal progress plus selected status updates are sent."
+            description = "Normal progress plus selected status updates are shown in the same live progress message."
         }
         try await send(text: "Progress updates are \(mode.rawValue).\n\(description)", for: event)
     }

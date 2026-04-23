@@ -91,3 +91,58 @@ final class DaemonProcessStateStore {
         return DaemonProcessStatus(pid: state.pid, startedAt: state.startedAt, logPath: state.logPath, isRunning: true)
     }
 }
+
+enum DaemonProcessReaper {
+    static func terminateExistingDaemons(currentPID: Int32 = getpid()) {
+        for pid in daemonProcessIDs(currentPID: currentPID) {
+            guard kill(pid, SIGTERM) == 0 else { continue }
+        }
+
+        Thread.sleep(forTimeInterval: 0.3)
+
+        for pid in daemonProcessIDs(currentPID: currentPID) where kill(pid, 0) == 0 {
+            _ = kill(pid, SIGKILL)
+        }
+    }
+
+    static func daemonProcessIDs(currentPID: Int32 = getpid()) -> [Int32] {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/ps")
+        process.arguments = ["-axo", "pid=,command="]
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return []
+        }
+
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let output = String(data: data, encoding: .utf8) ?? ""
+        return daemonProcessIDs(from: output, currentPID: currentPID)
+    }
+
+    static func daemonProcessIDs(from psOutput: String, currentPID: Int32) -> [Int32] {
+        psOutput
+            .split(whereSeparator: \.isNewline)
+            .compactMap { line -> Int32? in
+                let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard let firstSpace = trimmed.firstIndex(where: \.isWhitespace) else { return nil }
+                let pidText = String(trimmed[..<firstSpace])
+                let command = String(trimmed[firstSpace...]).trimmingCharacters(in: .whitespacesAndNewlines)
+                guard let pid = Int32(pidText), pid != currentPID else { return nil }
+                return isDaemonRunCommand(command) ? pid : nil
+            }
+    }
+
+    private static func isDaemonRunCommand(_ command: String) -> Bool {
+        command.contains(" daemon run ")
+            || command.hasSuffix(" daemon run")
+            || command.contains("/ashex daemon run ")
+            || command.hasSuffix("/ashex daemon run")
+    }
+}

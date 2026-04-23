@@ -115,3 +115,18 @@ import Testing
     #expect(message.contains("local secrets JSON"))
     #expect(message.contains("Action: Save a Telegram bot token"))
 }
+
+@Test func daemonProcessReaperFindsOnlyDaemonRunProcesses() {
+    let psOutput = """
+      101 /usr/local/bin/ashex daemon run --workspace /tmp/a
+      102 /usr/local/bin/ashex daemon start --workspace /tmp/a
+      103 /usr/local/bin/ashex
+      104 /Users/me/project/.build/debug/ashex daemon run --workspace /tmp/b --storage /tmp/s
+      105 /bin/zsh -lc pgrep -af ashex.*daemon
+      106 /usr/local/bin/ashex daemon run
+    """
+
+    let pids = DaemonProcessReaper.daemonProcessIDs(from: psOutput, currentPID: 104)
+
+    #expect(pids == [101, 106])
+}

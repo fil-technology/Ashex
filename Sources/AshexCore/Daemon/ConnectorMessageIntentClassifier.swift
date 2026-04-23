@@ -32,7 +32,8 @@ public enum ConnectorMessageIntentClassifier {
         }
 
         let workspaceCreationVerbs = [
-            "create ", "build ", "generate ", "write ", "make ", "add "
+            "create ", "build ", "generate ", "write ", "make ", "add ", "edit ", "update ",
+            "change ", "modify ", "fix "
         ]
         let workspaceCreationObjects = [
             "html", "website", "web site", "page", "landing page", "app", "project",

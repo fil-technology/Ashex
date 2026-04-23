@@ -268,6 +268,11 @@ final class TUIApp {
             await self?.refreshProviderStatus()
         }
         refreshDaemonStatus()
+        if sessionUserConfig.daemon.enabled {
+            Task { [weak self] in
+                await self?.restartDaemonOnAppLaunch()
+            }
+        }
     }
 
     private static let onboardingNamespace = "ui.onboarding"
@@ -5031,6 +5036,16 @@ final class TUIApp {
         }
     }
 
+    private func restartDaemonFromTUI(statusPrefix: String) throws {
+        DaemonProcessReaper.terminateExistingDaemons()
+        Thread.sleep(forTimeInterval: 0.2)
+        daemonStatus = nil
+        try startDaemonFromTUI()
+        if daemonStatus?.isRunning == true {
+            statusLine = "\(statusPrefix): daemon restarted"
+        }
+    }
+
     private func stopDaemonFromTUI() throws {
         let stateStore = DaemonProcessStateStore(storageRoot: sessionStorageRoot)
         guard let status = try stateStore.status(), status.isRunning else {
@@ -5048,6 +5063,20 @@ final class TUIApp {
         daemonStatus = try stateStore.status()
     }
 
+    private func restartDaemonOnAppLaunch() async {
+        do {
+            statusLine = "Restarting daemon"
+            render()
+            try restartDaemonFromTUI(statusPrefix: "Startup")
+            refreshDaemonStatus()
+            render()
+        } catch {
+            statusLine = "Daemon startup failed: \(error.localizedDescription)"
+            refreshDaemonStatus()
+            render()
+        }
+    }
+
     @discardableResult
     private func toggleDaemonFromSettings() async -> Bool {
         do {
@@ -5055,6 +5084,7 @@ final class TUIApp {
             if daemonStatus?.isRunning == true {
                 try stopDaemonFromTUI()
             } else {
+                DaemonProcessReaper.terminateExistingDaemons()
                 try startDaemonFromTUI()
             }
             refreshDaemonStatus()

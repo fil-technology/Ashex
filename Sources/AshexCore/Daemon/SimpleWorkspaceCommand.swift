@@ -9,73 +9,30 @@ public enum SimpleWorkspaceCommand: Sendable, Equatable {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let lowered = trimmed.lowercased()
 
-        if [
-            "ls",
-            "/ls",
-            ":ls",
-            "list files",
-            "list the files",
-            "show files",
-            "show the files",
-            "what files are here",
-            "what are the files in the current workspace",
-            "what are the files in current workspace",
-            "what are the files in the current directory",
-            "what are the files in current directory",
-            "list files in the current directory",
-            "list files in current directory",
-            "list files in the current workspace",
-            "list files in current workspace",
-        ].contains(lowered.trimmingCharacters(in: CharacterSet(charactersIn: "?."))) {
+        if ["ls", "/ls", ":ls"].contains(lowered) {
             return .listDirectory(path: ".")
         }
 
-        if [
-            "list folders",
-            "list the folders",
-            "show folders",
-            "show the folders",
-            "what folders are here",
-            "what are the folders in the current workspace",
-            "what are the folders in current workspace",
-            "what are the folders in the current directory",
-            "what are the folders in current directory",
-        ].contains(lowered.trimmingCharacters(in: CharacterSet(charactersIn: "?."))) {
-            return .listFolders(path: ".")
-        }
-
-        for prefix in ["/ls ", ":ls ", "ls ", "list files in "] {
+        for prefix in ["/ls ", ":ls ", "ls "] {
             if lowered.hasPrefix(prefix) {
                 return .listDirectory(path: cleanPath(String(trimmed.dropFirst(prefix.count))))
             }
         }
 
-        for prefix in ["list folders in ", "show folders in "] {
+        for prefix in ["/folders ", ":folders ", "folders "] {
             if lowered.hasPrefix(prefix) {
                 return .listFolders(path: cleanPath(String(trimmed.dropFirst(prefix.count))))
             }
+        }
+
+        if ["/folders", ":folders", "folders"].contains(lowered) {
+            return .listFolders(path: ".")
         }
 
         for prefix in ["/mkdir ", ":mkdir ", "mkdir "] {
             if lowered.hasPrefix(prefix) {
                 let path = cleanPath(String(trimmed.dropFirst(prefix.count)))
                 return path.isEmpty ? nil : .createDirectory(path: path)
-            }
-        }
-
-        guard lowered.contains("create"),
-              lowered.contains("folder") || lowered.contains("directory") else {
-            return nil
-        }
-
-        let markers = [" named ", " called ", " folder ", " directory "]
-        for marker in markers {
-            if let range = trimmed.range(of: marker, options: [.caseInsensitive]) {
-                let suffix = String(trimmed[range.upperBound...])
-                let path = cleanPath(suffix)
-                if !path.isEmpty {
-                    return .createDirectory(path: path)
-                }
             }
         }
 

@@ -93,6 +93,18 @@ public struct OutboundConnectorMessage: Sendable, Codable {
     }
 }
 
+public struct ConnectorSentMessageReference: Sendable, Codable, Hashable {
+    public let connectorID: String
+    public let conversation: ConnectorConversationReference
+    public let externalMessageID: String
+
+    public init(connectorID: String, conversation: ConnectorConversationReference, externalMessageID: String) {
+        self.connectorID = connectorID
+        self.conversation = conversation
+        self.externalMessageID = externalMessageID
+    }
+}
+
 public enum ConnectorActivity: String, Sendable, Codable {
     case typing
 }
@@ -108,6 +120,11 @@ public protocol Connector: Sendable {
     func start(handler: @escaping @Sendable (InboundConnectorEvent) async throws -> Void) async throws
     func stop() async
     func send(_ message: OutboundConnectorMessage) async throws
+}
+
+public protocol ConnectorMessageEditing: Sendable {
+    func sendEditable(_ message: OutboundConnectorMessage) async throws -> ConnectorSentMessageReference
+    func editMessage(_ reference: ConnectorSentMessageReference, text: String) async throws
 }
 
 public actor ConnectorRegistry {
@@ -134,6 +151,27 @@ public actor ConnectorRegistry {
             throw AshexError.model("No connector registered with id \(message.connectorID)")
         }
         try await connector.send(message)
+    }
+
+    public func sendEditable(_ message: OutboundConnectorMessage) async throws -> ConnectorSentMessageReference? {
+        guard let connector = connectors[message.connectorID] else {
+            throw AshexError.model("No connector registered with id \(message.connectorID)")
+        }
+        guard let editingConnector = connector as? any ConnectorMessageEditing else {
+            try await connector.send(message)
+            return nil
+        }
+        return try await editingConnector.sendEditable(message)
+    }
+
+    public func editMessage(_ reference: ConnectorSentMessageReference, text: String) async throws {
+        guard let connector = connectors[reference.connectorID] else {
+            throw AshexError.model("No connector registered with id \(reference.connectorID)")
+        }
+        guard let editingConnector = connector as? any ConnectorMessageEditing else {
+            return
+        }
+        try await editingConnector.editMessage(reference, text: text)
     }
 
     public func beginActivity(_ activity: ConnectorActivity, for conversation: ConnectorConversationReference, connectorID: String) async throws {

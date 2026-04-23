@@ -1,6 +1,6 @@
 import Foundation
 
-public actor TelegramConnector: Connector, ConnectorActivityControlling {
+public actor TelegramConnector: Connector, ConnectorActivityControlling, ConnectorMessageEditing {
     public let id: String
     public let kind: String = "telegram"
 
@@ -50,12 +50,54 @@ public actor TelegramConnector: Connector, ConnectorActivityControlling {
             throw AshexError.model("Invalid Telegram chat ID: \(message.conversation.externalConversationID)")
         }
         for chunk in Self.chunk(text: message.text, limit: 4000) {
-            try await client.sendMessage(
+            _ = try await client.sendMessage(
                 token: token,
                 chatID: chatID,
                 text: TelegramMessageFormatter.format(chunk),
                 parseMode: TelegramMessageFormatter.parseMode
             )
+        }
+    }
+
+    public func sendEditable(_ message: OutboundConnectorMessage) async throws -> ConnectorSentMessageReference {
+        guard let chatID = Int64(message.conversation.externalConversationID) else {
+            throw AshexError.model("Invalid Telegram chat ID: \(message.conversation.externalConversationID)")
+        }
+        let chunk = Self.chunk(text: message.text, limit: 4000).first ?? ""
+        let sent = try await client.sendMessage(
+            token: token,
+            chatID: chatID,
+            text: TelegramMessageFormatter.format(chunk),
+            parseMode: TelegramMessageFormatter.parseMode
+        )
+        return .init(
+            connectorID: id,
+            conversation: message.conversation,
+            externalMessageID: String(sent.messageID)
+        )
+    }
+
+    public func editMessage(_ reference: ConnectorSentMessageReference, text: String) async throws {
+        guard let chatID = Int64(reference.conversation.externalConversationID) else {
+            throw AshexError.model("Invalid Telegram chat ID: \(reference.conversation.externalConversationID)")
+        }
+        guard let messageID = Int64(reference.externalMessageID) else {
+            throw AshexError.model("Invalid Telegram message ID: \(reference.externalMessageID)")
+        }
+        let chunk = Self.chunk(text: text, limit: 4000).first ?? ""
+        do {
+            try await client.editMessageText(
+                token: token,
+                chatID: chatID,
+                messageID: messageID,
+                text: TelegramMessageFormatter.format(chunk),
+                parseMode: TelegramMessageFormatter.parseMode
+            )
+        } catch {
+            if error.localizedDescription.localizedCaseInsensitiveContains("message is not modified") {
+                return
+            }
+            throw error
         }
     }
 
@@ -179,7 +221,7 @@ public actor TelegramConnector: Connector, ConnectorActivityControlling {
                 "user_id": .string(userID ?? "<unknown>"),
                 "reason": .string(access.reason),
             ])
-            try? await client.sendMessage(
+            _ = try? await client.sendMessage(
                 token: token,
                 chatID: message.chat.id,
                 text: TelegramMessageFormatter.format(Self.accessDeniedMessage(chatID: chatID, userID: userID)),

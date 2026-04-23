@@ -189,6 +189,35 @@ public struct TelegramSendMessageResponse: Codable, Sendable {
     public let result: TelegramMessage
 }
 
+public struct TelegramEditMessageResponse: Codable, Sendable {
+    public let ok: Bool
+    public let result: TelegramEditMessageResult
+}
+
+public enum TelegramEditMessageResult: Codable, Sendable, Equatable {
+    case bool(Bool)
+    case message(TelegramMessage)
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let bool = try? container.decode(Bool.self) {
+            self = .bool(bool)
+            return
+        }
+        self = .message(try container.decode(TelegramMessage.self))
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .bool(let value):
+            try container.encode(value)
+        case .message(let message):
+            try container.encode(message)
+        }
+    }
+}
+
 public struct TelegramBoolResponse: Codable, Sendable {
     public let ok: Bool
     public let result: Bool
