@@ -5,7 +5,7 @@ Ashex includes a daemon path for long-running background work and Telegram as th
 ## Commands
 
 - `daemon run`: start Ashex in the foreground as a long-running process.
-- `daemon start`: launch the daemon in the background and write logs under `STORAGE/daemon/daemon.log`.
+- `daemon start`: launch the daemon in the background, verify that it stays running, and write logs under `STORAGE/daemon/daemon.log`.
 - `daemon stop`: send `SIGTERM` to the tracked daemon process.
 - `daemon status`: show PID and log path when the daemon is running.
 - `telegram test`: verify the configured Telegram bot token with `getMe`.
@@ -70,6 +70,7 @@ When `allowlist_only` is enabled, unauthorized users receive:
 
 ## Runtime Behavior
 
+- `daemon start` reports the recent daemon log if startup fails, for example when Telegram is enabled but no token is available in `ASHEX_TELEGRAM_BOT_TOKEN`, config, or local secrets JSON.
 - Direct-chat prompts such as "How are you?" are routed normally and show a typing indicator while the model runs.
 - General requests like summaries, explanations, and code snippets prefer direct-chat routing.
 - Project/workspace prompts and explicit command prompts such as `shell: ...` go through the normal runtime intent classifier.

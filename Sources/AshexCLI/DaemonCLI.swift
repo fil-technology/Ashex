@@ -211,6 +211,17 @@ enum DaemonCLI {
         process.standardError = handle
         try process.run()
 
+        try await Task.sleep(nanoseconds: 750_000_000)
+        let status = try stateStore.status()
+        guard process.isRunning || status?.isRunning == true else {
+            try? handle.close()
+            throw AshexError.model(daemonStartupFailureMessage(
+                logURL: logURL,
+                fallback: "Daemon failed to start in background."
+            ))
+        }
+        try? handle.close()
+
         print("ash daemon started")
         print("pid: \(process.processIdentifier)")
         print("log: \(logURL.path)")
@@ -344,6 +355,47 @@ enum DaemonCLI {
         if let stored = try? secretStore.readSecret(namespace: telegramSecretNamespace, key: telegramSecretKey),
            !stored.isEmpty {
             return stored
+        }
+        return nil
+    }
+
+    static func daemonStartupFailureMessage(logURL: URL, fallback: String) -> String {
+        let logTail = daemonLogTail(logURL: logURL)
+        guard !logTail.isEmpty else {
+            return "\(fallback) Check \(logURL.path)"
+        }
+        var message = "\(fallback)\nRecent daemon log:\n\(logTail)"
+        if let action = daemonStartupFailureAction(for: logTail) {
+            message += "\nAction: \(action)"
+        }
+        return message
+    }
+
+    static func daemonLogTail(logURL: URL, maxLines: Int = 8) -> String {
+        guard let data = try? Data(contentsOf: logURL),
+              let text = String(data: data, encoding: .utf8) else {
+            return ""
+        }
+
+        let lines = text
+            .split(whereSeparator: \.isNewline)
+            .map(String.init)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .filter { line in
+                line.range(of: "Action:", options: [.anchored, .caseInsensitive]) == nil
+            }
+
+        return lines.suffix(maxLines).joined(separator: "\n")
+    }
+
+    private static func daemonStartupFailureAction(for logTail: String) -> String? {
+        let lowercased = logTail.lowercased()
+        if lowercased.contains("telegram") && lowercased.contains("bot token") {
+            return "Save a Telegram bot token in Assistant Setup, set ASHEX_TELEGRAM_BOT_TOKEN, or add an enabled cron job."
+        }
+        if lowercased.contains("cron job") {
+            return "Add an enabled cron job or enable Telegram with a valid bot token."
         }
         return nil
     }

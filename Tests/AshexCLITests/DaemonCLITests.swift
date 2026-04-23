@@ -94,3 +94,24 @@ import Testing
     #expect(CLIConfiguration.ollamaRequestTimeoutSeconds(config: .init(requestTimeoutSeconds: 180)) == 300)
     #expect(CLIConfiguration.ollamaRequestTimeoutSeconds(config: .init(requestTimeoutSeconds: 420)) == 420)
 }
+
+@Test func daemonStartupFailureMessageIncludesRecentLogLines() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let logURL = root.appendingPathComponent("daemon.log")
+    try [
+        "old line",
+        "ashex error: Daemon run requires either Telegram to be enabled with a valid bot token or at least one enabled cron job.",
+        "Set a Telegram token in local secrets JSON or add an enabled cron job."
+    ].joined(separator: "\n").write(to: logURL, atomically: true, encoding: .utf8)
+
+    let message = DaemonCLI.daemonStartupFailureMessage(
+        logURL: logURL,
+        fallback: "Daemon failed to start in background."
+    )
+
+    #expect(message.contains("Recent daemon log:"))
+    #expect(message.contains("Daemon run requires either Telegram"))
+    #expect(message.contains("local secrets JSON"))
+    #expect(message.contains("Action: Save a Telegram bot token"))
+}

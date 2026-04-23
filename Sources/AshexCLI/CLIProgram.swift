@@ -131,11 +131,17 @@ struct AshexCLI {
 
     private static func startupRecoveryMessage(for error: Error) -> String? {
         let message = error.localizedDescription.lowercased()
+        if message.contains("\naction:") || message.hasPrefix("action:") {
+            return nil
+        }
         if message.contains("openai_api_key") {
             return "Action: set OPENAI_API_KEY, or run `ashex --provider mock` to open the TUI without a remote provider."
         }
         if message.contains("anthropic_api_key") {
             return "Action: set ANTHROPIC_API_KEY, or run `ashex --provider mock` to open the TUI without a remote provider."
+        }
+        if message.contains("telegram") && message.contains("bot token") {
+            return "Action: save a Telegram bot token in Assistant Setup, set ASHEX_TELEGRAM_BOT_TOKEN, or add an enabled cron job."
         }
         if message.contains("dflash") {
             return "Action: start `dflash-serve`, choose `dflash` in Provider Settings, or run `ashex --provider mock` until the local DFlash server is available."

@@ -5010,13 +5010,24 @@ final class TUIApp {
         process.standardOutput = handle
         process.standardError = handle
         try process.run()
+        process.waitUntilExit()
+        try? handle.close()
+
+        guard process.terminationStatus == 0 else {
+            throw AshexError.model(DaemonCLI.daemonStartupFailureMessage(
+                logURL: logURL,
+                fallback: "Daemon failed to start in background."
+            ))
+        }
 
         statusLine = "Starting daemon in background"
-        Thread.sleep(forTimeInterval: 0.4)
+        Thread.sleep(forTimeInterval: 0.2)
         daemonStatus = try stateStore.status()
         guard daemonStatus?.isRunning == true else {
-            let logHint = FileManager.default.fileExists(atPath: logURL.path) ? " See \(logURL.path)" : ""
-            throw AshexError.model("Daemon did not stay running.\(logHint)")
+            throw AshexError.model(DaemonCLI.daemonStartupFailureMessage(
+                logURL: logURL,
+                fallback: "Daemon did not stay running."
+            ))
         }
     }
 
