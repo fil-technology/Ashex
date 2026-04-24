@@ -15,8 +15,19 @@ The onboarding flow lets you choose a provider, choose or type a model, save hos
 - `mock`: offline adapter for testing the UI and tool flow without a real model.
 - `openai`: hosted OpenAI provider.
 - `anthropic`: hosted Claude provider.
+- `esh`: local `esh` runtime with installed MLX or GGUF models.
 - `ollama`: local Ollama provider.
 - `dflash`: experimental Apple-Silicon-local DFlash provider through `dflash-serve`.
+
+## Esh
+
+If `esh` is bundled with Ashex or discoverable through `optimization.esh.executablePath`, `ESH_EXECUTABLE`, or `PATH`, you can run it as a first-class provider:
+
+```bash
+ashex --provider esh --model your-installed-esh-model "list the files in this workspace"
+```
+
+If you omit a concrete model in the TUI, Ashex will try to use the first installed model reported by `esh capabilities`.
 
 ## OpenAI
 
@@ -67,6 +78,7 @@ More design notes live in [DFlash provider plan](../providers/dflash-provider-pl
 - `OPENAI_API_KEY`: required for `--provider openai` unless saved in local secrets JSON.
 - `ANTHROPIC_API_KEY`: required for `--provider anthropic` unless saved in local secrets JSON.
 - `OPENAI_MODEL`: optional default model for `openai`.
+- `ESH_MODEL`: optional default model for `esh`.
 - `OLLAMA_MODEL`: optional default model for `ollama`.
 - `OLLAMA_BASE_URL`: optional Ollama chat endpoint, default `http://localhost:11434/api/chat`.
 - `OLLAMA_REQUEST_TIMEOUT_SECONDS`: optional Ollama request timeout override for slower agent-mode calls. The built-in default is 300 seconds.

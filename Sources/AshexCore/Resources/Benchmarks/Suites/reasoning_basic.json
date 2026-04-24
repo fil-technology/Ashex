@@ -1,0 +1,53 @@
+{
+  "id": "reasoning_basic",
+  "title": "Basic Reasoning",
+  "description": "Small deterministic reasoning checks for math, logic, and concise explanation.",
+  "cases": [
+    {
+      "id": "reasoning.logic.age.001",
+      "category": "reasoning",
+      "title": "Age logic",
+      "prompt": "If John is twice as old as Mary, and Mary will be 30 in 5 years, how old is John now?",
+      "expected": {
+        "mustContain": ["Mary is 25", "John is 50"],
+        "approxNumericAnswer": {
+          "value": 50,
+          "tolerancePercent": 0
+        }
+      },
+      "scoring": {
+        "maxScore": 10,
+        "criteria": [
+          { "name": "correct_answer", "points": 6 },
+          { "name": "clear_reasoning", "points": 4 }
+        ]
+      },
+      "tags": ["logic", "math"],
+      "timeoutSeconds": 60
+    },
+    {
+      "id": "reasoning.loan.monthly_payment.001",
+      "category": "reasoning",
+      "title": "Loan monthly payment estimation",
+      "prompt": "You have a loan of 150,000 at 5% annual interest for 7 years. Estimate the monthly payment and explain the calculation briefly.",
+      "expected": {
+        "mustContain": ["monthly payment", "interest", "7 years"],
+        "approxNumericAnswer": {
+          "value": 2120,
+          "tolerancePercent": 8
+        }
+      },
+      "scoring": {
+        "maxScore": 10,
+        "criteria": [
+          { "name": "correct_calculation", "points": 4 },
+          { "name": "clear_reasoning", "points": 3 },
+          { "name": "does_not_hallucinate", "points": 2 },
+          { "name": "concise_answer", "points": 1 }
+        ]
+      },
+      "tags": ["finance", "math", "reasoning"],
+      "timeoutSeconds": 60
+    }
+  ]
+}

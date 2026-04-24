@@ -1,0 +1,32 @@
+{
+  "id": "memory_basic",
+  "title": "Basic Context Memory",
+  "description": "Checks whether the agent can use prior context within a benchmark case.",
+  "cases": [
+    {
+      "id": "memory.budget_strategy.001",
+      "category": "memory",
+      "title": "Use prior context",
+      "steps": [
+        {
+          "prompt": "Remember this for the current benchmark: my budget is 2.5 million and I want low monthly payments."
+        },
+        {
+          "prompt": "What strategy should I use?"
+        }
+      ],
+      "expected": {
+        "mustContain": ["2.5 million", "low monthly payments"]
+      },
+      "scoring": {
+        "maxScore": 10,
+        "criteria": [
+          { "name": "uses_budget_context", "points": 5 },
+          { "name": "uses_payment_preference", "points": 5 }
+        ]
+      },
+      "tags": ["memory", "context"],
+      "timeoutSeconds": 90
+    }
+  ]
+}

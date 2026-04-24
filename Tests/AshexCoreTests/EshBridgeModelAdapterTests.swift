@@ -33,6 +33,75 @@ struct EshBridgeModelAdapterTests {
         #expect(reply == #"{"type":"final_answer","final_answer":"done","tool_name":null,"arguments":null}"#)
     }
 
+    @Test func parsesCapabilitiesFromJSONOutput() throws {
+        let capabilities = try EshBridgeOutputParser.parseCapabilities(from: """
+        {
+          "schemaVersion": "esh.capabilities.v1",
+          "tool": "esh",
+          "toolVersion": "0.2.0",
+          "commands": [
+            {
+              "name": "infer",
+              "inputSchema": "esh.infer.request.v1",
+              "outputSchema": "esh.infer.response.v1",
+              "transport": "json"
+            }
+          ],
+          "backends": [
+            {
+              "backend": "mlx",
+              "supportsDirectInference": true,
+              "supportsCacheBuild": true,
+              "supportsCacheLoad": true
+            },
+            {
+              "backend": "gguf",
+              "supportsDirectInference": true,
+              "supportsCacheBuild": false,
+              "supportsCacheLoad": false
+            }
+          ],
+          "installedModels": [
+            {
+              "id": "qwen2.5-coder-mlx",
+              "displayName": "Qwen 2.5 Coder MLX",
+              "backend": "mlx",
+              "source": "mlx-community/Qwen2.5-Coder",
+              "variant": null,
+              "runtimeVersion": "mlx-v1",
+              "supportsDirectInference": true,
+              "supportsCacheBuild": true,
+              "supportsCacheLoad": true
+            }
+          ]
+        }
+        """)
+
+        #expect(capabilities.commands.count == 1)
+        #expect(capabilities.resolveModelCapability(for: "mlx-community/Qwen2.5-Coder")?.supportsCacheLoad == true)
+        #expect(capabilities.resolveBackendCapability(for: "gguf")?.supportsCacheBuild == false)
+    }
+
+    @Test func parsesInferResponseFromJSONOutput() throws {
+        let response = try EshBridgeOutputParser.parseInferResponse(from: """
+        {
+          "schemaVersion": "esh.infer.response.v1",
+          "modelID": "qwen2.5-coder-mlx",
+          "backend": "mlx",
+          "integration": {
+            "mode": "direct",
+            "cacheArtifactID": null,
+            "cacheMode": "auto"
+          },
+          "outputText": "{\\"type\\":\\"final_answer\\",\\"final_answer\\":\\"done\\",\\"tool_name\\":null,\\"arguments\\":{}}"
+        }
+        """)
+
+        #expect(response.backend == "mlx")
+        #expect(response.integration.mode == "direct")
+        #expect(response.outputText.contains(#""final_answer":"done""#))
+    }
+
     @Test func fallsBackWhenBridgeExecutionFails() async throws {
         let adapter = EshBackedModelAdapter(
             configuration: .init(

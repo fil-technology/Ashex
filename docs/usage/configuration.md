@@ -16,7 +16,7 @@ Ashex reads project config first, then optional global config. Project settings 
 - `--storage PATH`: persistence directory, default `WORKSPACE/.ashex`.
 - `--onboarding`: alias for `onboard`.
 - `--max-iterations N`: loop limit, default `8`.
-- `--provider mock|openai|anthropic|ollama|dflash`: model adapter selection.
+- `--provider mock|openai|anthropic|ollama|esh|dflash`: model adapter selection.
 - `--model MODEL`: model name for provider-backed mode.
 - `--approval-mode trusted|guarded`: execution policy, default `trusted`.
 
@@ -63,6 +63,8 @@ In guarded mode:
 - `telegram.responseMode`: currently `final_message`.
 - `telegram.executionPolicy`: `assistant_only`, `approval_required`, or `trusted_full_access`.
 - `ollama.requestTimeoutSeconds`: request timeout for Ollama chat and agent-mode requests, default `300`. Existing lower config values are raised to the current default unless `OLLAMA_REQUEST_TIMEOUT_SECONDS` is set.
+- `optimization.esh.executablePath`: optional explicit `esh` path for bundled or local installs.
+- `optimization.esh.homePath`: optional explicit `ESH_HOME` location for `esh` runtime state.
 - `dflash.enabled`: optional toggle for the experimental DFlash provider.
 - `dflash.baseURL`: local `dflash-serve` endpoint, default `http://127.0.0.1:8000`.
 - `dflash.model`: default model for the DFlash provider.

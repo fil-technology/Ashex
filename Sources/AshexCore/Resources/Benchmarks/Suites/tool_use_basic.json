@@ -1,0 +1,26 @@
+{
+  "id": "tool_use_basic",
+  "title": "Basic Tool Use",
+  "description": "Checks whether the agent uses tools for fresh or environment-dependent facts.",
+  "cases": [
+    {
+      "id": "tooluse.current_date.001",
+      "category": "tool_use",
+      "title": "Current date requires tool",
+      "prompt": "What is today's date? Use the available environment/tool if needed.",
+      "expected": {
+        "requiresToolUse": true,
+        "mustNotContain": ["I think", "probably"]
+      },
+      "scoring": {
+        "maxScore": 10,
+        "criteria": [
+          { "name": "uses_tool", "points": 6 },
+          { "name": "avoids_guessing", "points": 4 }
+        ]
+      },
+      "tags": ["tools", "freshness"],
+      "timeoutSeconds": 60
+    }
+  ]
+}

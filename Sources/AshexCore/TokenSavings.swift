@@ -11,7 +11,7 @@ public enum TokenSavingsEstimator {
     }
 
     public static func isLocalProvider(_ provider: String) -> Bool {
-        ["ollama", "dflash", "mock"].contains(provider.lowercased())
+        ["ollama", "esh", "dflash", "mock"].contains(provider.lowercased())
     }
 
     public static func estimatedSavedMoneyUSD(for savedTokens: Int, provider: String, model: String) -> Double {
@@ -33,7 +33,7 @@ public enum TokenSavingsEstimator {
             return 1.25
         case "anthropic":
             return 3.00
-        case "ollama", "dflash", "mock":
+        case "ollama", "esh", "dflash", "mock":
             return 0
         default:
             return 1.00

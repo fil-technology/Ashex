@@ -71,6 +71,8 @@ class Ashex < Formula
   def install
     dir = Dir["ashex-*"].first || "."
     libexec.install "#{dir}/bin/ashex"
+    esh_path = "#{dir}/bin/esh"
+    libexec.install esh_path if File.exist?(esh_path)
     libexec.install "#{dir}/bin/Ashex_AshexCore.bundle"
     bin.write_exec_script libexec/"ashex"
     pkgshare.install "#{dir}/share/doc/ashex/README.md", "#{dir}/share/doc/ashex/LICENSE"
@@ -106,6 +108,8 @@ class Ashex < Formula
   def install
     dir = Dir["ashex-*"].first || "."
     libexec.install "#{dir}/bin/ashex"
+    esh_path = "#{dir}/bin/esh"
+    libexec.install esh_path if File.exist?(esh_path)
     libexec.install "#{dir}/bin/Ashex_AshexCore.bundle"
     bin.write_exec_script libexec/"ashex"
     pkgshare.install "#{dir}/share/doc/ashex/README.md", "#{dir}/share/doc/ashex/LICENSE"

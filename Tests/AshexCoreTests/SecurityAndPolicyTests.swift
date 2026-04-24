@@ -630,6 +630,38 @@ import Testing
     #expect(report.recommendedMode == .triattention)
 }
 
+@Test func eshOptimizationInspectorPrefersBundledExecutableBeforePATH() {
+    let inspector = EshOptimizationInspector(
+        environment: ["PATH": "/opt/homebrew/bin:/usr/bin"],
+        fileExists: { path in
+            path == "/Applications/Ashex/bin/esh" || path == "/opt/homebrew/bin/esh"
+        },
+        currentExecutablePath: "/Applications/Ashex/bin/ashex"
+    )
+
+    let resolved = inspector.resolveExecutablePath(config: .init())
+
+    #expect(resolved == "/Applications/Ashex/bin/esh")
+}
+
+@Test func eshOptimizationInspectorPrefersSiblingWorkspaceBuildBeforePATH() {
+    let inspector = EshOptimizationInspector(
+        environment: [
+            "PWD": "/Users/sviatoslavfil/Development/Fil.Technology/Codex-based/Agents/Eshex/Source",
+            "PATH": "/opt/homebrew/bin:/usr/bin",
+        ],
+        fileExists: { path in
+            path == "/Users/sviatoslavfil/Development/Fil.Technology/Codex-based/Coding/MLX+TurboQuant/Source/.build/arm64-apple-macosx/debug/esh" ||
+                path == "/opt/homebrew/bin/esh"
+        },
+        currentExecutablePath: "/Users/sviatoslavfil/Development/Fil.Technology/Codex-based/Agents/Eshex/Source/.build/arm64-apple-macosx/debug/ashex"
+    )
+
+    let resolved = inspector.resolveExecutablePath(config: .init())
+
+    #expect(resolved == "/Users/sviatoslavfil/Development/Fil.Technology/Codex-based/Coding/MLX+TurboQuant/Source/.build/arm64-apple-macosx/debug/esh")
+}
+
 @Test func cronScheduleComputesNextRunInRequestedTimezone() throws {
     let schedule = CronSchedule(expression: "0 9 * * 1-5", timeZoneIdentifier: "Asia/Jerusalem")
     let formatter = ISO8601DateFormatter()

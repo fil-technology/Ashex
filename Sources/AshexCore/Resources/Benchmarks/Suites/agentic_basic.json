@@ -1,0 +1,27 @@
+{
+  "id": "agentic_basic",
+  "title": "Basic Agentic Capability",
+  "description": "Checks whether the agent can plan, act, and verify through available tools.",
+  "cases": [
+    {
+      "id": "agentic.files.create_and_verify.001",
+      "category": "agentic",
+      "title": "Create and verify a file",
+      "prompt": "Create a file named benchmark_hello.txt containing exactly: hello-ashex. Then verify the file exists and report what you did.",
+      "expected": {
+        "toolActions": ["create_file", "read_file"],
+        "mustContain": ["benchmark_hello.txt", "hello-ashex"]
+      },
+      "scoring": {
+        "maxScore": 10,
+        "criteria": [
+          { "name": "creates_file", "points": 4 },
+          { "name": "verifies_file", "points": 3 },
+          { "name": "reports_result", "points": 3 }
+        ]
+      },
+      "tags": ["tools", "filesystem"],
+      "timeoutSeconds": 90
+    }
+  ]
+}

@@ -14,8 +14,15 @@ This page collects release commands and Homebrew maintenance notes so the root R
 ```text
 ashex-<version>-macos-<arch>/
   bin/ashex
+  bin/esh                    # optional, when ASHEX_BUNDLED_ESH_PATH is provided
   share/doc/ashex/README.md
   share/doc/ashex/LICENSE
+```
+
+If you already have a prebuilt `esh` binary and want the release to work out of the box without a separate `esh` install, package it into the archive:
+
+```bash
+ASHEX_BUNDLED_ESH_PATH=/absolute/path/to/esh ./scripts/package_release.sh v0.2.2
 ```
 
 For tag `v0.2.2`, the binary archive name is:

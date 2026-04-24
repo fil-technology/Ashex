@@ -17,6 +17,9 @@ struct AshexCLI {
             if try await DaemonCLI.handle(arguments: CommandLine.arguments) {
                 return
             }
+            if try await BenchmarkCLI.handle(arguments: CommandLine.arguments) {
+                return
+            }
             if try OptimizationCLI.handle(arguments: CommandLine.arguments) {
                 return
             }
@@ -114,13 +117,14 @@ struct AshexCLI {
       ashex [options] [prompt]
       ashex onboard [options]
       ashex daemon <run|start|stop|status> [options]
+      ashex benchmark <list|run|compare> [options]
       ashex telegram test [options]
       ashex cron <list|add|remove> [options]
 
     Options:
       --workspace PATH          Workspace root to use
       --storage PATH            Storage root for Ashex state
-      --provider NAME           Provider: mock, openai, anthropic, ollama, dflash
+      --provider NAME           Provider: mock, openai, anthropic, ollama, esh, dflash
       --model NAME              Provider model name
       --max-iterations N        Maximum agent loop iterations
       --approval-mode MODE      trusted or guarded
@@ -145,6 +149,9 @@ struct AshexCLI {
         }
         if message.contains("dflash") {
             return "Action: start `dflash-serve`, choose `dflash` in Provider Settings, or run `ashex --provider mock` until the local DFlash server is available."
+        }
+        if message.contains("`esh`") || message.contains(" esh ") || message.hasPrefix("esh ") {
+            return "Action: install or bundle `esh`, then choose `esh` in Provider Settings and refresh status."
         }
         if message.contains("could not connect to the server") || message.contains("failed to connect") || message.contains("connection") {
             return "Action: start Ollama with `ollama serve`, switch to `mock` in Provider Settings after launch, or run `ashex --provider mock`."
@@ -403,6 +410,8 @@ struct CLIConfiguration {
                     draftModel: userConfig.dflash.draftModel
                 )
             )
+        case "esh":
+            baseAdapter = try makeStandaloneEshAdapter(model: model)
         case "ollama":
             baseAdapter = OllamaChatModelAdapter(
                 configuration: .init(
@@ -414,9 +423,12 @@ struct CLIConfiguration {
                 audioTranscriber: audioTranscriber
             )
         default:
-            throw AshexError.model("Unsupported provider '\(provider)'. Supported: mock, openai, anthropic, ollama, dflash")
+            throw AshexError.model("Unsupported provider '\(provider)'. Supported: mock, openai, anthropic, ollama, esh, dflash")
         }
 
+        if provider == "esh" {
+            return baseAdapter
+        }
         return makeOptimizedAdapterIfNeeded(baseAdapter: baseAdapter, provider: provider, model: model)
     }
 
@@ -515,6 +527,8 @@ struct CLIConfiguration {
             return ProcessInfo.processInfo.environment["OPENAI_MODEL"] ?? "gpt-5.4-mini"
         case "anthropic":
             return ProcessInfo.processInfo.environment["ANTHROPIC_MODEL"] ?? "claude-sonnet-4-20250514"
+        case "esh":
+            return ProcessInfo.processInfo.environment["ESH_MODEL"] ?? "auto"
         case "dflash":
             return ProcessInfo.processInfo.environment["DFLASH_MODEL"] ?? "Qwen/Qwen3.5-4B"
         case "ollama":
@@ -530,6 +544,8 @@ struct CLIConfiguration {
             return ProcessInfo.processInfo.environment["OPENAI_MODEL"]
         case "anthropic":
             return ProcessInfo.processInfo.environment["ANTHROPIC_MODEL"]
+        case "esh":
+            return ProcessInfo.processInfo.environment["ESH_MODEL"]
         case "dflash":
             return ProcessInfo.processInfo.environment["DFLASH_MODEL"]
         case "ollama":
@@ -603,6 +619,42 @@ struct CLIConfiguration {
             return nil
         }
         return executablePath
+    }
+
+    private func makeStandaloneEshAdapter(model: String) throws -> any ModelAdapter {
+        let optimization = userConfig.optimization
+        let inspector = EshOptimizationInspector()
+        guard let executablePath = inspector.resolveExecutablePath(config: optimization.esh),
+              FileManager.default.fileExists(atPath: executablePath) else {
+            throw AshexError.model("`esh` was not found. Bundle it with Ashex, set optimization.esh.executablePath, or set ESH_EXECUTABLE.")
+        }
+
+        let homePath = inspector.resolveHomePath(config: optimization.esh)
+        let repoRootPath = optimization.esh.repoRootPath ?? workspaceRoot.path
+        let resolvedModel = try Self.resolveStandaloneEshModel(
+            requestedModel: model,
+            executablePath: executablePath,
+            homePath: homePath
+        )
+
+        return EshBackedModelAdapter(
+            configuration: .init(
+                executablePath: executablePath,
+                homePath: homePath,
+                repoRootPath: repoRootPath,
+                model: resolvedModel,
+                providerID: "esh",
+                optimization: .init(
+                    enabled: true,
+                    backend: .esh,
+                    mode: optimization.mode,
+                    intent: optimization.intent,
+                    esh: optimization.esh
+                ),
+                requestTimeoutSeconds: Self.ollamaRequestTimeoutSeconds(config: userConfig.ollama)
+            ),
+            fallback: EshUnavailableModelAdapter(message: "The selected `esh` runtime could not complete the request.")
+        )
     }
 
     func resolvedAPIKey(for provider: String) throws -> String? {
@@ -709,6 +761,65 @@ struct CLIConfiguration {
         URL(string: ProcessInfo.processInfo.environment["DFLASH_BASE_URL"] ?? config.baseURL)!
     }
 
+    static func inspectEshCapabilities(
+        executablePath: String,
+        homePath: String
+    ) throws -> StandaloneEshCapabilitiesResponse {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executablePath)
+        process.arguments = ["capabilities"]
+        process.environment = mergedProcessEnvironment(extra: ["ESH_HOME": homePath])
+        let stdout = Pipe()
+        let stderr = Pipe()
+        process.standardOutput = stdout
+        process.standardError = stderr
+        try process.run()
+        process.waitUntilExit()
+
+        guard process.terminationStatus == 0 else {
+            let message = String(decoding: stderr.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            throw AshexError.model(message.isEmpty ? "`esh capabilities` failed." : message)
+        }
+
+        let data = stdout.fileHandleForReading.readDataToEndOfFile()
+        do {
+            return try JSONDecoder().decode(StandaloneEshCapabilitiesResponse.self, from: data)
+        } catch {
+            let output = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            if output.hasPrefix("esh commands:") || output.contains("esh cache build") {
+                throw AshexError.model(
+                    "The discovered `esh` at \(executablePath) is an older build that does not support `esh capabilities` and `esh infer`. Build or install a newer `esh`, or point Ashex at the newer executable with optimization.esh.executablePath or ESH_EXECUTABLE."
+                )
+            }
+            throw error
+        }
+    }
+
+    private static func resolveStandaloneEshModel(
+        requestedModel: String,
+        executablePath: String,
+        homePath: String
+    ) throws -> String {
+        let trimmed = requestedModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.isEmpty == false, trimmed != "auto" else {
+            let capabilities = try inspectEshCapabilities(executablePath: executablePath, homePath: homePath)
+            guard let selected = capabilities.installedModels.first?.id else {
+                throw AshexError.model("`esh` is available, but no installed models were reported.")
+            }
+            return selected
+        }
+        return trimmed
+    }
+
+    private static func mergedProcessEnvironment(extra: [String: String]) -> [String: String] {
+        var environment = ProcessInfo.processInfo.environment
+        for (key, value) in extra {
+            environment[key] = value
+        }
+        return environment
+    }
+
     static func validateDFlashSupport() throws {
 #if arch(arm64)
         return
@@ -716,4 +827,42 @@ struct CLIConfiguration {
         throw AshexError.model("DFlash is currently supported only on Apple Silicon builds of Ashex.")
 #endif
     }
+}
+
+private struct EshUnavailableModelAdapter: ModelAdapter, DirectChatModelAdapter, TaskPlanningModelAdapter {
+    let name = "esh-unavailable"
+    let providerID = "esh"
+    let modelID = "unavailable"
+    let message: String
+
+    func nextAction(for context: ModelContext) async throws -> ModelAction {
+        throw AshexError.model(message)
+    }
+
+    func directReply(history: [MessageRecord], systemPrompt: String) async throws -> String {
+        throw AshexError.model(message)
+    }
+
+    func taskPlan(for prompt: String, taskKind: TaskKind) async throws -> TaskPlan? {
+        throw AshexError.model(message)
+    }
+}
+
+struct StandaloneEshCapabilitiesResponse: Codable {
+    struct InstalledModel: Codable {
+        let id: String
+        let displayName: String
+        let backend: String
+        let source: String
+        let variant: String?
+        let runtimeVersion: String?
+        let supportsDirectInference: Bool
+        let supportsCacheBuild: Bool
+        let supportsCacheLoad: Bool
+    }
+
+    let schemaVersion: String
+    let tool: String
+    let toolVersion: String?
+    let installedModels: [InstalledModel]
 }

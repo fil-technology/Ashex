@@ -166,6 +166,99 @@ private extension EshBackedModelAdapter {
         taskKind: TaskKind,
         taskPrompt: String
     ) async throws -> String {
+        do {
+            return try await runExternalEsh(
+                systemPrompt: systemPrompt,
+                history: history,
+                message: message,
+                taskKind: taskKind,
+                taskPrompt: taskPrompt
+            )
+        } catch {
+            return try await runLegacyEsh(
+                systemPrompt: systemPrompt,
+                history: history,
+                message: message,
+                taskKind: taskKind,
+                taskPrompt: taskPrompt
+            )
+        }
+    }
+
+    func runExternalEsh(
+        systemPrompt: String,
+        history: [MessageRecord],
+        message: String,
+        taskKind: TaskKind,
+        taskPrompt: String
+    ) async throws -> String {
+        let requestID = makeUUID()
+        let requestURL = try writeInferRequest(
+            id: requestID,
+            systemPrompt: systemPrompt,
+            history: history,
+            message: message,
+            taskKind: taskKind,
+            taskPrompt: taskPrompt
+        )
+        var artifactID: String?
+        defer {
+            try? cleanupRequest(requestURL: requestURL, artifactID: artifactID)
+        }
+
+        let capabilities = try? await fetchCapabilities()
+        let resolution = resolveOptimization(taskKind: taskKind, prompt: taskPrompt)
+        let modelCapability = capabilities?.resolveModelCapability(for: configuration.model)
+        if shouldBuildCacheArtifact(
+            capability: modelCapability,
+            resolution: resolution
+        ) {
+            let buildCommand = EshCommandBuilder.buildCommand(
+                executablePath: configuration.executablePath,
+                homePath: configuration.homePath,
+                sessionID: requestID.uuidString,
+                mode: resolution.mode,
+                intent: resolvedIntent(taskKind: taskKind, prompt: taskPrompt),
+                model: configuration.model,
+                task: taskPrompt
+            )
+            let buildResult = try await runner.run(
+                command: buildCommand,
+                workspaceURL: URL(fileURLWithPath: configuration.repoRootPath, isDirectory: true),
+                timeout: TimeInterval(configuration.requestTimeoutSeconds)
+            )
+            guard buildResult.exitCode == 0, !buildResult.timedOut else {
+                throw AshexError.model("esh cache build failed: \(buildResult.stderr.trimmingCharacters(in: .whitespacesAndNewlines))")
+            }
+
+            let buildMetadata = try EshBridgeOutputParser.parseMetadataBlock(from: buildResult.stdout)
+            guard let artifact = buildMetadata["artifact"], !artifact.isEmpty else {
+                throw AshexError.model("esh cache build did not return an artifact identifier")
+            }
+            artifactID = artifact
+
+            let requestWithArtifactURL = try writeInferRequest(
+                id: requestID,
+                systemPrompt: systemPrompt,
+                history: history,
+                message: message,
+                taskKind: taskKind,
+                taskPrompt: taskPrompt,
+                cacheArtifactID: artifact
+            )
+            return try await runInfer(requestURL: requestWithArtifactURL)
+        }
+
+        return try await runInfer(requestURL: requestURL)
+    }
+
+    func runLegacyEsh(
+        systemPrompt: String,
+        history: [MessageRecord],
+        message: String,
+        taskKind: TaskKind,
+        taskPrompt: String
+    ) async throws -> String {
         let sessionID = makeUUID()
         let now = now()
         let sessionURL = try writeSession(
@@ -229,6 +322,55 @@ private extension EshBackedModelAdapter {
             throw AshexError.model("esh cache load did not return a reply")
         }
         return reply
+    }
+
+    func fetchCapabilities() async throws -> EshCapabilitiesResponse {
+        let command = EshCommandBuilder.capabilitiesCommand(
+            executablePath: configuration.executablePath,
+            homePath: configuration.homePath
+        )
+        let result = try await runner.run(
+            command: command,
+            workspaceURL: URL(fileURLWithPath: configuration.repoRootPath, isDirectory: true),
+            timeout: TimeInterval(configuration.requestTimeoutSeconds)
+        )
+        guard result.exitCode == 0, !result.timedOut else {
+            throw AshexError.model("esh capabilities failed: \(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))")
+        }
+        return try EshBridgeOutputParser.parseCapabilities(from: result.stdout)
+    }
+
+    func runInfer(requestURL: URL) async throws -> String {
+        let inferCommand = EshCommandBuilder.inferCommand(
+            executablePath: configuration.executablePath,
+            homePath: configuration.homePath,
+            inputPath: requestURL.path
+        )
+        let inferResult = try await runner.run(
+            command: inferCommand,
+            workspaceURL: URL(fileURLWithPath: configuration.repoRootPath, isDirectory: true),
+            timeout: TimeInterval(configuration.requestTimeoutSeconds)
+        )
+        guard inferResult.exitCode == 0, !inferResult.timedOut else {
+            throw AshexError.model("esh infer failed: \(inferResult.stderr.trimmingCharacters(in: .whitespacesAndNewlines))")
+        }
+        let response = try EshBridgeOutputParser.parseInferResponse(from: inferResult.stdout)
+        let reply = response.outputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !reply.isEmpty else {
+            throw AshexError.model("esh infer did not return a reply")
+        }
+        return reply
+    }
+
+    func shouldBuildCacheArtifact(
+        capability: EshInstalledModelCapability?,
+        resolution: ContextOptimizationResolution
+    ) -> Bool {
+        guard resolution.mode != .raw else { return false }
+        if let capability {
+            return capability.supportsCacheBuild && capability.supportsCacheLoad
+        }
+        return false
     }
 
     func resolveOptimization(taskKind: TaskKind, prompt: String) -> ContextOptimizationResolution {
@@ -317,9 +459,71 @@ private extension EshBackedModelAdapter {
         return [systemMessage] + mappedHistory
     }
 
+    func writeInferRequest(
+        id: UUID,
+        systemPrompt: String,
+        history: [MessageRecord],
+        message: String,
+        taskKind: TaskKind,
+        taskPrompt: String,
+        cacheArtifactID: String? = nil
+    ) throws -> URL {
+        let requestsDirectory = URL(fileURLWithPath: configuration.homePath, isDirectory: true)
+            .appendingPathComponent("external", isDirectory: true)
+        try createDirectory(requestsDirectory)
+
+        let requestURL = requestsDirectory.appendingPathComponent("\(id.uuidString).json")
+        let artifactUUID = cacheArtifactID.flatMap(UUID.init(uuidString:))
+        let request = EshInferRequest(
+            model: configuration.model,
+            cacheArtifactID: artifactUUID,
+            sessionName: "Ashex \(taskKind.rawValue)",
+            cacheMode: resolveOptimization(taskKind: taskKind, prompt: taskPrompt).mode.rawValue,
+            intent: resolvedIntent(taskKind: taskKind, prompt: taskPrompt).rawValue,
+            messages: buildInferMessages(systemPrompt: systemPrompt, history: history, message: message),
+            generation: .init()
+        )
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(request).write(to: requestURL, options: .atomic)
+        return requestURL
+    }
+
+    func buildInferMessages(systemPrompt: String, history: [MessageRecord], message: String) -> [EshInferMessage] {
+        let systemMessage = EshInferMessage(role: "system", text: systemPrompt)
+        let mappedHistory = history.suffix(12).map { record in
+            EshInferMessage(role: record.role.rawValue, text: record.content)
+        }
+        let userMessage = EshInferMessage(role: "user", text: message)
+        return [systemMessage] + mappedHistory + [userMessage]
+    }
+
     func cleanup(sessionURL: URL, artifactID: String?) throws {
         try? removeItem(sessionURL)
 
+        guard let artifactID, !artifactID.isEmpty else { return }
+
+        let homeURL = URL(fileURLWithPath: configuration.homePath, isDirectory: true)
+        let manifestURL = homeURL
+            .appendingPathComponent("caches", isDirectory: true)
+            .appendingPathComponent("manifests", isDirectory: true)
+            .appendingPathComponent("\(artifactID).json")
+        let payloadURL = homeURL
+            .appendingPathComponent("caches", isDirectory: true)
+            .appendingPathComponent("payloads", isDirectory: true)
+            .appendingPathComponent("\(artifactID).bin")
+
+        try? removeItem(manifestURL)
+        try? removeItem(payloadURL)
+    }
+
+    func cleanupRequest(requestURL: URL, artifactID: String?) throws {
+        try? removeItem(requestURL)
+        try? cleanupArtifact(artifactID: artifactID)
+    }
+
+    func cleanupArtifact(artifactID: String?) throws {
         guard let artifactID, !artifactID.isEmpty else { return }
 
         let homeURL = URL(fileURLWithPath: configuration.homePath, isDirectory: true)
@@ -408,6 +612,14 @@ enum EshBridgeOutputParser {
             lines.removeLast()
         }
         return lines.joined(separator: "\n")
+    }
+
+    static func parseCapabilities(from stdout: String) throws -> EshCapabilitiesResponse {
+        try JSONDecoder().decode(EshCapabilitiesResponse.self, from: Data(stdout.utf8))
+    }
+
+    static func parseInferResponse(from stdout: String) throws -> EshInferResponse {
+        try JSONDecoder().decode(EshInferResponse.self, from: Data(stdout.utf8))
     }
 
     private static func isMetadataLine(_ line: String) -> Bool {
@@ -521,7 +733,142 @@ private struct EshTaskPlanEnvelope: Codable {
     let steps: [Step]
 }
 
+struct EshCapabilitiesResponse: Codable {
+    let schemaVersion: String
+    let tool: String
+    let toolVersion: String?
+    let commands: [EshCommandDescriptor]
+    let backends: [EshBackendCapability]
+    let installedModels: [EshInstalledModelCapability]
+
+    func resolveModelCapability(for identifier: String) -> EshInstalledModelCapability? {
+        let lowered = identifier.lowercased()
+        return installedModels.first {
+            $0.id.lowercased() == lowered ||
+            $0.displayName.lowercased() == lowered ||
+            $0.source.lowercased() == lowered
+        }
+    }
+
+    func resolveBackendCapability(for backend: String) -> EshBackendCapability? {
+        backends.first { $0.backend.lowercased() == backend.lowercased() }
+    }
+}
+
+struct EshCommandDescriptor: Codable {
+    let name: String
+    let inputSchema: String
+    let outputSchema: String
+    let transport: String
+}
+
+struct EshBackendCapability: Codable {
+    let backend: String
+    let supportsDirectInference: Bool
+    let supportsCacheBuild: Bool
+    let supportsCacheLoad: Bool
+}
+
+struct EshInstalledModelCapability: Codable {
+    let id: String
+    let displayName: String
+    let backend: String
+    let source: String
+    let variant: String?
+    let runtimeVersion: String?
+    let supportsDirectInference: Bool
+    let supportsCacheBuild: Bool
+    let supportsCacheLoad: Bool
+}
+
+struct EshInferRequest: Codable {
+    let schemaVersion: String
+    let model: String
+    let cacheArtifactID: UUID?
+    let sessionName: String
+    let cacheMode: String
+    let intent: String
+    let messages: [EshInferMessage]
+    let generation: EshGenerationConfig
+
+    init(
+        schemaVersion: String = "esh.infer.request.v1",
+        model: String,
+        cacheArtifactID: UUID?,
+        sessionName: String,
+        cacheMode: String,
+        intent: String,
+        messages: [EshInferMessage],
+        generation: EshGenerationConfig
+    ) {
+        self.schemaVersion = schemaVersion
+        self.model = model
+        self.cacheArtifactID = cacheArtifactID
+        self.sessionName = sessionName
+        self.cacheMode = cacheMode
+        self.intent = intent
+        self.messages = messages
+        self.generation = generation
+    }
+}
+
+struct EshInferMessage: Codable {
+    let role: String
+    let text: String
+}
+
+struct EshGenerationConfig: Codable {
+    let maxTokens: Int
+    let temperature: Double
+
+    init(maxTokens: Int = 512, temperature: Double = 0.7) {
+        self.maxTokens = maxTokens
+        self.temperature = temperature
+    }
+}
+
+struct EshInferResponse: Codable {
+    let schemaVersion: String
+    let modelID: String
+    let backend: String
+    let integration: EshInferIntegration
+    let outputText: String
+}
+
+struct EshInferIntegration: Codable {
+    let mode: String
+    let cacheArtifactID: UUID?
+    let cacheMode: String?
+}
+
 private enum EshCommandBuilder {
+    static func capabilitiesCommand(
+        executablePath: String,
+        homePath: String
+    ) -> String {
+        [
+            "env",
+            "ESH_HOME=\(quote(homePath))",
+            quote(executablePath),
+            "capabilities",
+        ].joined(separator: " ")
+    }
+
+    static func inferCommand(
+        executablePath: String,
+        homePath: String,
+        inputPath: String
+    ) -> String {
+        [
+            "env",
+            "ESH_HOME=\(quote(homePath))",
+            quote(executablePath),
+            "infer",
+            "--input",
+            quote(inputPath),
+        ].joined(separator: " ")
+    }
+
     static func buildCommand(
         executablePath: String,
         homePath: String,

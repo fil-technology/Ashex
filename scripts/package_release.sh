@@ -39,6 +39,13 @@ if [[ ! -d "$RESOURCE_BUNDLE_PATH" ]]; then
 fi
 
 install -m 755 "$BINARY_PATH" "$STAGE_DIR/bin/ashex"
+if [[ -n "${ASHEX_BUNDLED_ESH_PATH:-}" ]]; then
+  if [[ ! -x "$ASHEX_BUNDLED_ESH_PATH" ]]; then
+    echo "error: ASHEX_BUNDLED_ESH_PATH is set but not executable: $ASHEX_BUNDLED_ESH_PATH" >&2
+    exit 1
+  fi
+  install -m 755 "$ASHEX_BUNDLED_ESH_PATH" "$STAGE_DIR/bin/esh"
+fi
 COMMIT="${ASHEX_COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || true)}"
 {
   echo "version=$VERSION"

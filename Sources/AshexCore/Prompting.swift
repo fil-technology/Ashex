@@ -159,6 +159,8 @@ public enum ContextManager {
             return 200_000
         case "ollama":
             return 4_096
+        case "esh":
+            return 8_192
         default:
             return 8_000
         }

@@ -304,6 +304,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
 
                 let outcome: StepExecutionOutcome
                 if modelAdapter.providerID != "ollama",
+                   modelAdapter.providerID != "esh",
                    Self.shouldDelegateStep(
                     phase: step.phase,
                     taskKind: taskKind,

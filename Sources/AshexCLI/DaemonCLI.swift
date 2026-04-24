@@ -129,6 +129,10 @@ enum DaemonCLI {
                 let models = try await OllamaCatalogClient().fetchModels(baseURL: CLIConfiguration.ollamaBaseURL())
                 return models.map(\.name).sorted()
             }
+        } else if configuration.provider == "esh" {
+            listModels = {
+                try listStandaloneEshModels(configuration: configuration)
+            }
         } else {
             listModels = nil
         }
@@ -187,6 +191,22 @@ enum DaemonCLI {
         await supervisor.stop()
     }
 
+    private static func listStandaloneEshModels(configuration: CLIConfiguration) throws -> [String] {
+        let inspector = EshOptimizationInspector()
+        guard let executablePath = inspector.resolveExecutablePath(config: configuration.userConfig.optimization.esh) else {
+            throw AshexError.model("`esh` was not found. Bundle it with Ashex, set optimization.esh.executablePath, or set ESH_EXECUTABLE.")
+        }
+
+        let homePath = inspector.resolveHomePath(config: configuration.userConfig.optimization.esh)
+        let capabilities = try CLIConfiguration.inspectEshCapabilities(
+            executablePath: executablePath,
+            homePath: homePath
+        )
+        return capabilities.installedModels
+            .map(\.id)
+            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    }
+
     private static func start(extraArguments: [String]) async throws {
         let configuration = try CLIConfiguration(arguments: [CommandLine.arguments[0]] + extraArguments)
         let stateStore = DaemonProcessStateStore(storageRoot: configuration.storageRoot)
@@ -207,6 +227,7 @@ enum DaemonCLI {
         process.executableURL = try ExecutableLocator.currentExecutableURL()
         process.arguments = ["daemon", "run"] + extraArguments
         process.currentDirectoryURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        process.standardInput = FileHandle(forReadingAtPath: "/dev/null")
         process.standardOutput = handle
         process.standardError = handle
         try process.run()

@@ -1,0 +1,26 @@
+{
+  "id": "coding_basic",
+  "title": "Basic Coding Understanding",
+  "description": "Checks code review, bug finding, and suggested corrections.",
+  "cases": [
+    {
+      "id": "coding.loop.off_by_one.001",
+      "category": "coding",
+      "title": "Detect off-by-one bug",
+      "prompt": "Explain the bug in this code:\n\nfor (let i = 0; i <= arr.length; i++) {\n  console.log(arr[i]);\n}",
+      "expected": {
+        "mustContain": ["off-by-one", "i < arr.length", "undefined"]
+      },
+      "scoring": {
+        "maxScore": 10,
+        "criteria": [
+          { "name": "identifies_bug", "points": 4 },
+          { "name": "explains_runtime_effect", "points": 3 },
+          { "name": "suggests_fix", "points": 3 }
+        ]
+      },
+      "tags": ["javascript", "bug"],
+      "timeoutSeconds": 60
+    }
+  ]
+}

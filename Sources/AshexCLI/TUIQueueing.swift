@@ -122,12 +122,19 @@ enum ProviderFailureRouting {
            isOllamaModelResourceFailure(message: message) {
             return "Ollama is running. Choose a smaller installed model, stop other Ollama models with `ollama stop <model>`, or restart Ollama and refresh."
         }
+        if provider == "esh",
+           let message,
+           isOllamaModelResourceFailure(message: message) {
+            return "The selected `esh` model or context does not currently fit in memory. Choose a smaller model, reduce context usage, or refresh after switching models."
+        }
 
         switch provider {
         case "openai":
             return "Set OPENAI_API_KEY, then open Provider Settings and refresh or keep using mock."
         case "anthropic":
             return "Add ANTHROPIC_API_KEY in Provider Settings or the environment, then refresh or keep using mock."
+        case "esh":
+            return "Bundle or install `esh`, then open Provider Settings and refresh or switch to mock."
         case "dflash":
             return "Start `dflash-serve`, then open Provider Settings and refresh or keep using mock."
         case "ollama":
@@ -147,6 +154,13 @@ enum ProviderFailureRouting {
                 "Selected Ollama model could not fit in available memory.",
                 message,
                 "Ashex is using the mock fallback until the selected model can load."
+            ]
+        }
+        if provider == "esh", isOllamaModelResourceFailure(message: message) {
+            return [
+                "Selected `esh` model could not fit in available memory.",
+                message,
+                "Ashex is using the mock fallback until the selected `esh` model can load."
             ]
         }
 

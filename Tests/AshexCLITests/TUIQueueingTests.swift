@@ -46,6 +46,22 @@ import Testing
     #expect(!ProviderFailureRouting.recoveryHint(provider: "ollama", message: message).contains("ollama serve"))
 }
 
+@Test func eshProviderRecoveryHintExplainsHowToRestoreRuntime() {
+    let hint = ProviderFailureRouting.recoveryHint(provider: "esh")
+
+    #expect(hint.contains("`esh`"))
+    #expect(hint.contains("Provider Settings"))
+}
+
+@Test func eshProviderRecoveryHintHandlesMemoryPressure() {
+    let message = "out of memory"
+    let hint = ProviderFailureRouting.recoveryHint(provider: "esh", message: message)
+    let details = ProviderFailureRouting.runtimeFailureDetails(provider: "esh", message: message)
+
+    #expect(hint.contains("fit in memory"))
+    #expect(details.first == "Selected `esh` model could not fit in available memory.")
+}
+
 @Test func versionFlagIsRecognized() {
     #expect(AshexCLI.isVersionRequested(arguments: ["ashex", "--version"]))
     #expect(AshexCLI.isVersionRequested(arguments: ["ashex", "-v"]))

@@ -190,13 +190,16 @@ public struct ContextOptimizationAdvisor: Sendable {
 public struct EshOptimizationInspector: Sendable {
     private let environment: [String: String]
     private let fileExists: @Sendable (String) -> Bool
+    private let currentExecutablePath: String?
 
     public init(
         environment: [String: String] = ProcessInfo.processInfo.environment,
-        fileExists: @escaping @Sendable (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
+        fileExists: @escaping @Sendable (String) -> Bool = { FileManager.default.fileExists(atPath: $0) },
+        currentExecutablePath: String? = ProcessInfo.processInfo.arguments.first
     ) {
         self.environment = environment
         self.fileExists = fileExists
+        self.currentExecutablePath = currentExecutablePath
     }
 
     public func doctor(
@@ -256,6 +259,9 @@ public struct EshOptimizationInspector: Sendable {
         if let env = environment["ASHEX_ESH_EXECUTABLE"] ?? environment["ESH_EXECUTABLE"], !env.isEmpty {
             return env
         }
+        for candidate in preferredExecutableCandidates() where fileExists(candidate) {
+            return candidate
+        }
 
         let pathValue = environment["PATH"] ?? ""
         for pathEntry in pathValue.split(separator: ":") {
@@ -278,5 +284,56 @@ public struct EshOptimizationInspector: Sendable {
         }.reduce(into: "") { partial, character in
             partial.append(character)
         }
+    }
+
+    private func preferredExecutableCandidates() -> [String] {
+        bundledExecutableCandidates() + siblingWorkspaceExecutableCandidates()
+    }
+
+    private func bundledExecutableCandidates() -> [String] {
+        guard let currentExecutablePath, !currentExecutablePath.isEmpty else {
+            return []
+        }
+
+        let executableURL = URL(fileURLWithPath: currentExecutablePath).resolvingSymlinksInPath()
+        let executableDirectory = executableURL.deletingLastPathComponent()
+        let parentDirectory = executableDirectory.deletingLastPathComponent()
+
+        return [
+            executableDirectory.appendingPathComponent("esh").path,
+            parentDirectory.appendingPathComponent("libexec/esh").path,
+            parentDirectory.appendingPathComponent("bin/esh").path,
+        ]
+    }
+
+    private func siblingWorkspaceExecutableCandidates() -> [String] {
+        guard let pwd = environment["PWD"], !pwd.isEmpty else {
+            return []
+        }
+
+        let workingDirectory = URL(fileURLWithPath: pwd, isDirectory: true).resolvingSymlinksInPath()
+        var searchRoots: [URL] = []
+        var cursor = workingDirectory
+        for _ in 0..<6 {
+            searchRoots.append(cursor)
+            let parent = cursor.deletingLastPathComponent()
+            if parent.path == cursor.path { break }
+            cursor = parent
+        }
+
+        var candidates: [String] = []
+        for root in searchRoots {
+            let eshRoot = root
+                .appendingPathComponent("Coding", isDirectory: true)
+                .appendingPathComponent("MLX+TurboQuant", isDirectory: true)
+                .appendingPathComponent("Source", isDirectory: true)
+            candidates.append(contentsOf: [
+                eshRoot.appendingPathComponent(".build/arm64-apple-macosx/debug/esh").path,
+                eshRoot.appendingPathComponent(".build/arm64-apple-macosx/release/esh").path,
+                eshRoot.appendingPathComponent(".build/debug/esh").path,
+                eshRoot.appendingPathComponent(".build/release/esh").path,
+            ])
+        }
+        return candidates
     }
 }

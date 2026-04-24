@@ -1,0 +1,27 @@
+{
+  "id": "recovery_basic",
+  "title": "Basic Recovery",
+  "description": "Checks whether the agent notices inconsistent or incomplete inputs.",
+  "cases": [
+    {
+      "id": "recovery.inconsistent_loan.001",
+      "category": "recovery",
+      "title": "Detect inconsistent loan data",
+      "prompt": "The loan is 150k, but the monthly payment is 10k for 7 years. Is this normal?",
+      "expected": {
+        "mustContain": ["inconsistent", "check", "interest rate"],
+        "shouldAskClarifyingQuestion": true
+      },
+      "scoring": {
+        "maxScore": 10,
+        "criteria": [
+          { "name": "detects_inconsistency", "points": 4 },
+          { "name": "requests_clarification", "points": 3 },
+          { "name": "mentions_missing_rate", "points": 3 }
+        ]
+      },
+      "tags": ["finance", "error-recovery"],
+      "timeoutSeconds": 60
+    }
+  ]
+}

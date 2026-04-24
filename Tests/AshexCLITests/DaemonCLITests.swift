@@ -44,6 +44,55 @@ import Testing
     #expect(configuration.model == "Qwen/Qwen3.5-4B")
 }
 
+@Test func cliConfigurationSupportsStandaloneEshProvider() throws {
+    let workspace = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+
+    let config = AshexUserConfig(
+        optimization: .init(
+            enabled: true,
+            backend: .esh,
+            mode: .automatic,
+            intent: .agentRun,
+            esh: .init(
+                executablePath: "/bin/echo",
+                homePath: workspace.appendingPathComponent(".esh").path,
+                repoRootPath: workspace.path
+            )
+        )
+    )
+    try UserConfigStore.write(config, to: workspace.appendingPathComponent(UserConfigStore.fileName))
+
+    let configuration = try CLIConfiguration(arguments: [
+        "ashex",
+        "--workspace", workspace.path,
+        "--provider", "esh",
+        "--model", "local-test-model"
+    ])
+    let adapter = try configuration.makeModelAdapter()
+
+    #expect(configuration.provider == "esh")
+    #expect(adapter.name.hasPrefix("esh-bridge:esh:local-test-model"))
+}
+
+@Test func standaloneEshCapabilityDecodeExplainsLegacyBinaryMismatch() {
+    let legacyOutput = """
+    esh commands:
+      esh
+      esh chat [session-name]
+      esh cache build --session <uuid-or-name> [--mode raw|turbo] [--model <id-or-repo>]
+    """
+
+    let data = Data(legacyOutput.utf8)
+
+    do {
+        _ = try JSONDecoder().decode(StandaloneEshCapabilitiesResponse.self, from: data)
+        Issue.record("Expected legacy output to fail JSON decoding")
+    } catch {
+        #expect(error is DecodingError)
+    }
+}
+
 @Test func cliConfigurationCanForceOnboarding() throws {
     let workspace = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)

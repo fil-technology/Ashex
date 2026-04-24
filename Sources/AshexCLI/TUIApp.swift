@@ -91,6 +91,7 @@ final class TUIApp {
 
     private struct ProviderStartupIssue {
         let provider: String
+        let model: String
         let message: String
     }
 
@@ -121,6 +122,7 @@ final class TUIApp {
     private var selectedIndex = 0
     private var settingsSelection = 0
     private var modelPickerSelection = 0
+    private var modelSearchQuery = ""
     private var promptText = ""
     private var modelInput = ""
     private var apiKeyInput = ""
@@ -222,6 +224,7 @@ final class TUIApp {
         } catch {
             let startupIssue = ProviderStartupIssue(
                 provider: configuration.provider,
+                model: configuration.model,
                 message: error.localizedDescription
             )
             self.runtime = try configuration.makeRuntime(
@@ -545,7 +548,7 @@ final class TUIApp {
             refreshHistoryPreview()
         case .settings:
             if showModelPicker {
-                modelPickerSelection = min(modelPickerSelection + 1, max(ollamaPickerModels.count - 1, 0))
+                modelPickerSelection = min(modelPickerSelection + 1, max(providerPickerModels.count - 1, 0))
             } else {
                 settingsSelection = min(settingsSelection + 1, SettingsAction.allCases.count - 1)
             }
@@ -659,7 +662,7 @@ final class TUIApp {
             openSelectedHistoryRun()
         } else if focus == .settings {
             if showModelPicker {
-                commitSelectedOllamaModel()
+                commitSelectedProviderModel()
                 return
             }
             activate(settingsAction: SettingsAction.allCases[settingsSelection])
@@ -674,6 +677,14 @@ final class TUIApp {
             onboardingTextInput.removeLast()
             focus = .input
             statusLine = "Editing setup answer"
+            return
+        }
+
+        if showModelPicker, focus == .settings {
+            guard !modelSearchQuery.isEmpty else { return }
+            modelSearchQuery.removeLast()
+            modelPickerSelection = min(modelPickerSelection, max(providerPickerModels.count - 1, 0))
+            statusLine = modelSearchQuery.isEmpty ? "Model search cleared" : "Searching models: \(modelSearchQuery)"
             return
         }
 
@@ -831,7 +842,8 @@ final class TUIApp {
         if showSettings {
             if showModelPicker {
                 showModelPicker = false
-                statusLine = "Closed Ollama model picker"
+                modelSearchQuery = ""
+                statusLine = "Closed model picker"
                 return
             }
             showSettings = false
@@ -894,6 +906,13 @@ final class TUIApp {
     private func handleCharacter(_ character: Character) {
         if showOnboarding {
             handleOnboardingCharacter(character)
+            return
+        }
+
+        if showModelPicker, focus == .settings {
+            modelSearchQuery.append(character)
+            modelPickerSelection = 0
+            statusLine = "Searching models: \(modelSearchQuery)"
             return
         }
 
@@ -1049,11 +1068,12 @@ final class TUIApp {
         case .provider:
             cycleProvider()
         case .model:
-            if sessionProvider == "ollama", !ollamaPickerModels.isEmpty {
+            if !providerPickerModels.isEmpty {
                 showModelPicker = true
-                modelPickerSelection = selectedOllamaModelPickerIndex()
+                modelSearchQuery = ""
+                modelPickerSelection = selectedProviderModelPickerIndex()
                 focus = .settings
-                statusLine = "Choose an Ollama model and press Enter"
+                statusLine = "Choose or search a \(sessionProvider) model and press Enter"
             } else {
                 inputMode = .model
                 modelInput = sessionModel
@@ -1148,6 +1168,7 @@ final class TUIApp {
         switch onboardingStep {
         case .provider:
             return [
+                .init(title: "esh", subtitle: "Bundled/local esh runtime with MLX and GGUF models"),
                 .init(title: "ollama", subtitle: "Local Ollama models on this Mac"),
                 .init(title: "openai", subtitle: "Hosted OpenAI models with an API key"),
                 .init(title: "anthropic", subtitle: "Hosted Claude models with an API key"),
@@ -1567,7 +1588,7 @@ final class TUIApp {
     }
 
     private func cycleProvider() {
-        let providers = ["mock", "ollama", "dflash", "openai", "anthropic"]
+        let providers = ["mock", "esh", "ollama", "dflash", "openai", "anthropic"]
         let currentIndex = providers.firstIndex(of: sessionProvider) ?? 0
         let nextProvider = providers[(currentIndex + 1) % providers.count]
 
@@ -1675,31 +1696,47 @@ final class TUIApp {
         }
     }
 
-    private var ollamaPickerModels: [String] {
-        guard sessionProvider == "ollama" else { return [] }
-        return OllamaModelDisplayOrdering.orderedDisplayNames(
-            providerStatus.availableModels,
-            selectedModel: sessionModel
-        ).compactMap(Self.selectableModelName(from:))
+    private var providerPickerModels: [String] {
+        providerPickerDisplayModels.compactMap(Self.selectableModelName(from:))
     }
 
-    private func selectedOllamaModelPickerIndex() -> Int {
-        let models = ollamaPickerModels
+    private var providerPickerDisplayModels: [String] {
+        let displayModels: [String]
+        if sessionProvider == "ollama" {
+            displayModels = OllamaModelDisplayOrdering.orderedDisplayNames(
+                providerStatus.availableModels,
+                selectedModel: sessionModel
+            )
+        } else {
+            displayModels = providerStatus.availableModels
+        }
+
+        let query = modelSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else {
+            return displayModels
+        }
+        return displayModels.filter { $0.localizedCaseInsensitiveContains(query) }
+    }
+
+    private func selectedProviderModelPickerIndex() -> Int {
+        let models = providerPickerModels
         guard !models.isEmpty else { return 0 }
         return models.firstIndex(of: sessionModel) ?? 0
     }
 
-    private func commitSelectedOllamaModel() {
-        let models = ollamaPickerModels
+    private func commitSelectedProviderModel() {
+        let models = providerPickerModels
         guard !models.isEmpty else {
-            statusLine = "No Ollama models available yet. Refresh status first."
-            showModelPicker = false
+            statusLine = modelSearchQuery.isEmpty
+                ? "No \(sessionProvider) models available yet. Refresh status first."
+                : "No \(sessionProvider) models match \(modelSearchQuery)"
             return
         }
 
         let index = min(max(modelPickerSelection, 0), models.count - 1)
         sessionModel = models[index]
         showModelPicker = false
+        modelSearchQuery = ""
         refreshSessionRuntime()
         persistSessionSettings()
         statusLine = "Model updated to \(sessionModel)"
@@ -1921,9 +1958,20 @@ final class TUIApp {
         let previousRuntime = runtime
         do {
             runtime = try makeSessionRuntime()
-            providerStartupIssue = nil
+            if let providerStartupIssue,
+               providerStartupIssue.provider == sessionProvider,
+               providerStartupIssue.model == sessionModel,
+               ProviderFailureRouting.isOllamaModelResourceFailure(message: providerStartupIssue.message) {
+                statusLine = promptQueue.isEmpty ? "Provider needs attention" : "Prompt queue waiting for model change"
+            } else {
+                providerStartupIssue = nil
+            }
         } catch {
-            let startupIssue = ProviderStartupIssue(provider: sessionProvider, message: error.localizedDescription)
+            let startupIssue = ProviderStartupIssue(
+                provider: sessionProvider,
+                model: sessionModel,
+                message: error.localizedDescription
+            )
             providerStartupIssue = startupIssue
             let failureDetails = ProviderFailureRouting.runtimeFailureDetails(
                 provider: sessionProvider,
@@ -2240,11 +2288,15 @@ final class TUIApp {
         refreshSessionRuntime()
         if let providerStartupIssue,
            providerStartupIssue.provider == sessionProvider,
+           providerStartupIssue.model == sessionModel,
            !StorageFailureRouting.isStoragePressure(message: providerStartupIssue.message),
+           !ProviderFailureRouting.isOllamaModelResourceFailure(message: providerStartupIssue.message),
            Self.providerStatusAllowsRuntimeRetry(providerStatus, provider: sessionProvider) {
             self.providerStartupIssue = nil
         }
-        if let providerStartupIssue, providerStartupIssue.provider == sessionProvider {
+        if let providerStartupIssue,
+           providerStartupIssue.provider == sessionProvider,
+           providerStartupIssue.model == sessionModel {
             runLines = [
                 "Prompt: \(prompt)",
                 "",
@@ -2256,6 +2308,8 @@ final class TUIApp {
             statusLine = "Run blocked"
             render()
             return
+        } else if providerStartupIssue != nil {
+            providerStartupIssue = nil
         }
 
         queueRetryTask?.cancel()
@@ -2358,6 +2412,7 @@ final class TUIApp {
     private func append(event: RuntimeEvent) {
         let shouldFollowTail = isTranscriptNearBottom()
         updateLiveRunState(from: event.payload)
+        registerProviderRuntimeFailureIfNeeded(from: event.payload)
         refreshActiveChatMessagesIfNeeded(for: event.payload)
         runLines.append(contentsOf: renderLines(for: event.payload))
         if shouldFollowTail {
@@ -2365,6 +2420,32 @@ final class TUIApp {
         }
 
         render()
+    }
+
+    private func registerProviderRuntimeFailureIfNeeded(from payload: RuntimeEventPayload) {
+        guard case .error(_, let message) = payload else { return }
+        guard ProviderFailureRouting.isOllamaModelResourceFailure(message: message) else { return }
+        guard sessionProvider == "ollama" || sessionProvider == "esh" else { return }
+
+        providerStartupIssue = ProviderStartupIssue(
+            provider: sessionProvider,
+            model: sessionModel,
+            message: message
+        )
+        providerStatus = .init(
+            headline: "Provider needs attention",
+            details: ProviderFailureRouting.runtimeFailureDetails(provider: sessionProvider, message: message) + [
+                ProviderFailureRouting.recoveryHint(provider: sessionProvider, message: message)
+            ],
+            availableModels: providerStatus.availableModels,
+            guardrailAssessment: providerStatus.guardrailAssessment
+        )
+
+        if let queuedPrompt = activeQueuedPrompt {
+            promptQueue.requeueAtFront(queuedPrompt.incrementingAttemptCount())
+            activeQueuedPrompt = nil
+        }
+        statusLine = "Prompt queue waiting for model change"
     }
 
     private func refreshActiveChatMessagesIfNeeded(for payload: RuntimeEventPayload) {
@@ -2602,7 +2683,15 @@ final class TUIApp {
             }
             return ["", "Assistant:"] + normalizedText.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         case .error(_, let message):
-            return ["[error] \(normalizeStoredTranscriptText(message))"]
+            let normalizedMessage = normalizeStoredTranscriptText(message)
+            if (sessionProvider == "ollama" || sessionProvider == "esh"),
+               ProviderFailureRouting.isOllamaModelResourceFailure(message: normalizedMessage) {
+                return ProviderFailureRouting.runtimeFailureDetails(
+                    provider: sessionProvider,
+                    message: normalizedMessage
+                ).map { "[error] \($0)" }
+            }
+            return ["[error] \(normalizedMessage)"]
         case .runFinished(_, let state):
             return ["[run] Finished with state: \(state.rawValue)"]
         }
@@ -3424,8 +3513,11 @@ final class TUIApp {
 
         if !providerStatus.availableModels.isEmpty {
             lines.append("")
-            lines.append("\(TerminalUIStyle.ink)\(showModelPicker ? "Pick an Ollama Model" : "Available Models")\(TerminalUIStyle.reset)")
-            let availableModels = showModelPicker ? providerStatus.availableModels : Array(providerStatus.availableModels.prefix(6))
+            lines.append("\(TerminalUIStyle.ink)\(showModelPicker ? "Pick a Model" : "Available Models")\(TerminalUIStyle.reset)")
+            if showModelPicker, !modelSearchQuery.isEmpty {
+                lines.append("\(TerminalUIStyle.slate)Search: \(TerminalUIStyle.truncateVisible(modelSearchQuery, limit: max(width - 8, 10)))\(TerminalUIStyle.reset)")
+            }
+            let availableModels = showModelPicker ? providerPickerDisplayModels : Array(providerStatus.availableModels.prefix(6))
             for (index, model) in availableModels.enumerated() {
                 let pickerSelected = showModelPicker && index == modelPickerSelection
                 let marker = pickerSelected ? "\(TerminalUIStyle.selection) \(TerminalUIStyle.reset)" : " "
@@ -3436,6 +3528,9 @@ final class TUIApp {
                 if pickerSelected {
                     selectedLineRange = lineIndex...lineIndex
                 }
+            }
+            if showModelPicker && availableModels.isEmpty {
+                lines.append("\(TerminalUIStyle.slate)No models match the current search.\(TerminalUIStyle.reset)")
             }
         }
 
@@ -3459,7 +3554,7 @@ final class TUIApp {
 
         if showModelPicker {
             lines.append("")
-            lines.append("\(TerminalUIStyle.amber)Use ↑/↓ to choose an Ollama model and press Enter to apply. Esc closes the picker.\(TerminalUIStyle.reset)")
+            lines.append("\(TerminalUIStyle.amber)Type to search, Backspace edits search, ↑/↓ chooses, Enter applies, Esc closes.\(TerminalUIStyle.reset)")
         } else if inputMode == .model {
             lines.append("")
             lines.append("\(TerminalUIStyle.amber)Model edit mode is active in the input bar below.\(TerminalUIStyle.reset)")
@@ -3564,7 +3659,7 @@ final class TUIApp {
     }
 
     private func onboardingChecklistItems() -> [(text: String, isDone: Bool)] {
-        let providerReady = queuedPromptBlockedReason() == nil || sessionProvider == "mock"
+        let providerReady = queuedPromptBlockedDetails() == nil || sessionProvider == "mock"
         let telegramEnabled = sessionUserConfig.telegram.enabled
         let tokenReady = telegramTokenStatusLabel() != "Missing"
         let daemonRunning = daemonStatus?.isRunning == true
@@ -5113,30 +5208,24 @@ final class TUIApp {
 
         let process = Process()
         process.executableURL = try ExecutableLocator.currentExecutableURL()
-        process.arguments = ["daemon", "start"] + currentCLIArgumentsForBackgroundTasks()
+        process.arguments = ["daemon", "run"] + currentCLIArgumentsForBackgroundTasks()
         process.currentDirectoryURL = sessionWorkspaceRoot
+        process.standardInput = FileHandle(forReadingAtPath: "/dev/null")
         process.standardOutput = handle
         process.standardError = handle
         try process.run()
-        process.waitUntilExit()
-        try? handle.close()
 
-        guard process.terminationStatus == 0 else {
+        statusLine = "Starting daemon in background"
+        Thread.sleep(forTimeInterval: 0.75)
+        daemonStatus = try stateStore.status()
+        guard process.isRunning || daemonStatus?.isRunning == true else {
+            try? handle.close()
             throw AshexError.model(DaemonCLI.daemonStartupFailureMessage(
                 logURL: logURL,
                 fallback: "Daemon failed to start in background."
             ))
         }
-
-        statusLine = "Starting daemon in background"
-        Thread.sleep(forTimeInterval: 0.2)
-        daemonStatus = try stateStore.status()
-        guard daemonStatus?.isRunning == true else {
-            throw AshexError.model(DaemonCLI.daemonStartupFailureMessage(
-                logURL: logURL,
-                fallback: "Daemon did not stay running."
-            ))
-        }
+        try? handle.close()
     }
 
     private func restartDaemonFromTUI(statusPrefix: String) throws {
@@ -5522,13 +5611,10 @@ final class TUIApp {
         guard runTask == nil, runFinished, pendingApproval == nil, activeQueuedPrompt == nil else { return }
         guard let nextPrompt = promptQueue.first else { return }
 
-        if let blockedReason = queuedPromptBlockedReason() {
+        if let blockedDetails = queuedPromptBlockedDetails() {
             statusLine = "Prompt queue waiting"
             if runLines.isEmpty || runFinished {
-                runLines = [
-                    "[queue] Waiting to send prompt #\(nextPrompt.id)",
-                    blockedReason
-                ]
+                runLines = ["[queue] Waiting to send prompt #\(nextPrompt.id)"] + blockedDetails
                 transcriptScrollOffset = 0
             }
             schedulePromptQueueRetry()
@@ -5541,32 +5627,39 @@ final class TUIApp {
         startRun(prompt: nextPrompt.text)
     }
 
-    private func queuedPromptBlockedReason() -> String? {
+    private func queuedPromptBlockedDetails() -> [String]? {
         switch sessionProvider {
         case "openai", "anthropic":
             let apiKey = try? configuration.resolvedAPIKey(for: sessionProvider)
             if (apiKey ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                return "\(sessionProvider.capitalized) API key is missing."
+                return ["\(sessionProvider.capitalized) API key is missing."]
             }
         case "ollama":
             if providerStatus.headline == "Ollama connection failed" {
-                return providerStatus.details.first ?? "Ollama is unavailable."
+                return [providerStatus.details.first ?? "Ollama is unavailable."]
             }
             if let assessment = providerStatus.guardrailAssessment, assessment.severity == .blocked {
-                return ([assessment.headline] + assessment.details).joined(separator: " ")
+                return [assessment.headline] + assessment.details
             }
         default:
             break
         }
 
-        if let providerStartupIssue, providerStartupIssue.provider == sessionProvider,
+        if let providerStartupIssue,
+           providerStartupIssue.provider == sessionProvider,
+           providerStartupIssue.model == sessionModel,
            ProviderFailureRouting.isOllamaModelResourceFailure(message: providerStartupIssue.message) {
-            return providerStartupIssue.message
+            return ProviderFailureRouting.runtimeFailureDetails(
+                provider: sessionProvider,
+                message: providerStartupIssue.message
+            ) + [Self.recoveryHint(for: providerStartupIssue, provider: sessionProvider)]
         }
 
-        if let providerStartupIssue, providerStartupIssue.provider == sessionProvider,
+        if let providerStartupIssue,
+           providerStartupIssue.provider == sessionProvider,
+           providerStartupIssue.model == sessionModel,
            !Self.providerStatusAllowsRuntimeRetry(providerStatus, provider: sessionProvider) {
-            return providerStartupIssue.message
+            return [providerStartupIssue.message, Self.recoveryHint(for: providerStartupIssue, provider: sessionProvider)]
         }
 
         return nil
@@ -5631,7 +5724,8 @@ final class TUIApp {
             provider: provider,
             model: model,
             apiKey: apiKey ?? nil,
-            dflashConfig: sessionUserConfig.dflash
+            dflashConfig: sessionUserConfig.dflash,
+            userConfig: sessionUserConfig
         )
         guard provider == sessionProvider, model == sessionModel else {
             return
@@ -5642,7 +5736,21 @@ final class TUIApp {
                 provider: sessionProvider,
                 model: selectedModel,
                 apiKey: apiKey ?? nil,
-                dflashConfig: sessionUserConfig.dflash
+                dflashConfig: sessionUserConfig.dflash,
+                userConfig: sessionUserConfig
+            )
+            guard provider == sessionProvider, selectedModel == sessionModel else {
+                return
+            }
+            providerStatus = updatedSnapshot
+        }
+        if let selectedModel = autoSelectEshModelIfNeeded(from: snapshot) {
+            let updatedSnapshot = await ProviderInspector.inspect(
+                provider: sessionProvider,
+                model: selectedModel,
+                apiKey: apiKey ?? nil,
+                dflashConfig: sessionUserConfig.dflash,
+                userConfig: sessionUserConfig
             )
             guard provider == sessionProvider, selectedModel == sessionModel else {
                 return
@@ -5650,15 +5758,42 @@ final class TUIApp {
             providerStatus = updatedSnapshot
         }
         if showModelPicker {
-            if sessionProvider != "ollama" || ollamaPickerModels.isEmpty {
+            if providerPickerModels.isEmpty {
                 showModelPicker = false
+                modelSearchQuery = ""
             } else {
-                modelPickerSelection = min(max(modelPickerSelection, 0), ollamaPickerModels.count - 1)
+                modelPickerSelection = min(max(modelPickerSelection, 0), providerPickerModels.count - 1)
             }
         }
         if let providerStartupIssue {
-            guard providerStartupIssue.provider == sessionProvider else {
+            guard providerStartupIssue.provider == sessionProvider,
+                  providerStartupIssue.model == sessionModel else {
                 self.providerStartupIssue = nil
+                render()
+                return
+            }
+            if ProviderFailureRouting.isOllamaModelResourceFailure(message: providerStartupIssue.message) {
+                mergeDiscoveredModelsIntoProviderAttentionStatus(from: snapshot)
+                statusLine = promptQueue.isEmpty ? "Provider needs attention" : "Prompt queue waiting for model change"
+                let shouldReplaceTranscript = runLines.isEmpty ||
+                    runLines.first?.hasPrefix("[startup]") == true ||
+                    runLines.first?.hasPrefix("[queue] Waiting") == true ||
+                    Self.isProviderAttentionTranscript(runLines)
+                if shouldReplaceTranscript {
+                    let attentionMessage = Self.providerAttentionMessage(
+                        startupIssue: providerStartupIssue,
+                        snapshot: snapshot,
+                        provider: sessionProvider
+                    )
+                    runLines = [
+                        "[provider] Provider '\(sessionProvider)' needs attention",
+                        attentionMessage,
+                        Self.recoveryHint(for: providerStartupIssue, provider: sessionProvider)
+                    ]
+                    runFinished = true
+                    transcriptScrollOffset = 0
+                }
+                processPromptQueueIfPossible()
                 render()
                 return
             }
@@ -5767,6 +5902,33 @@ final class TUIApp {
         onboardingStatus = "Selected installed Ollama model \(selectedModel)"
     }
 
+    private func autoSelectEshModelIfNeeded(from snapshot: ProviderStatusSnapshot) -> String? {
+        guard sessionProvider == "esh" else { return nil }
+        let installedModels = snapshot.availableModels.compactMap(Self.selectableModelName)
+        guard let selectedModel = installedModels.first else { return nil }
+
+        let trimmed = sessionModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let currentModelIsInstalled = installedModels.contains {
+            $0.localizedCaseInsensitiveCompare(trimmed) == .orderedSame
+        }
+        let shouldReplaceCurrentModel = trimmed.isEmpty || trimmed == "auto" || !currentModelIsInstalled
+        guard shouldReplaceCurrentModel,
+              selectedModel.localizedCaseInsensitiveCompare(sessionModel) != .orderedSame else {
+            return nil
+        }
+
+        sessionModel = selectedModel
+        showModelPicker = false
+        providerStartupIssue = nil
+        refreshSessionRuntime()
+        clearProviderAttentionTranscriptIfPresent()
+        persistSessionSettings()
+        if showOnboarding, onboardingStep == .model {
+            onboardingStatus = "Selected installed esh model \(selectedModel)"
+        }
+        return selectedModel
+    }
+
     private func clearProviderAttentionTranscriptIfPresent() {
         guard Self.isProviderAttentionTranscript(runLines) else { return }
         runLines = []
@@ -5795,6 +5957,10 @@ final class TUIApp {
         case "openai", "anthropic":
             return !snapshot.headline.localizedCaseInsensitiveContains("missing") &&
                 !snapshot.headline.localizedCaseInsensitiveContains("failed")
+        case "esh":
+            return !snapshot.availableModels.isEmpty &&
+                (snapshot.headline == "esh runtime looks ready" ||
+                    snapshot.headline == "esh runtime is reachable")
         case "ollama":
             if snapshot.headline == "Ollama connection failed" { return false }
             return snapshot.guardrailAssessment?.severity != .blocked
@@ -5823,6 +5989,9 @@ final class TUIApp {
             return snapshot.details.first ?? startupIssue.message
         }
         if ProviderFailureRouting.isOllamaModelResourceFailure(message: startupIssue.message) {
+            if provider == "esh" {
+                return "The selected `esh` runtime could not load the chosen model or context because it ran out of memory: \(startupIssue.message)."
+            }
             return "Ollama is reachable, but its backend could not load the selected model/context: \(startupIssue.message). This is not Ashex's local memory checker."
         }
         return startupIssue.message
@@ -5835,7 +6004,8 @@ final class TUIApp {
         let snapshot = await ProviderInspector.inspect(
             provider: sessionProvider,
             model: sessionModel,
-            dflashConfig: sessionUserConfig.dflash
+            dflashConfig: sessionUserConfig.dflash,
+            userConfig: sessionUserConfig
         )
         providerStatus = snapshot
         if let assessment = snapshot.guardrailAssessment, assessment.severity == .blocked {
@@ -6107,7 +6277,8 @@ private enum ProviderInspector {
         provider: String,
         model: String,
         apiKey: String? = nil,
-        dflashConfig: DFlashConfig = .default
+        dflashConfig: DFlashConfig = .default,
+        userConfig: AshexUserConfig = .default
     ) async -> TUIApp.ProviderStatusSnapshot {
         switch provider {
         case "mock":
@@ -6158,6 +6329,58 @@ private enum ProviderInspector {
                     details: [
                         error.localizedDescription,
                         "A 401 usually means the saved key is malformed, expired, or was pasted incorrectly. Re-enter it in Provider Settings, then choose Refresh Status."
+                    ],
+                    availableModels: [],
+                    guardrailAssessment: nil
+                )
+            }
+        case "esh":
+            do {
+                let inspector = EshOptimizationInspector()
+                guard let executablePath = inspector.resolveExecutablePath(config: userConfig.optimization.esh) else {
+                    return .init(
+                        headline: "esh runtime not found",
+                        details: [
+                            "Ashex could not find a bundled or configured `esh` executable.",
+                            "Bundle `esh`, set optimization.esh.executablePath, or set ESH_EXECUTABLE, then choose Refresh Status."
+                        ],
+                        availableModels: [],
+                        guardrailAssessment: nil
+                    )
+                }
+                let homePath = inspector.resolveHomePath(config: userConfig.optimization.esh)
+                let capabilities = try CLIConfiguration.inspectEshCapabilities(
+                    executablePath: executablePath,
+                    homePath: homePath
+                )
+                let installedModels = capabilities.installedModels
+                let selectedAvailable = installedModels.contains {
+                    $0.id.localizedCaseInsensitiveCompare(model) == .orderedSame ||
+                    $0.displayName.localizedCaseInsensitiveCompare(model) == .orderedSame ||
+                    $0.source.localizedCaseInsensitiveCompare(model) == .orderedSame
+                }
+                let availableModels = installedModels.map { installedModel in
+                    "\(installedModel.id) • \(installedModel.backend)"
+                }
+                return .init(
+                    headline: selectedAvailable ? "esh runtime looks ready" : "esh runtime is reachable",
+                    details: [
+                        "Using `esh` at \(executablePath).",
+                        installedModels.isEmpty
+                            ? "No installed models were reported by `esh`."
+                            : selectedAvailable
+                                ? "The selected model is \(model)."
+                                : "The current model \(model) was not reported by `esh capabilities`."
+                    ],
+                    availableModels: availableModels,
+                    guardrailAssessment: nil
+                )
+            } catch {
+                return .init(
+                    headline: "esh runtime check failed",
+                    details: [
+                        error.localizedDescription,
+                        "Make sure `esh capabilities` succeeds, then choose Refresh Status again."
                     ],
                     availableModels: [],
                     guardrailAssessment: nil
