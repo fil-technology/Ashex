@@ -10,6 +10,21 @@ import Testing
     #expect(DaemonCLICommand.parse(arguments: ["ashex", "daemon", "status"]) == .daemonStatus([]))
 }
 
+@Test func parsesCommonDeamonMisspellingAsDaemonCommands() {
+    #expect(DaemonCLICommand.parse(arguments: ["ashex", "deamon", "run"]) == .daemonRun([]))
+    #expect(DaemonCLICommand.parse(arguments: ["ashex", "deamon", "start"]) == .daemonStart([]))
+    #expect(DaemonCLICommand.parse(arguments: ["ashex", "deamon", "stop"]) == .daemonStop([]))
+    #expect(DaemonCLICommand.parse(arguments: ["ashex", "deamon", "status"]) == .daemonStatus([]))
+}
+
+@Test func parsesDaemonCommandsWhenVerbComesFirst() {
+    #expect(DaemonCLICommand.parse(arguments: ["ashex", "run", "daemon"]) == .daemonRun([]))
+    #expect(DaemonCLICommand.parse(arguments: ["ashex", "start", "daemon"]) == .daemonStart([]))
+    #expect(DaemonCLICommand.parse(arguments: ["ashex", "stop", "daemon"]) == .daemonStop([]))
+    #expect(DaemonCLICommand.parse(arguments: ["ashex", "status", "daemon"]) == .daemonStatus([]))
+    #expect(DaemonCLICommand.parse(arguments: ["ashex", "stop", "deamon"]) == .daemonStop([]))
+}
+
 @Test func parsesTelegramTestCommand() {
     #expect(DaemonCLICommand.parse(arguments: ["ashex", "telegram", "test"]) == .telegramTest([]))
 }

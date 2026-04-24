@@ -14,15 +14,28 @@ enum DaemonCLICommand: Equatable {
 
     static func parse(arguments: [String]) -> DaemonCLICommand? {
         guard arguments.count >= 2 else { return nil }
-        switch (arguments[1], arguments.dropFirst(2).first) {
-        case ("daemon", "run"):
+        let namespace = arguments[1]
+        let action = arguments.dropFirst(2).first
+        let isDaemonNamespace = namespace == "daemon" || namespace == "deamon"
+        let actionTargetsDaemon = action == "daemon" || action == "deamon"
+        let verbFirstExtraArguments = Array(arguments.dropFirst(3))
+        switch (namespace, action) {
+        case (_, "run") where isDaemonNamespace:
             return .daemonRun(Array(arguments.dropFirst(3)))
-        case ("daemon", "start"):
+        case (_, "start") where isDaemonNamespace:
             return .daemonStart(Array(arguments.dropFirst(3)))
-        case ("daemon", "stop"):
+        case (_, "stop") where isDaemonNamespace:
             return .daemonStop(Array(arguments.dropFirst(3)))
-        case ("daemon", "status"):
+        case (_, "status") where isDaemonNamespace:
             return .daemonStatus(Array(arguments.dropFirst(3)))
+        case ("run", _) where actionTargetsDaemon:
+            return .daemonRun(verbFirstExtraArguments)
+        case ("start", _) where actionTargetsDaemon:
+            return .daemonStart(verbFirstExtraArguments)
+        case ("stop", _) where actionTargetsDaemon:
+            return .daemonStop(verbFirstExtraArguments)
+        case ("status", _) where actionTargetsDaemon:
+            return .daemonStatus(verbFirstExtraArguments)
         case ("telegram", "test"):
             return .telegramTest(Array(arguments.dropFirst(3)))
         case ("cron", "list"):

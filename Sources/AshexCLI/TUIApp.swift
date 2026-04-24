@@ -95,6 +95,56 @@ final class TUIApp {
         let message: String
     }
 
+    struct DaemonDisplayState: Equatable {
+        let summary: String
+        let detailLines: [String]
+
+        static func make(
+            status: DaemonProcessStatus?,
+            isStarting: Bool,
+            lastError: String?,
+            timeString: (Date) -> String
+        ) -> Self {
+            if let status, status.isRunning {
+                return .init(
+                    summary: "Running (pid \(status.pid))",
+                    detailLines: [
+                        "Running with pid \(status.pid)",
+                        "Started " + timeString(status.startedAt),
+                        "Log: " + status.logPath,
+                    ]
+                )
+            }
+
+            if isStarting {
+                var lines = ["Starting daemon in background..."]
+                if let lastError, !lastError.isEmpty {
+                    lines.append("Previous failure: \(lastError)")
+                }
+                return .init(summary: "Starting...", detailLines: lines)
+            }
+
+            if let lastError, !lastError.isEmpty {
+                return .init(
+                    summary: "Failed to start",
+                    detailLines: [
+                        "Daemon is stopped.",
+                        "Last startup error: \(lastError)",
+                        "You can retry the Daemon action after fixing the issue.",
+                    ]
+                )
+            }
+
+            return .init(
+                summary: "Stopped",
+                detailLines: [
+                    "Daemon is currently stopped.",
+                    "Use the Daemon action above to start it. Startup errors will appear here.",
+                ]
+            )
+        }
+    }
+
     private struct OnboardingChoice {
         let title: String
         let subtitle: String
@@ -154,6 +204,8 @@ final class TUIApp {
     private var showToolDetails = false
     private var providerStatus = ProviderStatusSnapshot.idle
     private var daemonStatus: DaemonProcessStatus?
+    private var daemonStartInProgress = false
+    private var daemonLastError: String?
     private var shouldQuit = false
     private var pendingApproval: PendingApproval?
     private var sessionWorkspaceRoot: URL
@@ -1328,6 +1380,9 @@ final class TUIApp {
                     let started = await self?.toggleDaemonFromSettings() ?? false
                     await MainActor.run {
                         if started {
+                            self?.advanceOnboarding(to: .done)
+                        } else {
+                            self?.onboardingStatus = "Daemon did not start; details are shown in Assistant Setup"
                             self?.advanceOnboarding(to: .done)
                         }
                     }
@@ -3630,10 +3685,16 @@ final class TUIApp {
     }
 
     private var daemonStatusSummary: String {
-        if let daemonStatus, daemonStatus.isRunning {
-            return "Running (pid \(daemonStatus.pid))"
-        }
-        return "Stopped"
+        daemonDisplayState.summary
+    }
+
+    private var daemonDisplayState: DaemonDisplayState {
+        DaemonDisplayState.make(
+            status: daemonStatus,
+            isStarting: daemonStartInProgress,
+            lastError: daemonLastError,
+            timeString: Self.timeString
+        )
     }
 
     private func renderOnboardingChecklist(width: Int) -> [String] {
@@ -3645,14 +3706,23 @@ final class TUIApp {
     }
 
     private func renderDaemonDetailLines(width: Int) -> [String] {
-        var lines: [String] = []
-        if let daemonStatus, daemonStatus.isRunning {
-            lines.append("\(TerminalUIStyle.green)Running with pid \(daemonStatus.pid)\(TerminalUIStyle.reset)")
-            lines.append("\(TerminalUIStyle.slate)\(TerminalUIStyle.truncateVisible("Started " + Self.timeString(daemonStatus.startedAt), limit: width))\(TerminalUIStyle.reset)")
-            lines.append("\(TerminalUIStyle.slate)\(TerminalUIStyle.truncateVisible("Log: " + daemonStatus.logPath, limit: width))\(TerminalUIStyle.reset)")
-        } else {
-            lines.append("\(TerminalUIStyle.slate)Daemon is currently stopped.\(TerminalUIStyle.reset)")
-            lines.append("\(TerminalUIStyle.slate)Use the Daemon action above after the onboarding checklist is complete.\(TerminalUIStyle.reset)")
+        let displayState = daemonDisplayState
+        var lines = displayState.detailLines.enumerated().map { index, line in
+            let color: String
+            if daemonStatus?.isRunning == true, index == 0 {
+                color = TerminalUIStyle.green
+            } else if daemonStartInProgress, index == 0 {
+                color = TerminalUIStyle.amber
+            } else if daemonLastError != nil, index == 1 {
+                color = TerminalUIStyle.red
+            } else {
+                color = TerminalUIStyle.slate
+            }
+            return "\(color)\(TerminalUIStyle.truncateVisible(line, limit: width))\(TerminalUIStyle.reset)"
+        }
+        if daemonLastError != nil {
+            let stateStore = DaemonProcessStateStore(storageRoot: sessionStorageRoot)
+            lines.append("\(TerminalUIStyle.slate)\(TerminalUIStyle.truncateVisible("Log: " + stateStore.logFileURL.path, limit: width))\(TerminalUIStyle.reset)")
         }
         return lines
     }
@@ -5177,6 +5247,9 @@ final class TUIApp {
     private func refreshDaemonStatus() {
         let store = DaemonProcessStateStore(storageRoot: sessionStorageRoot)
         daemonStatus = try? store.status()
+        if daemonStatus?.isRunning == true {
+            daemonLastError = nil
+        }
     }
 
     private func currentCLIArgumentsForBackgroundTasks() -> [String] {
@@ -5193,9 +5266,14 @@ final class TUIApp {
         let stateStore = DaemonProcessStateStore(storageRoot: sessionStorageRoot)
         if let status = try stateStore.status(), status.isRunning {
             daemonStatus = status
+            daemonLastError = nil
             statusLine = "Daemon is already running"
             return
         }
+
+        daemonStartInProgress = true
+        daemonLastError = nil
+        defer { daemonStartInProgress = false }
 
         let logURL = stateStore.logFileURL
         try FileManager.default.createDirectory(at: logURL.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -5222,13 +5300,16 @@ final class TUIApp {
             if process.isRunning {
                 process.terminate()
             }
-            throw AshexError.model(DaemonCLI.daemonStartupFailureMessage(
+            let message = DaemonCLI.daemonStartupFailureMessage(
                 logURL: logURL,
                 fallback: process.isRunning
                     ? "Daemon startup timed out before it reported ready."
                     : "Daemon failed to start in background."
-            ))
+            )
+            daemonLastError = message
+            throw AshexError.model(message)
         }
+        daemonLastError = nil
         try? handle.close()
     }
 
@@ -5268,7 +5349,8 @@ final class TUIApp {
             refreshDaemonStatus()
             render()
         } catch {
-            statusLine = "Daemon startup failed: \(error.localizedDescription)"
+            daemonLastError = error.localizedDescription
+            statusLine = "Daemon startup failed"
             refreshDaemonStatus()
             render()
         }
@@ -5297,7 +5379,9 @@ final class TUIApp {
             render()
             return true
         } catch {
-            statusLine = error.localizedDescription
+            daemonLastError = error.localizedDescription
+            statusLine = "Daemon startup failed"
+            refreshDaemonStatus()
             render()
             return false
         }

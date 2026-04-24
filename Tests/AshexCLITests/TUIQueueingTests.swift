@@ -1,4 +1,5 @@
 @testable import AshexCLI
+import Foundation
 import Testing
 
 @Test func promptQueueTracksOrderAndFrontRequeue() {
@@ -86,6 +87,46 @@ import Testing
     #expect(WorkspaceSelection.clamped(3, recentWorkspaceCount: 3) == 3)
     #expect(WorkspaceSelection.clamped(12, recentWorkspaceCount: 20) == WorkspaceSelection.visibleRecentWorkspaceLimit)
     #expect(WorkspaceSelection.maxSelectionIndex(for: 0) == 0)
+}
+
+@Test func daemonDisplayStateShowsActionableStoppedStartingFailureAndRunningStates() {
+    let stopped = TUIApp.DaemonDisplayState.make(
+        status: nil,
+        isStarting: false,
+        lastError: nil,
+        timeString: { _ in "now" }
+    )
+    #expect(stopped.summary == "Stopped")
+    #expect(stopped.detailLines.contains { $0.contains("Startup errors will appear here") })
+    #expect(!stopped.detailLines.contains { $0.contains("after the onboarding checklist") })
+
+    let starting = TUIApp.DaemonDisplayState.make(
+        status: nil,
+        isStarting: true,
+        lastError: "Previous problem",
+        timeString: { _ in "now" }
+    )
+    #expect(starting.summary == "Starting...")
+    #expect(starting.detailLines.contains("Starting daemon in background..."))
+    #expect(starting.detailLines.contains("Previous failure: Previous problem"))
+
+    let failed = TUIApp.DaemonDisplayState.make(
+        status: nil,
+        isStarting: false,
+        lastError: "Missing Telegram token",
+        timeString: { _ in "now" }
+    )
+    #expect(failed.summary == "Failed to start")
+    #expect(failed.detailLines.contains("Last startup error: Missing Telegram token"))
+
+    let running = TUIApp.DaemonDisplayState.make(
+        status: DaemonProcessStatus(pid: 42, startedAt: Date(timeIntervalSince1970: 0), logPath: "/tmp/daemon.log", isRunning: true),
+        isStarting: false,
+        lastError: "Old failure",
+        timeString: { _ in "epoch" }
+    )
+    #expect(running.summary == "Running (pid 42)")
+    #expect(running.detailLines == ["Running with pid 42", "Started epoch", "Log: /tmp/daemon.log"])
 }
 
 @Test func ollamaModelOrderingPrefersGeneralModelsOverFunctionModels() {
