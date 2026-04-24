@@ -103,7 +103,7 @@ extension EshBackedModelAdapter: DirectChatModelAdapter {
         try await directReplyEnvelope(history: history, systemPrompt: systemPrompt, attachments: []).text
     }
 
-    public func directReplyEnvelope(history: [MessageRecord], systemPrompt: String, attachments _: [InputAttachment]) async throws -> DirectChatReplyEnvelope {
+    public func directReplyEnvelope(history: [MessageRecord], systemPrompt: String, attachments: [InputAttachment]) async throws -> DirectChatReplyEnvelope {
         let latestUserMessage = history.last(where: { $0.role == .user })?.content ?? "Continue the conversation."
         let priorHistory = dropTrailingUserMessageIfPresent(from: history)
 
@@ -113,7 +113,8 @@ extension EshBackedModelAdapter: DirectChatModelAdapter {
                 history: priorHistory,
                 message: latestUserMessage,
                 taskKind: .analysis,
-                taskPrompt: latestUserMessage
+                taskPrompt: latestUserMessage,
+                attachments: attachments
             )
             if let parsed = EshBridgeReplyParser.parseReply(from: reply) {
                 return .init(text: parsed, reasoningSummary: ReasoningSummaryExtractor.summary(fromExposedThinkingIn: reply))
@@ -123,7 +124,7 @@ extension EshBackedModelAdapter: DirectChatModelAdapter {
             guard let fallback = fallback as? any DirectChatModelAdapter else {
                 throw error
             }
-            return try await fallback.directReplyEnvelope(history: history, systemPrompt: systemPrompt, attachments: [])
+            return try await fallback.directReplyEnvelope(history: history, systemPrompt: systemPrompt, attachments: attachments)
         }
     }
 }
@@ -164,7 +165,8 @@ private extension EshBackedModelAdapter {
         history: [MessageRecord],
         message: String,
         taskKind: TaskKind,
-        taskPrompt: String
+        taskPrompt: String,
+        attachments: [InputAttachment] = []
     ) async throws -> String {
         do {
             return try await runExternalEsh(
@@ -172,7 +174,8 @@ private extension EshBackedModelAdapter {
                 history: history,
                 message: message,
                 taskKind: taskKind,
-                taskPrompt: taskPrompt
+                taskPrompt: taskPrompt,
+                attachments: attachments
             )
         } catch {
             return try await runLegacyEsh(
@@ -190,7 +193,8 @@ private extension EshBackedModelAdapter {
         history: [MessageRecord],
         message: String,
         taskKind: TaskKind,
-        taskPrompt: String
+        taskPrompt: String,
+        attachments: [InputAttachment] = []
     ) async throws -> String {
         let requestID = makeUUID()
         let requestURL = try writeInferRequest(
@@ -199,7 +203,8 @@ private extension EshBackedModelAdapter {
             history: history,
             message: message,
             taskKind: taskKind,
-            taskPrompt: taskPrompt
+            taskPrompt: taskPrompt,
+            attachments: attachments
         )
         var artifactID: String?
         defer {
@@ -244,6 +249,7 @@ private extension EshBackedModelAdapter {
                 message: message,
                 taskKind: taskKind,
                 taskPrompt: taskPrompt,
+                attachments: attachments,
                 cacheArtifactID: artifact
             )
             return try await runInfer(requestURL: requestWithArtifactURL)
@@ -355,7 +361,7 @@ private extension EshBackedModelAdapter {
             throw AshexError.model("esh infer failed: \(inferResult.stderr.trimmingCharacters(in: .whitespacesAndNewlines))")
         }
         let response = try EshBridgeOutputParser.parseInferResponse(from: inferResult.stdout)
-        let reply = response.outputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let reply = response.renderedReply.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !reply.isEmpty else {
             throw AshexError.model("esh infer did not return a reply")
         }
@@ -466,6 +472,7 @@ private extension EshBackedModelAdapter {
         message: String,
         taskKind: TaskKind,
         taskPrompt: String,
+        attachments: [InputAttachment] = [],
         cacheArtifactID: String? = nil
     ) throws -> URL {
         let requestsDirectory = URL(fileURLWithPath: configuration.homePath, isDirectory: true)
@@ -480,7 +487,7 @@ private extension EshBackedModelAdapter {
             sessionName: "Ashex \(taskKind.rawValue)",
             cacheMode: resolveOptimization(taskKind: taskKind, prompt: taskPrompt).mode.rawValue,
             intent: resolvedIntent(taskKind: taskKind, prompt: taskPrompt).rawValue,
-            messages: buildInferMessages(systemPrompt: systemPrompt, history: history, message: message),
+            messages: buildInferMessages(systemPrompt: systemPrompt, history: history, message: message, attachments: attachments),
             generation: .init()
         )
 
@@ -490,12 +497,17 @@ private extension EshBackedModelAdapter {
         return requestURL
     }
 
-    func buildInferMessages(systemPrompt: String, history: [MessageRecord], message: String) -> [EshInferMessage] {
+    func buildInferMessages(systemPrompt: String, history: [MessageRecord], message: String, attachments: [InputAttachment] = []) -> [EshInferMessage] {
         let systemMessage = EshInferMessage(role: "system", text: systemPrompt)
         let mappedHistory = history.suffix(12).map { record in
             EshInferMessage(role: record.role.rawValue, text: record.content)
         }
-        let userMessage = EshInferMessage(role: "user", text: message)
+        let eshAttachments = attachments.map(EshInferAttachment.init)
+        let userMessage = EshInferMessage(
+            role: "user",
+            text: message,
+            attachments: eshAttachments.isEmpty ? nil : eshAttachments
+        )
         return [systemMessage] + mappedHistory + [userMessage]
     }
 
@@ -815,6 +827,57 @@ struct EshInferRequest: Codable {
 struct EshInferMessage: Codable {
     let role: String
     let text: String
+    let attachments: [EshInferAttachment]?
+
+    init(role: String, text: String, attachments: [EshInferAttachment]? = nil) {
+        self.role = role
+        self.text = text
+        self.attachments = attachments
+    }
+}
+
+struct EshInferAttachment: Codable, Equatable {
+    let kind: String
+    let localPath: String
+    let originalFilename: String?
+    let mimeType: String?
+    let caption: String?
+    let durationSeconds: Double?
+    let fileSizeBytes: Int?
+    let metadata: JSONObject
+
+    init(
+        kind: String,
+        localPath: String,
+        originalFilename: String?,
+        mimeType: String?,
+        caption: String?,
+        durationSeconds: Double?,
+        fileSizeBytes: Int?,
+        metadata: JSONObject
+    ) {
+        self.kind = kind
+        self.localPath = localPath
+        self.originalFilename = originalFilename
+        self.mimeType = mimeType
+        self.caption = caption
+        self.durationSeconds = durationSeconds
+        self.fileSizeBytes = fileSizeBytes
+        self.metadata = metadata
+    }
+
+    init(_ attachment: InputAttachment) {
+        self.init(
+            kind: attachment.kind.rawValue,
+            localPath: attachment.localPath,
+            originalFilename: attachment.originalFilename,
+            mimeType: attachment.mimeType,
+            caption: attachment.caption,
+            durationSeconds: attachment.durationSeconds,
+            fileSizeBytes: attachment.fileSizeBytes,
+            metadata: attachment.metadata
+        )
+    }
 }
 
 struct EshGenerationConfig: Codable {
@@ -833,6 +896,101 @@ struct EshInferResponse: Codable {
     let backend: String
     let integration: EshInferIntegration
     let outputText: String
+    let generatedFiles: [EshGeneratedFile]
+
+    var renderedReply: String {
+        let text = outputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let renderedFiles = generatedFiles
+            .map { file in
+                var line = "Generated \(file.kind) file: \(file.localPath)"
+                if let mimeType = file.mimeType, !mimeType.isEmpty {
+                    line += " (\(mimeType))"
+                }
+                return line
+            }
+            .joined(separator: "\n")
+
+        if text.isEmpty {
+            return renderedFiles
+        }
+        if renderedFiles.isEmpty {
+            return text
+        }
+        return text + "\n\n" + renderedFiles
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case modelID
+        case backend
+        case integration
+        case outputText
+        case outputFiles
+        case generatedFiles
+        case artifacts
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decode(String.self, forKey: .schemaVersion)
+        modelID = try container.decode(String.self, forKey: .modelID)
+        backend = try container.decode(String.self, forKey: .backend)
+        integration = try container.decode(EshInferIntegration.self, forKey: .integration)
+        outputText = try container.decodeIfPresent(String.self, forKey: .outputText) ?? ""
+        generatedFiles = try container.decodeIfPresent([EshGeneratedFile].self, forKey: .outputFiles)
+            ?? container.decodeIfPresent([EshGeneratedFile].self, forKey: .generatedFiles)
+            ?? container.decodeIfPresent([EshGeneratedFile].self, forKey: .artifacts)
+            ?? []
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(schemaVersion, forKey: .schemaVersion)
+        try container.encode(modelID, forKey: .modelID)
+        try container.encode(backend, forKey: .backend)
+        try container.encode(integration, forKey: .integration)
+        try container.encode(outputText, forKey: .outputText)
+        if !generatedFiles.isEmpty {
+            try container.encode(generatedFiles, forKey: .outputFiles)
+        }
+    }
+}
+
+struct EshGeneratedFile: Codable, Equatable {
+    let kind: String
+    let localPath: String
+    let mimeType: String?
+
+    enum CodingKeys: String, CodingKey {
+        case kind
+        case localPath
+        case path
+        case url
+        case mimeType
+    }
+
+    init(kind: String, localPath: String, mimeType: String?) {
+        self.kind = kind
+        self.localPath = localPath
+        self.mimeType = mimeType
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try container.decodeIfPresent(String.self, forKey: .kind) ?? "file"
+        localPath = try container.decodeIfPresent(String.self, forKey: .localPath)
+            ?? container.decodeIfPresent(String.self, forKey: .path)
+            ?? container.decodeIfPresent(String.self, forKey: .url)
+            ?? ""
+        mimeType = try container.decodeIfPresent(String.self, forKey: .mimeType)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(kind, forKey: .kind)
+        try container.encode(localPath, forKey: .localPath)
+        try container.encodeIfPresent(mimeType, forKey: .mimeType)
+    }
 }
 
 struct EshInferIntegration: Codable {

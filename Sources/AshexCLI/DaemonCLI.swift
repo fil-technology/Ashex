@@ -14,40 +14,110 @@ enum DaemonCLICommand: Equatable {
 
     static func parse(arguments: [String]) -> DaemonCLICommand? {
         guard arguments.count >= 2 else { return nil }
-        let namespace = arguments[1]
-        let action = arguments.dropFirst(2).first
-        let isDaemonNamespace = namespace == "daemon" || namespace == "deamon"
-        let actionTargetsDaemon = action == "daemon" || action == "deamon"
-        let verbFirstExtraArguments = Array(arguments.dropFirst(3))
-        switch (namespace, action) {
-        case (_, "run") where isDaemonNamespace:
-            return .daemonRun(Array(arguments.dropFirst(3)))
-        case (_, "start") where isDaemonNamespace:
-            return .daemonStart(Array(arguments.dropFirst(3)))
-        case (_, "stop") where isDaemonNamespace:
-            return .daemonStop(Array(arguments.dropFirst(3)))
-        case (_, "status") where isDaemonNamespace:
-            return .daemonStatus(Array(arguments.dropFirst(3)))
-        case ("run", _) where actionTargetsDaemon:
-            return .daemonRun(verbFirstExtraArguments)
-        case ("start", _) where actionTargetsDaemon:
-            return .daemonStart(verbFirstExtraArguments)
-        case ("stop", _) where actionTargetsDaemon:
-            return .daemonStop(verbFirstExtraArguments)
-        case ("status", _) where actionTargetsDaemon:
-            return .daemonStatus(verbFirstExtraArguments)
-        case ("telegram", "test"):
-            return .telegramTest(Array(arguments.dropFirst(3)))
-        case ("cron", "list"):
-            return .cronList(Array(arguments.dropFirst(3)))
-        case ("cron", "add"):
-            return .cronAdd(Array(arguments.dropFirst(3)))
-        case ("cron", "remove"):
-            return .cronRemove(Array(arguments.dropFirst(3)))
-        default:
-            return nil
+
+        if let command = parseNamespaceFirst(arguments: arguments) {
+            return command
         }
+
+        if let command = parseVerbFirst(arguments: arguments) {
+            return command
+        }
+
+        return nil
     }
+
+    private static func parseNamespaceFirst(arguments: [String]) -> DaemonCLICommand? {
+        for index in commandCandidateIndexes(in: arguments) {
+            let namespace = arguments[index]
+            guard arguments.indices.contains(index + 1) else { continue }
+            let action = arguments[index + 1]
+            let extraArguments = commandExtraArguments(arguments: arguments, commandIndexes: [index, index + 1])
+            switch (namespace, action) {
+            case ("daemon", "run"), ("deamon", "run"):
+                return .daemonRun(extraArguments)
+            case ("daemon", "start"), ("deamon", "start"):
+                return .daemonStart(extraArguments)
+            case ("daemon", "stop"), ("deamon", "stop"):
+                return .daemonStop(extraArguments)
+            case ("daemon", "status"), ("deamon", "status"):
+                return .daemonStatus(extraArguments)
+            case ("telegram", "test"):
+                return .telegramTest(extraArguments)
+            case ("cron", "list"):
+                return .cronList(extraArguments)
+            case ("cron", "add"):
+                return .cronAdd(extraArguments)
+            case ("cron", "remove"):
+                return .cronRemove(extraArguments)
+            default:
+                continue
+            }
+        }
+
+        return nil
+    }
+
+    private static func parseVerbFirst(arguments: [String]) -> DaemonCLICommand? {
+        for index in commandCandidateIndexes(in: arguments) {
+            let action = arguments[index]
+            guard arguments.indices.contains(index + 1) else { continue }
+            let namespace = arguments[index + 1]
+            let extraArguments = commandExtraArguments(arguments: arguments, commandIndexes: [index, index + 1])
+            switch (action, namespace) {
+            case ("run", "daemon"), ("run", "deamon"):
+                return .daemonRun(extraArguments)
+            case ("start", "daemon"), ("start", "deamon"):
+                return .daemonStart(extraArguments)
+            case ("stop", "daemon"), ("stop", "deamon"):
+                return .daemonStop(extraArguments)
+            case ("status", "daemon"), ("status", "deamon"):
+                return .daemonStatus(extraArguments)
+            default:
+                continue
+            }
+        }
+
+        return nil
+    }
+
+    private static func commandCandidateIndexes(in arguments: [String]) -> [Int] {
+        var indexes: [Int] = []
+        var index = 1
+        while index < arguments.count {
+            let argument = arguments[index]
+            if optionNamesWithValues.contains(argument), arguments.indices.contains(index + 1) {
+                index += 2
+                continue
+            }
+            if argument.hasPrefix("-") {
+                index += 1
+                continue
+            }
+            indexes.append(index)
+            index += 1
+        }
+        return indexes
+    }
+
+    private static func commandExtraArguments(arguments: [String], commandIndexes: Set<Int>) -> [String] {
+        arguments.indices
+            .filter { $0 != arguments.startIndex && !commandIndexes.contains($0) }
+            .map { arguments[$0] }
+    }
+
+    private static let optionNamesWithValues: Set<String> = [
+        "--workspace",
+        "--storage",
+        "--max-iterations",
+        "--provider",
+        "--model",
+        "--approval-mode",
+        "--id",
+        "--schedule",
+        "--tz",
+        "--timezone",
+        "--prompt",
+    ]
 }
 
 enum DaemonCLI {

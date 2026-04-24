@@ -102,6 +102,33 @@ struct EshBridgeModelAdapterTests {
         #expect(response.outputText.contains(#""final_answer":"done""#))
     }
 
+    @Test func parsesInferResponseWithGeneratedAudioFile() throws {
+        let response = try EshBridgeOutputParser.parseInferResponse(from: """
+        {
+          "schemaVersion": "esh.infer.response.v1",
+          "modelID": "audio-model",
+          "backend": "mlx",
+          "integration": {
+            "mode": "direct",
+            "cacheArtifactID": null,
+            "cacheMode": "auto"
+          },
+          "outputFiles": [
+            {
+              "kind": "audio",
+              "localPath": "/tmp/ashex-reply.wav",
+              "mimeType": "audio/wav"
+            }
+          ]
+        }
+        """)
+
+        #expect(response.outputText.isEmpty)
+        #expect(response.generatedFiles.first?.kind == "audio")
+        #expect(response.generatedFiles.first?.localPath == "/tmp/ashex-reply.wav")
+        #expect(response.renderedReply.contains("/tmp/ashex-reply.wav"))
+    }
+
     @Test func fallsBackWhenBridgeExecutionFails() async throws {
         let adapter = EshBackedModelAdapter(
             configuration: .init(
@@ -125,6 +152,94 @@ struct EshBridgeModelAdapterTests {
         ]))
         #expect(action == expected)
     }
+
+    @Test func directReplyPassesAudioAttachmentsToEshInfer() async throws {
+        let homeURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let audioURL = homeURL.appendingPathComponent("voice.ogg")
+        try FileManager.default.createDirectory(at: homeURL, withIntermediateDirectories: true)
+        try Data([0x4F, 0x67, 0x67]).write(to: audioURL)
+
+        let runner = RecordingInferRunner(reply: "heard the audio")
+        let adapter = EshBackedModelAdapter(
+            configuration: .init(
+                executablePath: "/opt/homebrew/bin/esh",
+                homePath: homeURL.path,
+                repoRootPath: FileManager.default.temporaryDirectory.path,
+                model: "audio-model",
+                providerID: "esh",
+                optimization: .init(enabled: true, backend: .esh, mode: .automatic, intent: .chat)
+            ),
+            fallback: RecordingFallbackAdapter(),
+            runner: runner,
+            createDirectory: { url in try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true) },
+            removeItem: { _ in }
+        )
+
+        let thread = ThreadRecord(id: UUID(), createdAt: Date())
+        let history = [
+            MessageRecord(
+                id: UUID(),
+                threadID: thread.id,
+                runID: nil,
+                role: .user,
+                content: "Transcribe this",
+                createdAt: Date()
+            )
+        ]
+
+        let envelope = try await adapter.directReplyEnvelope(
+            history: history,
+            systemPrompt: "Answer naturally.",
+            attachments: [
+                .init(
+                    kind: .audio,
+                    localPath: audioURL.path,
+                    originalFilename: "voice.ogg",
+                    mimeType: "audio/ogg",
+                    caption: "What is in this audio?",
+                    durationSeconds: 3,
+                    fileSizeBytes: 3
+                )
+            ]
+        )
+
+        #expect(envelope.text == "heard the audio")
+        let request = try await #require(runner.lastInferRequest())
+        #expect(request.messages.last?.attachments?.first?.kind == "audio")
+        #expect(request.messages.last?.attachments?.first?.localPath == audioURL.path)
+        #expect(request.messages.last?.attachments?.first?.mimeType == "audio/ogg")
+        #expect(request.messages.last?.attachments?.first?.originalFilename == "voice.ogg")
+    }
+
+    @Test func directReplyFallbackPreservesAttachmentsWhenEshFails() async throws {
+        let fallback = RecordingFallbackAdapter()
+        let adapter = EshBackedModelAdapter(
+            configuration: .init(
+                executablePath: "/opt/homebrew/bin/esh",
+                homePath: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).path,
+                repoRootPath: FileManager.default.temporaryDirectory.path,
+                model: "audio-model",
+                providerID: "esh",
+                optimization: .init(enabled: true, backend: .esh, mode: .automatic, intent: .chat)
+            ),
+            fallback: fallback,
+            runner: FailingRunner(),
+            createDirectory: { _ in },
+            removeItem: { _ in }
+        )
+        let thread = ThreadRecord(id: UUID(), createdAt: Date())
+        let attachment = InputAttachment(kind: .audio, localPath: "/tmp/audio.ogg", mimeType: "audio/ogg")
+
+        _ = try await adapter.directReplyEnvelope(
+            history: [
+                .init(id: UUID(), threadID: thread.id, runID: nil, role: .user, content: "Listen", createdAt: Date())
+            ],
+            systemPrompt: "Answer naturally.",
+            attachments: [attachment]
+        )
+
+        #expect(await fallback.lastAttachments() == [attachment])
+    }
 }
 
 private struct FailingRunner: EshCommandRunning {
@@ -147,4 +262,105 @@ private func sampleContext(prompt: String) -> ModelContext {
             .init(name: "shell", description: "Execute shell commands inside the workspace with streaming stdout/stderr"),
         ]
     )
+}
+
+private actor RecordingInferRunner: EshCommandRunning {
+    private let reply: String
+    private var request: EshInferRequest?
+
+    init(reply: String) {
+        self.reply = reply
+    }
+
+    func run(command: String, workspaceURL: URL, timeout: TimeInterval) async throws -> ShellExecutionResult {
+        if command.contains(" capabilities") {
+            return ShellExecutionResult(stdout: """
+            {
+              "schemaVersion": "esh.capabilities.v1",
+              "tool": "esh",
+              "toolVersion": "0.2.0",
+              "commands": [
+                {
+                  "name": "infer",
+                  "inputSchema": "esh.infer.request.v1",
+                  "outputSchema": "esh.infer.response.v1",
+                  "transport": "json"
+                }
+              ],
+              "backends": [],
+              "installedModels": [
+                {
+                  "id": "audio-model",
+                  "displayName": "Audio Model",
+                  "backend": "mlx",
+                  "source": "audio-model",
+                  "variant": null,
+                  "runtimeVersion": null,
+                  "supportsDirectInference": true,
+                  "supportsCacheBuild": false,
+                  "supportsCacheLoad": false
+                }
+              ]
+            }
+            """, stderr: "", exitCode: 0, timedOut: false)
+        }
+
+        if let inputPath = command.inputPathArgument {
+            let data = try Data(contentsOf: URL(fileURLWithPath: inputPath))
+            request = try JSONDecoder().decode(EshInferRequest.self, from: data)
+        }
+
+        return ShellExecutionResult(stdout: """
+        {
+          "schemaVersion": "esh.infer.response.v1",
+          "modelID": "audio-model",
+          "backend": "mlx",
+          "integration": {
+            "mode": "direct",
+            "cacheArtifactID": null,
+            "cacheMode": "auto"
+          },
+          "outputText": "\(reply)"
+        }
+        """, stderr: "", exitCode: 0, timedOut: false)
+    }
+
+    func lastInferRequest() -> EshInferRequest? {
+        request
+    }
+}
+
+private actor RecordingFallbackAdapter: DirectChatModelAdapter {
+    let name = "recording-fallback"
+    let providerID = "fallback"
+    let modelID = "fallback"
+    private var attachments: [InputAttachment] = []
+
+    func nextAction(for context: ModelContext) async throws -> ModelAction {
+        .finalAnswer("fallback")
+    }
+
+    func directReply(history: [MessageRecord], systemPrompt: String) async throws -> String {
+        "fallback"
+    }
+
+    func directReplyEnvelope(history: [MessageRecord], systemPrompt: String, attachments: [InputAttachment]) async throws -> DirectChatReplyEnvelope {
+        self.attachments = attachments
+        return .init(text: "fallback")
+    }
+
+    func lastAttachments() -> [InputAttachment] {
+        attachments
+    }
+}
+
+private extension String {
+    var inputPathArgument: String? {
+        guard let range = range(of: "--input ") else { return nil }
+        var remainder = self[range.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
+        guard remainder.first == "'" else { return nil }
+        remainder.removeFirst()
+        guard let end = remainder.firstIndex(of: "'") else { return nil }
+        return String(remainder[..<end])
+    }
 }

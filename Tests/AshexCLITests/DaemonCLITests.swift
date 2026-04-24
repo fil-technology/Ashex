@@ -25,14 +25,33 @@ import Testing
     #expect(DaemonCLICommand.parse(arguments: ["ashex", "stop", "deamon"]) == .daemonStop([]))
 }
 
+@Test func parsesDaemonCommandsAfterGlobalOptions() {
+    #expect(DaemonCLICommand.parse(arguments: [
+        "ashex", "--workspace", "/tmp/demo", "--storage", "/tmp/demo/.ashex", "daemon", "start", "--provider", "mock"
+    ]) == .daemonStart(["--workspace", "/tmp/demo", "--storage", "/tmp/demo/.ashex", "--provider", "mock"]))
+
+    #expect(DaemonCLICommand.parse(arguments: [
+        "ashex", "--workspace", "/tmp/demo", "status", "daemon"
+    ]) == .daemonStatus(["--workspace", "/tmp/demo"]))
+}
+
 @Test func parsesTelegramTestCommand() {
     #expect(DaemonCLICommand.parse(arguments: ["ashex", "telegram", "test"]) == .telegramTest([]))
+    #expect(DaemonCLICommand.parse(arguments: [
+        "ashex", "--workspace", "/tmp/demo", "telegram", "test"
+    ]) == .telegramTest(["--workspace", "/tmp/demo"]))
 }
 
 @Test func parsesCronCommands() {
     #expect(DaemonCLICommand.parse(arguments: ["ashex", "cron", "list"]) == .cronList([]))
     #expect(DaemonCLICommand.parse(arguments: ["ashex", "cron", "add", "--id", "daily"]) == .cronAdd(["--id", "daily"]))
     #expect(DaemonCLICommand.parse(arguments: ["ashex", "cron", "remove", "--id", "daily"]) == .cronRemove(["--id", "daily"]))
+}
+
+@Test func parsesCronCommandsAfterGlobalOptions() {
+    #expect(DaemonCLICommand.parse(arguments: [
+        "ashex", "--workspace", "/tmp/demo", "--storage", "/tmp/demo/.ashex", "cron", "add", "--id", "daily", "--schedule", "* * * * *", "--prompt", "Say ok"
+    ]) == .cronAdd(["--workspace", "/tmp/demo", "--storage", "/tmp/demo/.ashex", "--id", "daily", "--schedule", "* * * * *", "--prompt", "Say ok"]))
 }
 
 @Test func cliDetectsHelpBeforeTreatingItAsPrompt() {
