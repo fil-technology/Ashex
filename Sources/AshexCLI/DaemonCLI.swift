@@ -70,28 +70,9 @@ enum DaemonCLI {
 
     private static func run(extraArguments: [String], launchedInBackground: Bool) async throws {
         let configuration = try CLIConfiguration(arguments: [CommandLine.arguments[0]] + extraArguments)
+        let token = resolvedTelegramToken(from: configuration.userConfig.telegram, storageRoot: configuration.storageRoot)
         let persistence = try configuration.makePersistenceStore()
         let logger = DaemonLogger(minimumLevel: daemonLogLevel(from: configuration.userConfig.logging.level))
-        let runStore = DaemonConversationRunStore()
-        let remoteApprovalInbox = RemoteApprovalInbox(persistence: persistence)
-        try await remoteApprovalInbox.normalizeInterruptedApprovals()
-        let runtime = try configuration.makeRuntime(
-            persistence: persistence,
-            provider: configuration.provider,
-            model: configuration.model,
-            approvalPolicy: ConnectorApprovalPolicy(
-                policyMode: configuration.userConfig.telegram.executionPolicy,
-                connectorName: "telegram",
-                remoteApprovalInbox: remoteApprovalInbox,
-                runStore: runStore
-            )
-        )
-
-        let stateStore = DaemonProcessStateStore(storageRoot: configuration.storageRoot)
-        try stateStore.writeCurrentProcess(logPath: stateStore.logFileURL.path)
-        defer { try? stateStore.clearIfOwnedByCurrentProcess() }
-
-        let token = resolvedTelegramToken(from: configuration.userConfig.telegram, storageRoot: configuration.storageRoot)
         let cronStore = CronJobStore(persistence: persistence)
         let hasCronJobs = (try? cronStore.listJobs().contains { $0.isEnabled }) ?? false
         let connectors: [any Connector]
@@ -111,6 +92,25 @@ enum DaemonCLI {
         guard !connectors.isEmpty || hasCronJobs else {
             throw AshexError.model("Daemon run requires either Telegram to be enabled with a valid bot token or at least one enabled cron job.")
         }
+
+        let runStore = DaemonConversationRunStore()
+        let remoteApprovalInbox = RemoteApprovalInbox(persistence: persistence)
+        try await remoteApprovalInbox.normalizeInterruptedApprovals()
+        let runtime = try configuration.makeRuntime(
+            persistence: persistence,
+            provider: configuration.provider,
+            model: configuration.model,
+            approvalPolicy: ConnectorApprovalPolicy(
+                policyMode: configuration.userConfig.telegram.executionPolicy,
+                connectorName: "telegram",
+                remoteApprovalInbox: remoteApprovalInbox,
+                runStore: runStore
+            )
+        )
+
+        let stateStore = DaemonProcessStateStore(storageRoot: configuration.storageRoot)
+        try stateStore.writeCurrentProcess(logPath: stateStore.logFileURL.path)
+        defer { try? stateStore.clearIfOwnedByCurrentProcess() }
 
         let registry = ConnectorRegistry(connectors: connectors)
         let mappingStore = ConnectorConversationMappingStore(persistence: persistence)
@@ -232,20 +232,44 @@ enum DaemonCLI {
         process.standardError = handle
         try process.run()
 
-        try await Task.sleep(nanoseconds: 750_000_000)
-        let status = try stateStore.status()
-        guard process.isRunning || status?.isRunning == true else {
+        let status = try await waitForStartedDaemon(process: process, stateStore: stateStore)
+        guard status?.isRunning == true else {
             try? handle.close()
+            if process.isRunning {
+                process.terminate()
+            }
             throw AshexError.model(daemonStartupFailureMessage(
                 logURL: logURL,
-                fallback: "Daemon failed to start in background."
+                fallback: process.isRunning
+                    ? "Daemon startup timed out before it reported ready."
+                    : "Daemon failed to start in background."
             ))
         }
         try? handle.close()
 
         print("ash daemon started")
-        print("pid: \(process.processIdentifier)")
+        print("pid: \(status?.pid ?? process.processIdentifier)")
         print("log: \(logURL.path)")
+    }
+
+    static func waitForStartedDaemon(
+        process: Process,
+        stateStore: DaemonProcessStateStore,
+        timeoutSeconds: TimeInterval = 5,
+        pollIntervalNanoseconds: UInt64 = 150_000_000
+    ) async throws -> DaemonProcessStatus? {
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        repeat {
+            if let status = try stateStore.status(), status.isRunning {
+                return status
+            }
+            if !process.isRunning {
+                return try stateStore.status()
+            }
+            try await Task.sleep(nanoseconds: pollIntervalNanoseconds)
+        } while Date() < deadline
+
+        return try stateStore.status()
     }
 
     private static func stop(extraArguments: [String]) throws {

@@ -12,6 +12,7 @@ public struct AshexUserConfig: Codable, Sendable {
     public var dflash: DFlashConfig
     public var optimization: OptimizationConfig
     public var logging: LoggingConfig
+    public var exec: ExecConfig
 
     public init(
         version: Int = 1,
@@ -24,7 +25,8 @@ public struct AshexUserConfig: Codable, Sendable {
         ollama: OllamaConfig = .default,
         dflash: DFlashConfig = .default,
         optimization: OptimizationConfig = .default,
-        logging: LoggingConfig = .default
+        logging: LoggingConfig = .default,
+        exec: ExecConfig = .default
     ) {
         self.version = version
         self.debug = debug
@@ -37,6 +39,7 @@ public struct AshexUserConfig: Codable, Sendable {
         self.dflash = dflash
         self.optimization = optimization
         self.logging = logging
+        self.exec = exec
     }
 
     public static let `default` = AshexUserConfig()
@@ -53,6 +56,7 @@ public struct AshexUserConfig: Codable, Sendable {
         case dflash
         case optimization
         case logging
+        case exec
     }
 
     public init(from decoder: any Decoder) throws {
@@ -68,6 +72,93 @@ public struct AshexUserConfig: Codable, Sendable {
         dflash = try container.decodeIfPresent(DFlashConfig.self, forKey: .dflash) ?? .default
         optimization = try container.decodeIfPresent(OptimizationConfig.self, forKey: .optimization) ?? .default
         logging = try container.decodeIfPresent(LoggingConfig.self, forKey: .logging) ?? .default
+        exec = try container.decodeIfPresent(ExecConfig.self, forKey: .exec) ?? .default
+    }
+}
+
+public enum ExecApprovalPolicyMode: String, Codable, Sendable, CaseIterable {
+    case always
+    case onRequest = "on_request"
+    case never
+}
+
+public struct ExecModelConfig: Codable, Sendable {
+    public var planner: String?
+    public var executor: String?
+    public var vision: String?
+    public var strategy: String
+
+    public init(planner: String? = nil, executor: String? = nil, vision: String? = nil, strategy: String = "sequential") {
+        self.planner = planner
+        self.executor = executor
+        self.vision = vision
+        self.strategy = strategy
+    }
+
+    public static let `default` = ExecModelConfig()
+
+    private enum CodingKeys: String, CodingKey {
+        case planner
+        case executor
+        case vision
+        case strategy
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        planner = try container.decodeIfPresent(String.self, forKey: .planner)
+        executor = try container.decodeIfPresent(String.self, forKey: .executor)
+        vision = try container.decodeIfPresent(String.self, forKey: .vision)
+        strategy = try container.decodeIfPresent(String.self, forKey: .strategy) ?? "sequential"
+    }
+}
+
+public struct ExecConfig: Codable, Sendable {
+    public var defaultSandbox: WorkspaceSandboxMode
+    public var defaultApproval: ExecApprovalPolicyMode
+    public var maxSteps: Int
+    public var models: ExecModelConfig
+
+    public init(
+        defaultSandbox: WorkspaceSandboxMode = .readOnly,
+        defaultApproval: ExecApprovalPolicyMode = .always,
+        maxSteps: Int = 20,
+        models: ExecModelConfig = .default
+    ) {
+        self.defaultSandbox = defaultSandbox
+        self.defaultApproval = defaultApproval
+        self.maxSteps = max(1, maxSteps)
+        self.models = models
+    }
+
+    public static let `default` = ExecConfig()
+
+    private enum CodingKeys: String, CodingKey {
+        case defaultSandbox
+        case defaultApproval
+        case maxSteps
+        case models
+    }
+
+    private enum SnakeCodingKeys: String, CodingKey {
+        case defaultSandbox = "default_sandbox"
+        case defaultApproval = "default_approval"
+        case maxSteps = "max_steps"
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let snakeContainer = try decoder.container(keyedBy: SnakeCodingKeys.self)
+        defaultSandbox = try container.decodeIfPresent(WorkspaceSandboxMode.self, forKey: .defaultSandbox)
+            ?? snakeContainer.decodeIfPresent(WorkspaceSandboxMode.self, forKey: .defaultSandbox)
+            ?? .readOnly
+        defaultApproval = try container.decodeIfPresent(ExecApprovalPolicyMode.self, forKey: .defaultApproval)
+            ?? snakeContainer.decodeIfPresent(ExecApprovalPolicyMode.self, forKey: .defaultApproval)
+            ?? .always
+        maxSteps = max(1, try container.decodeIfPresent(Int.self, forKey: .maxSteps)
+            ?? snakeContainer.decodeIfPresent(Int.self, forKey: .maxSteps)
+            ?? 20)
+        models = try container.decodeIfPresent(ExecModelConfig.self, forKey: .models) ?? .default
     }
 }
 

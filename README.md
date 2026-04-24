@@ -69,13 +69,23 @@ ashex "swift build"
 ashex 'shell: ls -la'
 ```
 
+Run a non-interactive local agent task with safer `exec` defaults:
+
+```bash
+ashex exec -C /path/to/repo "summarize this repo"
+ashex exec --full-auto -C /path/to/repo "run tests and summarize failures"
+ashex exec --yolo -C /path/to/repo "make the requested local edit"
+```
+
+`ashex exec` defaults to `read_only` sandboxing, approval `always`, and writes a JSONL transcript to `WORKSPACE/.ashex/runs/<run-id>.jsonl`.
+
 Useful options:
 
 - `onboard`: open the setup wizard even if saved settings already exist
 - Default workspace: `~/Ashex/DefaultWorkspace`, created on first run so accidental file operations do not target the Ashex source tree
 - `--workspace PATH`: run against a specific project root instead of the default workspace
 - `--storage PATH`: use a specific persistence directory, default `WORKSPACE/.ashex`
-- `--provider mock|openai|anthropic|ollama|dflash`: choose the model provider
+- `--provider mock|openai|anthropic|ollama|esh|dflash`: choose the model provider
 - `--model MODEL`: choose the provider model
 - `--approval-mode trusted|guarded`: choose execution policy, default `trusted`
 - `--onboarding`: alias for `onboard`

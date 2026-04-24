@@ -50,6 +50,43 @@ In guarded mode:
 - Workspace-write sandbox mode protects sensitive paths like `.git`, `.ashex`, `.codex`, and `ashex.config.json` by default.
 - Network policy is enforced for shell execution, including the side terminal pane.
 
+## Exec Mode
+
+`ashex exec` is a non-interactive local agent runner for one-shot terminal tasks:
+
+```bash
+ashex exec -C /path/to/repo "summarize this repo"
+ashex exec --full-auto -C /path/to/repo "run tests"
+ashex exec --yolo -C /path/to/repo "make the requested edit"
+```
+
+Exec defaults are intentionally stricter than the interactive TUI:
+
+- sandbox: `read_only`
+- approval: `always`
+- max steps: `20`
+- transcript: `WORKSPACE/.ashex/runs/<run-id>.jsonl`
+
+Config keys:
+
+```json
+{
+  "exec": {
+    "defaultSandbox": "read_only",
+    "defaultApproval": "always",
+    "maxSteps": 20,
+    "models": {
+      "planner": "qwen3-think",
+      "executor": "qwen3-instruct",
+      "vision": "llama4",
+      "strategy": "sequential"
+    }
+  }
+}
+```
+
+Snake-case aliases such as `default_sandbox`, `default_approval`, and `max_steps` are also accepted.
+
 ## Daemon And Telegram Config
 
 - `daemon.enabled`: reserved toggle for daemon-oriented deployments.

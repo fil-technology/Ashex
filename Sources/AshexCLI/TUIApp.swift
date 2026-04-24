@@ -5190,7 +5190,7 @@ final class TUIApp {
         ]
     }
 
-    private func startDaemonFromTUI() throws {
+    private func startDaemonFromTUI() async throws {
         let stateStore = DaemonProcessStateStore(storageRoot: sessionStorageRoot)
         if let status = try stateStore.status(), status.isRunning {
             daemonStatus = status
@@ -5216,29 +5216,34 @@ final class TUIApp {
         try process.run()
 
         statusLine = "Starting daemon in background"
-        Thread.sleep(forTimeInterval: 0.75)
-        daemonStatus = try stateStore.status()
-        guard process.isRunning || daemonStatus?.isRunning == true else {
+        render()
+        daemonStatus = try await DaemonCLI.waitForStartedDaemon(process: process, stateStore: stateStore)
+        guard daemonStatus?.isRunning == true else {
             try? handle.close()
+            if process.isRunning {
+                process.terminate()
+            }
             throw AshexError.model(DaemonCLI.daemonStartupFailureMessage(
                 logURL: logURL,
-                fallback: "Daemon failed to start in background."
+                fallback: process.isRunning
+                    ? "Daemon startup timed out before it reported ready."
+                    : "Daemon failed to start in background."
             ))
         }
         try? handle.close()
     }
 
-    private func restartDaemonFromTUI(statusPrefix: String) throws {
+    private func restartDaemonFromTUI(statusPrefix: String) async throws {
         DaemonProcessReaper.terminateExistingDaemons()
-        Thread.sleep(forTimeInterval: 0.2)
+        try await Task.sleep(nanoseconds: 200_000_000)
         daemonStatus = nil
-        try startDaemonFromTUI()
+        try await startDaemonFromTUI()
         if daemonStatus?.isRunning == true {
             statusLine = "\(statusPrefix): daemon restarted"
         }
     }
 
-    private func stopDaemonFromTUI() throws {
+    private func stopDaemonFromTUI() async throws {
         let stateStore = DaemonProcessStateStore(storageRoot: sessionStorageRoot)
         guard let status = try stateStore.status(), status.isRunning else {
             daemonStatus = nil
@@ -5251,7 +5256,8 @@ final class TUIApp {
         }
 
         statusLine = "Stopping daemon"
-        Thread.sleep(forTimeInterval: 0.2)
+        render()
+        try await Task.sleep(nanoseconds: 200_000_000)
         daemonStatus = try stateStore.status()
     }
 
@@ -5259,7 +5265,7 @@ final class TUIApp {
         do {
             statusLine = "Restarting daemon"
             render()
-            try restartDaemonFromTUI(statusPrefix: "Startup")
+            try await restartDaemonFromTUI(statusPrefix: "Startup")
             refreshDaemonStatus()
             render()
         } catch {
@@ -5274,10 +5280,10 @@ final class TUIApp {
         do {
             refreshDaemonStatus()
             if daemonStatus?.isRunning == true {
-                try stopDaemonFromTUI()
+                try await stopDaemonFromTUI()
             } else {
                 DaemonProcessReaper.terminateExistingDaemons()
-                try startDaemonFromTUI()
+                try await startDaemonFromTUI()
             }
             refreshDaemonStatus()
             if daemonStatus?.isRunning == true {

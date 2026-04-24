@@ -5,6 +5,10 @@ import Foundation
 struct AshexCLI {
     static func main() async {
         do {
+            if CommandLine.arguments.dropFirst().first == "exec",
+               try await ExecCLI.handle(arguments: CommandLine.arguments) {
+                return
+            }
             if isHelpRequested(arguments: CommandLine.arguments) {
                 print(helpText)
                 return
@@ -115,6 +119,7 @@ struct AshexCLI {
     static let helpText = """
     Usage:
       ashex [options] [prompt]
+      ashex exec [options] [prompt]
       ashex onboard [options]
       ashex daemon <run|start|stop|status> [options]
       ashex benchmark <list|run|compare> [options]
