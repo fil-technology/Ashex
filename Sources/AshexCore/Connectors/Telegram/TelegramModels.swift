@@ -16,12 +16,16 @@ public struct TelegramBotIdentity: Codable, Sendable, Equatable {
 
 public struct TelegramGetMeResponse: Codable, Sendable {
     public let ok: Bool
-    public let result: TelegramBotIdentity
+    public let result: TelegramBotIdentity?
+    public let description: String?
+    public let error_code: Int?
 }
 
 public struct TelegramUpdatesResponse: Codable, Sendable {
     public let ok: Bool
-    public let result: [TelegramUpdate]
+    public let result: [TelegramUpdate]?
+    public let description: String?
+    public let error_code: Int?
 }
 
 public struct TelegramUpdate: Codable, Sendable, Equatable {
@@ -186,12 +190,16 @@ public struct TelegramChat: Codable, Sendable, Equatable {
 
 public struct TelegramSendMessageResponse: Codable, Sendable {
     public let ok: Bool
-    public let result: TelegramMessage
+    public let result: TelegramMessage?
+    public let description: String?
+    public let error_code: Int?
 }
 
 public struct TelegramEditMessageResponse: Codable, Sendable {
     public let ok: Bool
-    public let result: TelegramEditMessageResult
+    public let result: TelegramEditMessageResult?
+    public let description: String?
+    public let error_code: Int?
 }
 
 public enum TelegramEditMessageResult: Codable, Sendable, Equatable {
@@ -220,7 +228,9 @@ public enum TelegramEditMessageResult: Codable, Sendable, Equatable {
 
 public struct TelegramBoolResponse: Codable, Sendable {
     public let ok: Bool
-    public let result: Bool
+    public let result: Bool?
+    public let description: String?
+    public let error_code: Int?
 }
 
 public struct TelegramFile: Codable, Sendable, Equatable {
@@ -239,5 +249,7 @@ public struct TelegramFile: Codable, Sendable, Equatable {
 
 public struct TelegramGetFileResponse: Codable, Sendable {
     public let ok: Bool
-    public let result: TelegramFile
+    public let result: TelegramFile?
+    public let description: String?
+    public let error_code: Int?
 }

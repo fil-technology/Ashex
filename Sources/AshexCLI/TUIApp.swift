@@ -1960,8 +1960,7 @@ final class TUIApp {
             runtime = try makeSessionRuntime()
             if let providerStartupIssue,
                providerStartupIssue.provider == sessionProvider,
-               providerStartupIssue.model == sessionModel,
-               ProviderFailureRouting.isOllamaModelResourceFailure(message: providerStartupIssue.message) {
+               providerStartupIssue.model == sessionModel {
                 statusLine = promptQueue.isEmpty ? "Provider needs attention" : "Prompt queue waiting for model change"
             } else {
                 providerStartupIssue = nil
@@ -2290,7 +2289,6 @@ final class TUIApp {
            providerStartupIssue.provider == sessionProvider,
            providerStartupIssue.model == sessionModel,
            !StorageFailureRouting.isStoragePressure(message: providerStartupIssue.message),
-           !ProviderFailureRouting.isOllamaModelResourceFailure(message: providerStartupIssue.message),
            Self.providerStatusAllowsRuntimeRetry(providerStatus, provider: sessionProvider) {
             self.providerStartupIssue = nil
         }
@@ -5778,6 +5776,17 @@ final class TUIApp {
                 render()
                 return
             }
+            if sessionProvider == "ollama",
+               ProviderFailureRouting.isOllamaModelResourceFailure(message: providerStartupIssue.message),
+               snapshot.headline != "Ollama connection failed",
+               snapshot.guardrailAssessment?.severity != .blocked {
+                self.providerStartupIssue = nil
+                clearProviderAttentionTranscriptIfPresent()
+                statusLine = snapshot.headline
+                processPromptQueueIfPossible()
+                render()
+                return
+            }
             if ProviderFailureRouting.isOllamaModelResourceFailure(message: providerStartupIssue.message) {
                 mergeDiscoveredModelsIntoProviderAttentionStatus(from: snapshot)
                 statusLine = promptQueue.isEmpty ? "Provider needs attention" : "Prompt queue waiting for model change"
@@ -5799,17 +5808,6 @@ final class TUIApp {
                     runFinished = true
                     transcriptScrollOffset = 0
                 }
-                processPromptQueueIfPossible()
-                render()
-                return
-            }
-            if sessionProvider == "ollama",
-               ProviderFailureRouting.isOllamaModelResourceFailure(message: providerStartupIssue.message),
-               snapshot.headline != "Ollama connection failed",
-               snapshot.guardrailAssessment?.severity != .blocked {
-                self.providerStartupIssue = nil
-                clearProviderAttentionTranscriptIfPresent()
-                statusLine = snapshot.headline
                 processPromptQueueIfPossible()
                 render()
                 return

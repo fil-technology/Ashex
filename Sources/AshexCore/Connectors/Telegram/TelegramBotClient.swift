@@ -20,7 +20,11 @@ public struct URLSessionTelegramBotClient: TelegramBotClient {
     public func getMe(token: String) async throws -> TelegramBotIdentity {
         let request = try makeRequest(token: token, method: "getMe")
         let (data, _) = try await session.data(for: request)
-        return try JSONDecoder().decode(TelegramGetMeResponse.self, from: data).result
+        let response = try JSONDecoder().decode(TelegramGetMeResponse.self, from: data)
+        guard response.ok, let result = response.result else {
+            throw AshexError.model(response.description ?? "Telegram error: \(response.error_code ?? 0)")
+        }
+        return result
     }
 
     public func getUpdates(token: String, offset: Int64?, timeoutSeconds: Int) async throws -> [TelegramUpdate] {
@@ -34,7 +38,23 @@ public struct URLSessionTelegramBotClient: TelegramBotClient {
             throw AshexError.model("Failed to build Telegram getUpdates URL")
         }
         let (data, _) = try await session.data(from: url)
-        return try JSONDecoder().decode(TelegramUpdatesResponse.self, from: data).result
+        do {
+            let response = try JSONDecoder().decode(TelegramUpdatesResponse.self, from: data)
+            guard response.ok, let result = response.result else {
+                throw AshexError.model(response.description ?? "Telegram error: \(response.error_code ?? 0)")
+            }
+            return result
+        } catch let DecodingError.dataCorrupted(context) {
+            throw AshexError.model("Telegram decoding error (dataCorrupted): \(context)")
+        } catch let DecodingError.keyNotFound(key, context) {
+            throw AshexError.model("Telegram decoding error (keyNotFound): \(key.stringValue) at \(context.codingPath.map(\.stringValue).joined(separator: "."))")
+        } catch let DecodingError.valueNotFound(value, context) {
+            throw AshexError.model("Telegram decoding error (valueNotFound): \(value) at \(context.codingPath.map(\.stringValue).joined(separator: "."))")
+        } catch let DecodingError.typeMismatch(type, context) {
+            throw AshexError.model("Telegram decoding error (typeMismatch): \(type) at \(context.codingPath.map(\.stringValue).joined(separator: "."))")
+        } catch {
+            throw error
+        }
     }
 
     public func getFile(token: String, fileID: String) async throws -> TelegramFile {
@@ -44,7 +64,11 @@ public struct URLSessionTelegramBotClient: TelegramBotClient {
             throw AshexError.model("Failed to build Telegram getFile URL")
         }
         let (data, _) = try await session.data(from: url)
-        return try JSONDecoder().decode(TelegramGetFileResponse.self, from: data).result
+        let response = try JSONDecoder().decode(TelegramGetFileResponse.self, from: data)
+        guard response.ok, let result = response.result else {
+            throw AshexError.model(response.description ?? "Telegram error: \(response.error_code ?? 0)")
+        }
+        return result
     }
 
     public func downloadFile(token: String, filePath: String) async throws -> Data {
@@ -68,7 +92,11 @@ public struct URLSessionTelegramBotClient: TelegramBotClient {
         }
         request.httpBody = try JSONSerialization.data(withJSONObject: payload)
         let (data, _) = try await session.data(for: request)
-        return try JSONDecoder().decode(TelegramSendMessageResponse.self, from: data).result
+        let response = try JSONDecoder().decode(TelegramSendMessageResponse.self, from: data)
+        guard response.ok, let result = response.result else {
+            throw AshexError.model(response.description ?? "Telegram error: \(response.error_code ?? 0)")
+        }
+        return result
     }
 
     public func editMessageText(token: String, chatID: Int64, messageID: Int64, text: String, parseMode: String?) async throws {
@@ -85,7 +113,10 @@ public struct URLSessionTelegramBotClient: TelegramBotClient {
         }
         request.httpBody = try JSONSerialization.data(withJSONObject: payload)
         let (data, _) = try await session.data(for: request)
-        _ = try JSONDecoder().decode(TelegramEditMessageResponse.self, from: data)
+        let response = try JSONDecoder().decode(TelegramEditMessageResponse.self, from: data)
+        guard response.ok else {
+            throw AshexError.model(response.description ?? "Telegram error: \(response.error_code ?? 0)")
+        }
     }
 
     public func sendChatAction(token: String, chatID: Int64, action: String) async throws {
@@ -97,7 +128,10 @@ public struct URLSessionTelegramBotClient: TelegramBotClient {
             "action": action,
         ])
         let (data, _) = try await session.data(for: request)
-        _ = try JSONDecoder().decode(TelegramBoolResponse.self, from: data)
+        let response = try JSONDecoder().decode(TelegramBoolResponse.self, from: data)
+        guard response.ok else {
+            throw AshexError.model(response.description ?? "Telegram error: \(response.error_code ?? 0)")
+        }
     }
 
     private func makeRequest(token: String, method: String) throws -> URLRequest {
