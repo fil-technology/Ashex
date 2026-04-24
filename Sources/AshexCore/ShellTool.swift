@@ -45,11 +45,17 @@ public struct ShellTool: Tool {
             throw AshexError.invalidToolArguments("shell.command must be a non-empty string")
         }
 
-        try executionPolicy.validate(command: command)
+        try executionPolicy.validate(command: command, approvalGranted: context.approvalGranted)
 
         let timeoutSeconds = TimeInterval(arguments["timeout_seconds"]?.intValue ?? 30)
         let result = try await executionRuntime.execute(
-            .init(command: command, workspaceURL: workspaceURL, timeout: timeoutSeconds, executionPolicy: executionPolicy),
+            .init(
+                command: command,
+                workspaceURL: workspaceURL,
+                timeout: timeoutSeconds,
+                executionPolicy: executionPolicy,
+                approvalGranted: context.approvalGranted
+            ),
             cancellationToken: context.cancellation,
             onStdout: { chunk in
                 context.emit(RuntimeEvent(payload: .toolOutput(

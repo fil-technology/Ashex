@@ -255,7 +255,7 @@ enum DaemonCLI {
     static func waitForStartedDaemon(
         process: Process,
         stateStore: DaemonProcessStateStore,
-        timeoutSeconds: TimeInterval = 5,
+        timeoutSeconds: TimeInterval = 20,
         pollIntervalNanoseconds: UInt64 = 150_000_000
     ) async throws -> DaemonProcessStatus? {
         let deadline = Date().addingTimeInterval(timeoutSeconds)
@@ -441,6 +441,9 @@ enum DaemonCLI {
         }
         if lowercased.contains("cron job") {
             return "Add an enabled cron job or enable Telegram with a valid bot token."
+        }
+        if lowercased.contains("no space left on device") || lowercased.contains("error: other(28)") {
+            return "Free disk space, then start the daemon again. The daemon needs writable storage for its SQLite database, state file, and log."
         }
         return nil
     }

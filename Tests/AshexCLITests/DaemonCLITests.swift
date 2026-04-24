@@ -165,6 +165,20 @@ import Testing
     #expect(message.contains("Action: Save a Telegram bot token"))
 }
 
+@Test func daemonStartupFailureMessageExplainsStorageExhaustion() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let logURL = root.appendingPathComponent("daemon.log")
+    try "SQLite error: No space left on device".write(to: logURL, atomically: true, encoding: .utf8)
+
+    let message = DaemonCLI.daemonStartupFailureMessage(
+        logURL: logURL,
+        fallback: "Daemon failed to start in background."
+    )
+
+    #expect(message.contains("Action: Free disk space"))
+}
+
 @Test func daemonProcessReaperFindsOnlyDaemonRunProcesses() {
     let psOutput = """
       101 /usr/local/bin/ashex daemon run --workspace /tmp/a

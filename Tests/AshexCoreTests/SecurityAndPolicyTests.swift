@@ -103,6 +103,28 @@ import Testing
     }
 }
 
+@Test func shellExecutionPolicyValidationRequiresExplicitApprovalGrant() throws {
+    let policy = ShellExecutionPolicy(
+        sandbox: .default,
+        network: .init(mode: .prompt),
+        shell: ShellCommandPolicy(config: .default)
+    )
+
+    switch policy.assess(command: "curl https://example.com") {
+    case .requireApproval:
+        break
+    default:
+        Issue.record("Expected network command to require approval before validation")
+    }
+
+    #expect(throws: Error.self) {
+        try policy.validate(command: "curl https://example.com")
+    }
+    #expect(throws: Never.self) {
+        try policy.validate(command: "curl https://example.com", approvalGranted: true)
+    }
+}
+
 @Test func shellExecutionPolicyCanDenyNetworkCommands() {
     let policy = ShellExecutionPolicy(
         sandbox: .default,

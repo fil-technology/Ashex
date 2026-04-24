@@ -5,17 +5,20 @@ public struct ToolContext: Sendable {
     public let attachments: [InputAttachment]
     public let emit: RuntimeEventHandler
     public let cancellation: CancellationToken
+    public let approvalGranted: Bool
 
     public init(
         runID: UUID,
         attachments: [InputAttachment] = [],
         emit: @escaping RuntimeEventHandler,
-        cancellation: CancellationToken
+        cancellation: CancellationToken,
+        approvalGranted: Bool = false
     ) {
         self.runID = runID
         self.attachments = attachments
         self.emit = emit
         self.cancellation = cancellation
+        self.approvalGranted = approvalGranted
     }
 }
 

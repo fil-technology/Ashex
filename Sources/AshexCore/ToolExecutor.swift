@@ -89,6 +89,7 @@ struct ToolExecutor: Sendable {
 
         let policyDrivenApprovalRequest = shellApprovalRequest(for: call, runID: runID)
 
+        var approvalGranted = false
         if let approvalRequest = policyDrivenApprovalRequest ?? approvalRequest(for: tool, call: call, runID: runID),
            approvalPolicy.mode == .guarded {
             try emitter.emit(.approvalRequested(
@@ -119,6 +120,7 @@ struct ToolExecutor: Sendable {
                 try emitter.emit(.messageAppended(runID: runID, messageID: toolMessage.id, role: .tool), runID: runID)
                 throw AshexError.approvalDenied("Execution denied for \(tool.name): \(decision.reason)")
             }
+            approvalGranted = true
         }
 
         try emitter.emit(.toolCallStarted(runID: runID, toolCallID: toolCall.id, toolName: tool.name, arguments: call.arguments), runID: runID)
@@ -133,7 +135,8 @@ struct ToolExecutor: Sendable {
                 }
                 try? emitter.emit(payload, runID: runID)
             },
-            cancellation: cancellation
+            cancellation: cancellation,
+            approvalGranted: approvalGranted
         )
 
         do {

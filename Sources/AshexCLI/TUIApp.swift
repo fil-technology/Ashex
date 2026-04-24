@@ -1884,7 +1884,8 @@ final class TUIApp {
             command: command,
             workspaceURL: sessionWorkspaceRoot,
             timeout: 30,
-            executionPolicy: executionPolicy
+            executionPolicy: executionPolicy,
+            approvalGranted: true
         )
 
         terminalTask = Task { [weak self] in

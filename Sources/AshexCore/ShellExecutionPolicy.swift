@@ -45,11 +45,15 @@ public struct ShellExecutionPolicy: Sendable {
         return .allow
     }
 
-    public func validate(command: String) throws {
+    public func validate(command: String, approvalGranted: Bool = false) throws {
         switch assess(command: command) {
         case .allow:
             return
-        case .requireApproval(let message), .deny(let message):
+        case .requireApproval(let message):
+            guard approvalGranted else {
+                throw AshexError.shell(message)
+            }
+        case .deny(let message):
             throw AshexError.shell(message)
         }
     }
