@@ -335,6 +335,47 @@ private final class RecordingExecutionRuntime: ExecutionRuntime, @unchecked Send
     #expect(sawThinkingStatus)
 }
 
+@Test func directChatRunSendsPreparedHistoryToAdapter() async throws {
+    let fileManager = FileManager.default
+    let root = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let dbURL = root.appendingPathComponent(".ashex/test.sqlite")
+    try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+
+    let persistence = SQLitePersistenceStore(databaseURL: dbURL)
+    try persistence.initialize()
+    let thread = try persistence.createThread(now: Date())
+    let oldMarker = "old oversized transcript"
+    _ = try persistence.appendMessage(
+        threadID: thread.id,
+        runID: nil,
+        role: .user,
+        content: oldMarker + "\n" + String(repeating: "history ", count: 30_000),
+        now: Date()
+    )
+
+    let adapter = RecordingDirectChatAdapter()
+    let runtime = try AgentRuntime(
+        modelAdapter: adapter,
+        toolRegistry: ToolRegistry(tools: []),
+        persistence: persistence
+    )
+
+    var droppedMessages = 0
+    var retainedMessages = 0
+    for await event in runtime.run(RunRequest(prompt: "How are you?", threadID: thread.id, mode: .directChat)) {
+        if case .contextPrepared(_, let retained, let dropped, _, _, _) = event.payload {
+            retainedMessages = retained
+            droppedMessages = dropped
+        }
+    }
+
+    let history = await adapter.lastHistory()
+    #expect(droppedMessages > 0)
+    #expect(history.count == retainedMessages)
+    #expect(history.last?.content == "How are you?")
+    #expect(!history.contains { $0.content.contains(oldMarker) })
+}
+
 @Test func directChatRunEmitsReasoningSummaryWhenDebugModeIsEnabled() async throws {
     let fileManager = FileManager.default
     let root = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -1495,6 +1536,31 @@ private actor ReasoningSummaryDirectChatAdapter: DirectChatModelAdapter {
 
     func directReplyEnvelope(history: [MessageRecord], systemPrompt: String, attachments: [InputAttachment]) async throws -> DirectChatReplyEnvelope {
         .init(text: "I'm doing well.", reasoningSummary: "Analyzed the request and considered what to inspect or use.")
+    }
+}
+
+private actor RecordingDirectChatAdapter: DirectChatModelAdapter {
+    let name = "recording-direct-chat"
+    let providerID = "test"
+    let modelID = "recording-direct-chat"
+    private var recordedHistory: [MessageRecord] = []
+
+    func nextAction(for context: ModelContext) async throws -> ModelAction {
+        .finalAnswer("unused")
+    }
+
+    func directReply(history: [MessageRecord], systemPrompt: String) async throws -> String {
+        recordedHistory = history
+        return "I'm doing well."
+    }
+
+    func directReplyEnvelope(history: [MessageRecord], systemPrompt: String, attachments: [InputAttachment]) async throws -> DirectChatReplyEnvelope {
+        recordedHistory = history
+        return .init(text: "I'm doing well.")
+    }
+
+    func lastHistory() -> [MessageRecord] {
+        recordedHistory
     }
 }
 

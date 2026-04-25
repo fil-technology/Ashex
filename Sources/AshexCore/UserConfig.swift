@@ -363,6 +363,7 @@ public enum TelegramAccessMode: String, Codable, Sendable, CaseIterable {
 
 public enum TelegramResponseMode: String, Codable, Sendable, CaseIterable {
     case finalMessage = "final_message"
+    case audioChat = "audio_chat"
 }
 
 public enum WorkspaceSandboxMode: String, Codable, Sendable, CaseIterable {

@@ -56,6 +56,7 @@ final class TUIApp {
         case telegramAllowedChats = "Telegram Chats"
         case telegramAllowedUsers = "Telegram Users"
         case telegramPolicy = "Telegram Safety"
+        case telegramResponseMode = "Telegram Response"
         case telegramTest = "Telegram Test"
         case daemonToggle = "Daemon"
         case daemonStatus = "Daemon Status"
@@ -1188,6 +1189,18 @@ final class TUIApp {
             }
             persistUserConfig()
             statusLine = "Telegram safety mode: \(sessionUserConfig.telegram.executionPolicy.rawValue)"
+        case .telegramResponseMode:
+            let allModes = TelegramResponseMode.allCases
+            if let currentIndex = allModes.firstIndex(of: sessionUserConfig.telegram.responseMode) {
+                let nextIndex = allModes.index(after: currentIndex)
+                sessionUserConfig.telegram.responseMode = nextIndex == allModes.endIndex
+                    ? allModes[allModes.startIndex]
+                    : allModes[nextIndex]
+            } else {
+                sessionUserConfig.telegram.responseMode = .finalMessage
+            }
+            persistUserConfig()
+            statusLine = "Telegram response mode: \(telegramResponseModeLabel(sessionUserConfig.telegram.responseMode))"
         case .telegramTest:
             statusLine = "Testing Telegram connection"
             Task { [weak self] in
@@ -3525,6 +3538,8 @@ final class TUIApp {
                     : sessionUserConfig.telegram.allowedUserIDs.joined(separator: ", ")
             case .telegramPolicy:
                 value = sessionUserConfig.telegram.executionPolicy.rawValue
+            case .telegramResponseMode:
+                value = telegramResponseModeLabel(sessionUserConfig.telegram.responseMode)
             case .telegramTest:
                 value = "Verify bot token with Telegram getMe"
             case .daemonToggle:
@@ -3682,6 +3697,15 @@ final class TUIApp {
         }
 
         return "Missing"
+    }
+
+    private func telegramResponseModeLabel(_ mode: TelegramResponseMode) -> String {
+        switch mode {
+        case .finalMessage:
+            return "Text replies"
+        case .audioChat:
+            return "Audio chat replies"
+        }
     }
 
     private var daemonStatusSummary: String {
@@ -5286,6 +5310,7 @@ final class TUIApp {
         let process = Process()
         process.executableURL = try ExecutableLocator.currentExecutableURL()
         process.arguments = ["daemon", "run"] + currentCLIArgumentsForBackgroundTasks()
+        process.environment = DaemonCLI.explicitStartEnvironment()
         process.currentDirectoryURL = sessionWorkspaceRoot
         process.standardInput = FileHandle(forReadingAtPath: "/dev/null")
         process.standardOutput = handle
@@ -5363,6 +5388,8 @@ final class TUIApp {
             if daemonStatus?.isRunning == true {
                 try await stopDaemonFromTUI()
             } else {
+                sessionUserConfig.daemon.enabled = true
+                persistUserConfig()
                 DaemonProcessReaper.terminateExistingDaemons()
                 try await startDaemonFromTUI()
             }
@@ -5997,6 +6024,27 @@ final class TUIApp {
         guard let selectedModel = installedModels.first else { return nil }
 
         let trimmed = sessionModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let startupIssue = providerStartupIssue,
+           startupIssue.provider == sessionProvider,
+           startupIssue.model == sessionModel,
+           ProviderFailureRouting.isOllamaModelResourceFailure(message: startupIssue.message),
+           let fallbackModel = OllamaModelDisplayOrdering.safestInstalledModelName(
+                from: snapshot.availableModels,
+                excluding: trimmed
+           ) {
+            sessionModel = fallbackModel
+            showModelPicker = false
+            providerStartupIssue = nil
+            refreshSessionRuntime()
+            clearProviderAttentionTranscriptIfPresent()
+            persistSessionSettings()
+            statusLine = "Switched esh to \(fallbackModel) after memory pressure"
+            if showOnboarding, onboardingStep == .model {
+                onboardingStatus = "Selected installed esh model \(fallbackModel)"
+            }
+            return fallbackModel
+        }
+
         let currentModelIsInstalled = installedModels.contains {
             $0.localizedCaseInsensitiveCompare(trimmed) == .orderedSame
         }
@@ -6650,9 +6698,20 @@ enum OllamaModelDisplayOrdering {
     }
 
     static func safestInstalledModelName(from displayNames: [String]) -> String? {
+        safestInstalledModelName(from: displayNames, excluding: nil)
+    }
+
+    static func safestInstalledModelName(from displayNames: [String], excluding excludedModel: String?) -> String? {
         let candidates = displayNames.compactMap(displayModelCandidate(from:))
-        let usableCandidates = candidates.filter { !isDiscouragedChatModel($0.name.lowercased()) }
-        return (usableCandidates.isEmpty ? candidates : usableCandidates)
+        let normalizedExcludedModel = excludedModel?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let eligibleCandidates = candidates.filter { candidate in
+            guard let normalizedExcludedModel, !normalizedExcludedModel.isEmpty else {
+                return true
+            }
+            return candidate.name.lowercased() != normalizedExcludedModel
+        }
+        let usableCandidates = eligibleCandidates.filter { !isDiscouragedChatModel($0.name.lowercased()) }
+        return (usableCandidates.isEmpty ? eligibleCandidates : usableCandidates)
             .sorted { lhs, rhs in
                 let lhsPreference = preferredOnboardingRank(modelName: lhs.name)
                 let rhsPreference = preferredOnboardingRank(modelName: rhs.name)

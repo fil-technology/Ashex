@@ -116,14 +116,13 @@ enum DaemonProcessReaper {
 
         do {
             try process.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
+            let output = String(data: data, encoding: .utf8) ?? ""
+            return daemonProcessIDs(from: output, currentPID: currentPID)
         } catch {
             return []
         }
-
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        let output = String(data: data, encoding: .utf8) ?? ""
-        return daemonProcessIDs(from: output, currentPID: currentPID)
     }
 
     static func daemonProcessIDs(from psOutput: String, currentPID: Int32) -> [Int32] {

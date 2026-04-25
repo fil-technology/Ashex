@@ -485,7 +485,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         Keep answers concise unless the user asks for more detail.
         """
         try emitter.emit(.status(runID: run.id, message: "Thinking about the reply"), runID: run.id)
-        let replyEnvelope = try await adapter.directReplyEnvelope(history: history, systemPrompt: systemPrompt, attachments: request.attachments)
+        let replyEnvelope = try await adapter.directReplyEnvelope(history: preparedContext.retainedMessages, systemPrompt: systemPrompt, attachments: request.attachments)
         if reasoningSummaryDebugEnabled, let summary = replyEnvelope.reasoningSummary, !summary.isEmpty {
             try emitter.emit(.status(runID: run.id, message: "Reasoning summary: \(summary)"), runID: run.id)
         }

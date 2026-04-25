@@ -402,6 +402,7 @@ import Testing
     #expect(ConnectorMessageIntentClassifier.classify("What are the files in current directory?") == .workspaceTask)
     #expect(ConnectorMessageIntentClassifier.classify("List files of the project") == .workspaceTask)
     #expect(ConnectorMessageIntentClassifier.classify("Search for the weather in Petah Tikva Israel") == .workspaceTask)
+    #expect(ConnectorMessageIntentClassifier.classify("Generate an audio saying hello") == .workspaceTask)
     #expect(ConnectorMessageIntentClassifier.classify("Give me simple swift hello world app code") == .directChat)
     #expect(ConnectorMessageIntentClassifier.classify("Create a simple html website for pet store and add Hebrew localization, split into tasks") == .workspaceTask)
     #expect(ConnectorMessageIntentClassifier.classify("Edit this html file to have a simple but beautiful page about the earth") == .workspaceTask)
@@ -531,6 +532,109 @@ import Testing
     #expect(sentMessages.first?.0 == 33)
     #expect(sentMessages.first?.1.contains("<b>Hello</b>") == true)
     #expect(sentMessages.first?.2 == "HTML")
+}
+
+@Test func telegramConnectorSendsOutboundAudioAttachment() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let audioURL = root.appendingPathComponent("reply.wav")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    try Data([0x52, 0x49, 0x46, 0x46]).write(to: audioURL)
+
+    let persistence = SQLitePersistenceStore(databaseURL: root.appendingPathComponent("ashex.sqlite"))
+    try persistence.initialize()
+    let client = MockTelegramBotClient()
+    let connector = TelegramConnector(
+        token: "test-token",
+        config: TelegramConfig(enabled: true),
+        client: client,
+        persistence: persistence
+    )
+    let conversation = ConnectorConversationReference(
+        connectorKind: "telegram",
+        connectorID: "telegram",
+        externalConversationID: "33"
+    )
+
+    try await connector.send(.init(
+        connectorID: "telegram",
+        conversation: conversation,
+        text: "Here is the generated audio.",
+        attachments: [
+            .init(
+                kind: .audio,
+                localPath: audioURL.path,
+                originalFilename: "reply.wav",
+                mimeType: "audio/wav"
+            )
+        ]
+    ))
+
+    let sentMessages = await client.sentMessages
+    let sentAudios = await client.sentAudios
+    #expect(sentMessages.count == 1)
+    #expect(sentMessages.first?.1.contains("generated audio") == true)
+    #expect(sentAudios.count == 1)
+    #expect(sentAudios.first?.0 == 33)
+    #expect(sentAudios.first?.1 == audioURL.path)
+    #expect(sentAudios.first?.2 == "reply.wav")
+    #expect(sentAudios.first?.3 == "audio/wav")
+}
+
+@Test func daemonSupervisorAudioChatModeAttachesSpeechForDirectChatReplies() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let audioURL = root.appendingPathComponent("assistant-reply.aiff")
+    try Data([0x46, 0x4f, 0x52, 0x4d]).write(to: audioURL)
+
+    let persistence = SQLitePersistenceStore(databaseURL: root.appendingPathComponent("ashex.sqlite"))
+    try persistence.initialize()
+    let connector = RecordingConnector()
+    let supervisor = DaemonSupervisor(
+        registry: ConnectorRegistry(connectors: [connector]),
+        router: ConversationRouter(mappingStore: ConnectorConversationMappingStore(persistence: persistence)),
+        dispatcher: RunDispatcher(runtime: FinalTextRuntime(text: "Hello from audio chat.")),
+        persistence: persistence,
+        logger: DaemonLogger(minimumLevel: .error),
+        runStore: DaemonConversationRunStore(),
+        remoteApprovalInbox: RemoteApprovalInbox(persistence: persistence),
+        config: .init(
+            maxIterations: 2,
+            connectorLabel: "telegram",
+            workspaceRootPath: root.path,
+            responseMode: .audioChat,
+            audioReplySynthesizer: { text, _ in
+                #expect(text == "Hello from audio chat.")
+                return InputAttachment(
+                    kind: .audio,
+                    localPath: audioURL.path,
+                    originalFilename: audioURL.lastPathComponent,
+                    mimeType: "audio/aiff"
+                )
+            }
+        )
+    )
+
+    try await supervisor.handle(.init(
+        connectorKind: "telegram",
+        connectorID: "telegram",
+        messageID: "audio-chat-1",
+        conversation: .init(
+            connectorKind: "telegram",
+            connectorID: "telegram",
+            externalConversationID: "chat-audio"
+        ),
+        externalUserID: "44",
+        text: "hello",
+        command: nil
+    ))
+    try await Task.sleep(nanoseconds: 100_000_000)
+
+    let sentMessages = await connector.recordedMessages()
+    let message = try #require(sentMessages.first)
+    #expect(message.text == "Hello from audio chat.")
+    #expect(message.attachments.count == 1)
+    #expect(message.attachments.first?.kind == .audio)
+    #expect(message.attachments.first?.localPath == audioURL.path)
 }
 
 @Test func telegramChatActionResponseDecodesTelegramBoolPayload() throws {
@@ -778,6 +882,51 @@ import Testing
     let sentMessages = await connector.recordedMessages()
     #expect(sentMessages.contains { $0.text.contains("Created folder") })
     #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("Reports").path))
+}
+
+@Test func daemonSupervisorSendsGeneratedAudioFilesFromFinalReply() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let audioURL = root.appendingPathComponent("generated.wav")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    try Data([0x52, 0x49, 0x46, 0x46]).write(to: audioURL)
+
+    let persistence = SQLitePersistenceStore(databaseURL: root.appendingPathComponent("ashex.sqlite"))
+    try persistence.initialize()
+    let connector = RecordingConnector()
+    let supervisor = DaemonSupervisor(
+        registry: ConnectorRegistry(connectors: [connector]),
+        router: ConversationRouter(mappingStore: ConnectorConversationMappingStore(persistence: persistence)),
+        dispatcher: RunDispatcher(runtime: GeneratedAudioRuntime(audioPath: audioURL.path)),
+        persistence: persistence,
+        logger: DaemonLogger(minimumLevel: .error),
+        runStore: DaemonConversationRunStore(),
+        remoteApprovalInbox: RemoteApprovalInbox(persistence: persistence),
+        config: .init(maxIterations: 2, connectorLabel: "telegram", provider: "esh")
+    )
+    let conversation = ConnectorConversationReference(
+        connectorKind: "telegram",
+        connectorID: "telegram",
+        externalConversationID: "chat-33"
+    )
+
+    try await supervisor.handle(.init(
+        connectorKind: "telegram",
+        connectorID: "telegram",
+        messageID: "1001",
+        conversation: conversation,
+        externalUserID: "44",
+        text: "Generate an audio saying hello",
+        command: nil
+    ))
+    try await Task.sleep(nanoseconds: 100_000_000)
+
+    let messages = await connector.recordedMessages()
+    let finalMessage = try #require(messages.last)
+    #expect(finalMessage.text == "Here is the generated audio.")
+    #expect(finalMessage.attachments.count == 1)
+    #expect(finalMessage.attachments.first?.kind == .audio)
+    #expect(finalMessage.attachments.first?.localPath == audioURL.path)
+    #expect(finalMessage.attachments.first?.mimeType == "audio/wav")
 }
 
 @Test func daemonSupervisorModelCommandSwitchesActiveModel() async throws {
@@ -1504,11 +1653,48 @@ private struct ProgressRuntime: RuntimeStreaming, Sendable {
     }
 }
 
+private struct GeneratedAudioRuntime: RuntimeStreaming, Sendable {
+    let audioPath: String
+
+    func run(_ request: RunRequest) -> AsyncStream<RuntimeEvent> {
+        AsyncStream { continuation in
+            let threadID = request.threadID ?? UUID()
+            let runID = UUID()
+            continuation.yield(.init(payload: .runStarted(threadID: threadID, runID: runID)))
+            continuation.yield(.init(payload: .finalAnswer(
+                runID: runID,
+                messageID: UUID(),
+                text: "Here is the generated audio.\n\nGenerated audio file: \(audioPath) (audio/wav)"
+            )))
+            continuation.finish()
+        }
+    }
+}
+
+private struct FinalTextRuntime: RuntimeStreaming, Sendable {
+    let text: String
+
+    func run(_ request: RunRequest) -> AsyncStream<RuntimeEvent> {
+        AsyncStream { continuation in
+            let threadID = request.threadID ?? UUID()
+            let runID = UUID()
+            continuation.yield(.init(payload: .runStarted(threadID: threadID, runID: runID)))
+            continuation.yield(.init(payload: .finalAnswer(
+                runID: runID,
+                messageID: UUID(),
+                text: text
+            )))
+            continuation.finish()
+        }
+    }
+}
+
 private actor MockTelegramBotClient: TelegramBotClient {
     private var updates: [[TelegramUpdate]]
     private let filesByID: [String: TelegramFile]
     private let fileDataByPath: [String: Data]
     private(set) var sentMessages: [(Int64, String, String?)] = []
+    private(set) var sentAudios: [(Int64, String, String?, String?, String?)] = []
     private(set) var editedMessages: [(Int64, Int64, String, String?)] = []
     private(set) var chatActions: [(Int64, String)] = []
 
@@ -1556,6 +1742,17 @@ private actor MockTelegramBotClient: TelegramBotClient {
             chat: TelegramChat(id: chatID, type: "private"),
             date: 0,
             text: text
+        )
+    }
+
+    func sendAudio(token: String, chatID: Int64, audioURL: URL, caption: String?, parseMode: String?, fileName: String?, mimeType: String?) async throws -> TelegramMessage {
+        sentAudios.append((chatID, audioURL.path, fileName, mimeType, caption))
+        return TelegramMessage(
+            messageID: Int64(sentMessages.count + sentAudios.count),
+            from: nil,
+            chat: TelegramChat(id: chatID, type: "private"),
+            date: 0,
+            text: caption
         )
     }
 

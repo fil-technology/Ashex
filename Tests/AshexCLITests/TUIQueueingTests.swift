@@ -176,6 +176,19 @@ import Testing
     #expect(selected == "granite4:1b")
 }
 
+@Test func eshMemoryRecoveryCanChooseDifferentSmallerInstalledModel() {
+    let selected = OllamaModelDisplayOrdering.safestInstalledModelName(
+        from: [
+            "bartowski--llama-3.2-3b-instruct-gguf • gguf",
+            "qwen3:0.6b • mlx",
+            "functiongemma:latest • gguf"
+        ],
+        excluding: "bartowski--llama-3.2-3b-instruct-gguf"
+    )
+
+    #expect(selected == "qwen3:0.6b")
+}
+
 @Test func ollamaModelOrderingShowsCuratedOnboardingModelsFirst() {
     let ordered = OllamaModelDisplayOrdering.orderedDisplayNames(
         [

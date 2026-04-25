@@ -582,6 +582,7 @@ public enum RuntimeToolFactory {
             GitHubRepoTool(executionRuntime: executionRuntime),
             BuildTool(executionRuntime: executionRuntime, workspaceURL: workspaceURL),
             ShellTool(executionRuntime: executionRuntime, workspaceURL: workspaceURL, executionPolicy: shellExecutionPolicy),
+            AudioTool(executionRuntime: executionRuntime, workspaceGuard: workspaceGuard),
             ToolPackScaffoldTool(workspaceGuard: workspaceGuard),
         ]
 

@@ -66,9 +66,11 @@ public final class ProcessExecutionRuntime: ExecutionRuntime {
         let stderrPipe = Pipe()
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
+        let processController = ProcessController(process: process)
 
         let stdoutCollector = OutputCollector(handler: onStdout)
         let stderrCollector = OutputCollector(handler: onStderr)
+        let timeoutState = ProcessTimeoutState()
 
         stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
@@ -85,56 +87,116 @@ public final class ProcessExecutionRuntime: ExecutionRuntime {
         }
 
         try process.run()
+        defer {
+            stdoutPipe.fileHandleForReading.readabilityHandler = nil
+            stderrPipe.fileHandleForReading.readabilityHandler = nil
+            processController.terminateAndWaitIfRunning()
+        }
 
-        let result = try await withThrowingTaskGroup(of: ShellExecutionResult.self) { group in
-            group.addTask {
-                await withCheckedContinuation { continuation in
-                    process.terminationHandler = { _ in
-                        stdoutPipe.fileHandleForReading.readabilityHandler = nil
-                        stderrPipe.fileHandleForReading.readabilityHandler = nil
-                        stdoutCollector.flush(handle: stdoutPipe.fileHandleForReading)
-                        stderrCollector.flush(handle: stderrPipe.fileHandleForReading)
-                        continuation.resume(returning: ShellExecutionResult(
-                            stdout: stdoutCollector.output,
-                            stderr: stderrCollector.output,
-                            exitCode: process.terminationStatus,
-                            timedOut: false
-                        ))
+        let result = try await withTaskCancellationHandler {
+            try await withThrowingTaskGroup(of: ShellExecutionResult.self) { group in
+                group.addTask {
+                    await withCheckedContinuation { continuation in
+                        process.terminationHandler = { _ in
+                            stdoutPipe.fileHandleForReading.readabilityHandler = nil
+                            stderrPipe.fileHandleForReading.readabilityHandler = nil
+                            stdoutCollector.flush(handle: stdoutPipe.fileHandleForReading)
+                            stderrCollector.flush(handle: stderrPipe.fileHandleForReading)
+                            continuation.resume(returning: ShellExecutionResult(
+                                stdout: stdoutCollector.output,
+                                stderr: stderrCollector.output,
+                                exitCode: process.terminationStatus,
+                                timedOut: timeoutState.didTimeOut
+                            ))
+                        }
                     }
                 }
-            }
 
-            group.addTask {
-                try await Task.sleep(for: .seconds(request.timeout))
-                process.terminate()
-                return ShellExecutionResult(
-                    stdout: stdoutCollector.output,
-                    stderr: stderrCollector.output,
-                    exitCode: process.terminationStatus,
-                    timedOut: true
-                )
-            }
+                group.addTask {
+                    try await Task.sleep(for: .seconds(request.timeout))
+                    timeoutState.markTimedOut()
+                    try await processController.terminateAndWaitIfRunningAsync()
+                    return ShellExecutionResult(
+                        stdout: stdoutCollector.output,
+                        stderr: stderrCollector.output,
+                        exitCode: process.terminationStatus,
+                        timedOut: true
+                    )
+                }
 
-            group.addTask {
-                while true {
-                    try await Task.sleep(for: .milliseconds(100))
-                    do {
-                        try await cancellationToken.checkCancellation()
-                    } catch {
-                        process.terminate()
-                        throw error
+                group.addTask {
+                    while true {
+                        try await Task.sleep(for: .milliseconds(100))
+                        do {
+                            try await cancellationToken.checkCancellation()
+                        } catch {
+                            await processController.terminateAndWaitIfRunningAfterCancellation()
+                            throw error
+                        }
                     }
                 }
-            }
 
-            guard let first = try await group.next() else {
-                throw AshexError.shell("Failed to retrieve shell result")
+                guard let first = try await group.next() else {
+                    throw AshexError.shell("Failed to retrieve shell result")
+                }
+                group.cancelAll()
+                return first
             }
-            group.cancelAll()
-            return first
+        } onCancel: {
+            processController.terminate()
         }
 
         return result
+    }
+}
+
+private final class ProcessController: @unchecked Sendable {
+    private let process: Process
+
+    init(process: Process) {
+        self.process = process
+    }
+
+    func terminate() {
+        guard process.isRunning else { return }
+        process.terminate()
+    }
+
+    func terminateAndWaitIfRunning() {
+        guard process.isRunning else { return }
+        process.terminate()
+        process.waitUntilExit()
+    }
+
+    func terminateAndWaitIfRunningAsync() async throws {
+        guard process.isRunning else { return }
+        process.terminate()
+        while process.isRunning {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+    }
+
+    func terminateAndWaitIfRunningAfterCancellation() async {
+        guard process.isRunning else { return }
+        process.terminate()
+        while process.isRunning {
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+    }
+}
+
+private final class ProcessTimeoutState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var timedOut = false
+
+    var didTimeOut: Bool {
+        lock.withLock { timedOut }
+    }
+
+    func markTimedOut() {
+        lock.withLock {
+            timedOut = true
+        }
     }
 }
 

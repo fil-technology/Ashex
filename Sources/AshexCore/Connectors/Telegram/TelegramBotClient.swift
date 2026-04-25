@@ -6,6 +6,7 @@ public protocol TelegramBotClient: Sendable {
     func getFile(token: String, fileID: String) async throws -> TelegramFile
     func downloadFile(token: String, filePath: String) async throws -> Data
     func sendMessage(token: String, chatID: Int64, text: String, parseMode: String?) async throws -> TelegramMessage
+    func sendAudio(token: String, chatID: Int64, audioURL: URL, caption: String?, parseMode: String?, fileName: String?, mimeType: String?) async throws -> TelegramMessage
     func editMessageText(token: String, chatID: Int64, messageID: Int64, text: String, parseMode: String?) async throws
     func sendChatAction(token: String, chatID: Int64, action: String) async throws
 }
@@ -99,6 +100,50 @@ public struct URLSessionTelegramBotClient: TelegramBotClient {
         return result
     }
 
+    public func sendAudio(
+        token: String,
+        chatID: Int64,
+        audioURL: URL,
+        caption: String?,
+        parseMode: String?,
+        fileName: String?,
+        mimeType: String?
+    ) async throws -> TelegramMessage {
+        var request = try makeRequest(token: token, method: "sendAudio")
+        request.httpMethod = "POST"
+        let boundary = "AshexBoundary-\(UUID().uuidString)"
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+
+        var body = Data()
+        appendFormField(name: "chat_id", value: String(chatID), boundary: boundary, to: &body)
+        if let caption, !caption.isEmpty {
+            appendFormField(name: "caption", value: caption, boundary: boundary, to: &body)
+        }
+        if let parseMode, !parseMode.isEmpty {
+            appendFormField(name: "parse_mode", value: parseMode, boundary: boundary, to: &body)
+        }
+        let resolvedFileName = fileName?.isEmpty == false ? fileName! : audioURL.lastPathComponent
+        let resolvedMimeType = mimeType?.isEmpty == false ? mimeType! : Self.mimeType(for: audioURL)
+        let data = try Data(contentsOf: audioURL)
+        appendFileField(
+            name: "audio",
+            fileName: resolvedFileName,
+            mimeType: resolvedMimeType,
+            data: data,
+            boundary: boundary,
+            to: &body
+        )
+        body.appendString("--\(boundary)--\r\n")
+        request.httpBody = body
+
+        let (responseData, _) = try await session.data(for: request)
+        let response = try JSONDecoder().decode(TelegramSendMessageResponse.self, from: responseData)
+        guard response.ok, let result = response.result else {
+            throw AshexError.model(response.description ?? "Telegram error: \(response.error_code ?? 0)")
+        }
+        return result
+    }
+
     public func editMessageText(token: String, chatID: Int64, messageID: Int64, text: String, parseMode: String?) async throws {
         var request = try makeRequest(token: token, method: "editMessageText")
         request.httpMethod = "POST"
@@ -143,5 +188,35 @@ public struct URLSessionTelegramBotClient: TelegramBotClient {
             throw AshexError.model("Failed to build Telegram endpoint for \(method)")
         }
         return url
+    }
+
+    private func appendFormField(name: String, value: String, boundary: String, to body: inout Data) {
+        body.appendString("--\(boundary)\r\n")
+        body.appendString("Content-Disposition: form-data; name=\"\(name)\"\r\n\r\n")
+        body.appendString("\(value)\r\n")
+    }
+
+    private func appendFileField(name: String, fileName: String, mimeType: String, data: Data, boundary: String, to body: inout Data) {
+        body.appendString("--\(boundary)\r\n")
+        body.appendString("Content-Disposition: form-data; name=\"\(name)\"; filename=\"\(fileName)\"\r\n")
+        body.appendString("Content-Type: \(mimeType)\r\n\r\n")
+        body.append(data)
+        body.appendString("\r\n")
+    }
+
+    private static func mimeType(for url: URL) -> String {
+        switch url.pathExtension.lowercased() {
+        case "mp3": return "audio/mpeg"
+        case "wav": return "audio/wav"
+        case "m4a", "mp4": return "audio/mp4"
+        case "ogg", "oga": return "audio/ogg"
+        default: return "application/octet-stream"
+        }
+    }
+}
+
+private extension Data {
+    mutating func appendString(_ string: String) {
+        append(Data(string.utf8))
     }
 }

@@ -402,6 +402,7 @@ public enum PromptBuilder {
             - During validation, prefer checking changed files, `git diff`, focused reads, and relevant test/build commands before concluding.
             - When a patch plan is present in working memory, prefer staying within that planned file set unless new evidence justifies expanding it.
             - If a tool result already contains the needed information, prefer answering directly.
+            - After `audio.generate_speech` succeeds, include the `Generated audio file: ...` line from the tool result in the final answer so connectors can attach the file.
             - Keep final answers concise and useful.
             - Tool arguments must be valid JSON objects.
             - When returning a tool_call, include only the argument keys needed for that tool call.
@@ -418,6 +419,7 @@ public enum PromptBuilder {
             `status`, `current_branch`, `diff_unstaged`, `diff_staged`, `log`, `show_commit`, `init`, `add`, `add_all`, `commit`, `create_branch`, `switch_branch`, `switch_new_branch`, `restore_worktree`, `restore_staged`, `reset_mixed`, `reset_hard`, `clean_force`, `tag`, `merge`, `rebase`, `pull`, `push`.
             For github_repo tool calls, always use the `operation` field with one of:
             `inspect_repository`, `list_files`, `read_file`, `search_text`.
+            For audio tool calls, always use `operation = generate_speech` with `text` and optional `output_path` or `voice`.
             For shell tool calls, always send `command` and optional `timeout_seconds`.
             For installable tools, use the tool's listed operations and argument names exactly as shown in the available tools block.
 
@@ -432,6 +434,7 @@ public enum PromptBuilder {
             {"type":"tool_call","final_answer":null,"tool_name":"git","arguments":{"operation":"status","limit":null,"commit":null}}
             {"type":"tool_call","final_answer":null,"tool_name":"github_repo","arguments":{"operation":"inspect_repository","repository_url":"https://github.com/owner/repo","ref":"main"}}
             {"type":"tool_call","final_answer":null,"tool_name":"github_repo","arguments":{"operation":"read_file","repository_url":"https://github.com/owner/repo","ref":"main","path":"README.md"}}
+            {"type":"tool_call","final_answer":null,"tool_name":"audio","arguments":{"operation":"generate_speech","text":"Hello from Ashex","output_path":"generated-audio/hello.aiff"}}
             {"type":"tool_call","final_answer":null,"tool_name":"git","arguments":{"operation":"add","paths":["README.md","Sources/App.swift"]}}
             {"type":"tool_call","final_answer":null,"tool_name":"git","arguments":{"operation":"commit","message":"Initial project setup","amend":false,"allow_empty":false}}
             {"type":"tool_call","final_answer":null,"tool_name":"shell","arguments":{"command":"ls -la","timeout_seconds":30}}

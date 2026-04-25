@@ -85,11 +85,18 @@ public struct OutboundConnectorMessage: Sendable, Codable {
     public let connectorID: String
     public let conversation: ConnectorConversationReference
     public let text: String
+    public let attachments: [InputAttachment]
 
-    public init(connectorID: String, conversation: ConnectorConversationReference, text: String) {
+    public init(
+        connectorID: String,
+        conversation: ConnectorConversationReference,
+        text: String,
+        attachments: [InputAttachment] = []
+    ) {
         self.connectorID = connectorID
         self.conversation = conversation
         self.text = text
+        self.attachments = attachments
     }
 }
 

@@ -123,6 +123,7 @@ enum DaemonCLICommand: Equatable {
 enum DaemonCLI {
     static let telegramSecretNamespace = "connector.credentials"
     static let telegramSecretKey = "telegram_bot_token"
+    static let explicitStartEnvironmentKey = "ASHEX_DAEMON_EXPLICIT_START"
 
     static func handle(arguments: [String]) async throws -> Bool {
         guard let command = DaemonCLICommand.parse(arguments: arguments) else {
@@ -131,7 +132,12 @@ enum DaemonCLI {
 
         switch command {
         case .daemonRun(let extraArguments):
-            try await run(extraArguments: extraArguments, launchedInBackground: false)
+            let launchedInBackground = ProcessInfo.processInfo.environment[explicitStartEnvironmentKey] == "1"
+            try await run(
+                extraArguments: extraArguments,
+                launchedInBackground: launchedInBackground,
+                explicitStartRequested: true
+            )
         case .daemonStart(let extraArguments):
             try await start(extraArguments: extraArguments)
         case .daemonStop(let extraArguments):
@@ -151,7 +157,11 @@ enum DaemonCLI {
         return true
     }
 
-    private static func run(extraArguments: [String], launchedInBackground: Bool) async throws {
+    private static func run(
+        extraArguments: [String],
+        launchedInBackground: Bool,
+        explicitStartRequested: Bool = false
+    ) async throws {
         let configuration = try CLIConfiguration(arguments: [CommandLine.arguments[0]] + extraArguments)
         let token = resolvedTelegramToken(from: configuration.userConfig.telegram, storageRoot: configuration.storageRoot)
         let persistence = try configuration.makePersistenceStore()
@@ -172,7 +182,15 @@ enum DaemonCLI {
             connectors = []
         }
 
-        guard !connectors.isEmpty || hasCronJobs else {
+        let shouldTreatAsExplicitStart = explicitStartRequested
+            || launchedInBackground
+            || ProcessInfo.processInfo.environment[explicitStartEnvironmentKey] == "1"
+        guard shouldRunDaemon(
+            config: configuration.userConfig,
+            resolvedTelegramToken: token,
+            hasEnabledCronJobs: hasCronJobs,
+            explicitStartRequested: shouldTreatAsExplicitStart
+        ) else {
             throw AshexError.model("Daemon run requires either Telegram to be enabled with a valid bot token or at least one enabled cron job.")
         }
 
@@ -256,7 +274,8 @@ enum DaemonCLI {
                 model: configuration.model,
                 workspaceRootPath: configuration.workspaceRoot.path,
                 sandbox: configuration.userConfig.sandbox,
-                executionPolicy: configuration.userConfig.telegram.executionPolicy
+                executionPolicy: configuration.userConfig.telegram.executionPolicy,
+                responseMode: configuration.userConfig.telegram.responseMode
             )
         )
 
@@ -272,6 +291,26 @@ enum DaemonCLI {
         try await DaemonSignalTrap.waitForTermination()
         await cronScheduler.stop()
         await supervisor.stop()
+    }
+
+    static func shouldRunDaemon(
+        config: AshexUserConfig,
+        resolvedTelegramToken: String?,
+        hasEnabledCronJobs: Bool,
+        explicitStartRequested: Bool = false
+    ) -> Bool {
+        explicitStartRequested
+            || config.daemon.enabled
+            || hasEnabledCronJobs
+            || (config.telegram.enabled && resolvedTelegramToken?.isEmpty == false)
+    }
+
+    static func explicitStartEnvironment(
+        base: [String: String] = ProcessInfo.processInfo.environment
+    ) -> [String: String] {
+        var environment = base
+        environment[explicitStartEnvironmentKey] = "1"
+        return environment
     }
 
     private static func listStandaloneEshModels(configuration: CLIConfiguration) throws -> [String] {
@@ -309,6 +348,7 @@ enum DaemonCLI {
         let process = Process()
         process.executableURL = try ExecutableLocator.currentExecutableURL()
         process.arguments = ["daemon", "run"] + extraArguments
+        process.environment = explicitStartEnvironment()
         process.currentDirectoryURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         process.standardInput = FileHandle(forReadingAtPath: "/dev/null")
         process.standardOutput = handle

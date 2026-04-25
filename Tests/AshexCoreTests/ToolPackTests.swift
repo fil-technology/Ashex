@@ -117,6 +117,7 @@ private final class ToolPackRecordingExecutionRuntime: ExecutionRuntime, @unchec
     #expect(names.contains("git"))
     #expect(names.contains("build"))
     #expect(names.contains("shell"))
+    #expect(names.contains("audio"))
     #expect(names.contains("toolpack"))
     #expect(names.contains("swiftpm"))
     #expect(names.contains("ios_xcode"))

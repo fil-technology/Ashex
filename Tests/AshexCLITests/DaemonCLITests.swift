@@ -213,6 +213,44 @@ import Testing
     #expect(message.contains("Action: Free disk space"))
 }
 
+@Test func daemonCanRunWhenExplicitlyEnabledWithoutConnectorsOrCron() {
+    #expect(DaemonCLI.shouldRunDaemon(
+        config: AshexUserConfig(daemon: .init(enabled: true)),
+        resolvedTelegramToken: nil,
+        hasEnabledCronJobs: false
+    ))
+
+    #expect(!DaemonCLI.shouldRunDaemon(
+        config: .default,
+        resolvedTelegramToken: nil,
+        hasEnabledCronJobs: false
+    ))
+
+    #expect(DaemonCLI.shouldRunDaemon(
+        config: AshexUserConfig(telegram: .init(enabled: true)),
+        resolvedTelegramToken: "token",
+        hasEnabledCronJobs: false
+    ))
+
+    #expect(DaemonCLI.shouldRunDaemon(
+        config: .default,
+        resolvedTelegramToken: nil,
+        hasEnabledCronJobs: true
+    ))
+}
+
+@Test func daemonStartMarksChildProcessAsExplicitStartup() {
+    let environment = DaemonCLI.explicitStartEnvironment(base: [:])
+
+    #expect(environment[DaemonCLI.explicitStartEnvironmentKey] == "1")
+    #expect(DaemonCLI.shouldRunDaemon(
+        config: .default,
+        resolvedTelegramToken: nil,
+        hasEnabledCronJobs: false,
+        explicitStartRequested: environment[DaemonCLI.explicitStartEnvironmentKey] == "1"
+    ))
+}
+
 @Test func daemonProcessReaperFindsOnlyDaemonRunProcesses() {
     let psOutput = """
       101 /usr/local/bin/ashex daemon run --workspace /tmp/a

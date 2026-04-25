@@ -204,11 +204,46 @@ struct EshBridgeModelAdapterTests {
         )
 
         #expect(envelope.text == "heard the audio")
-        let request = try await #require(runner.lastInferRequest())
+        let recordedRequest = await runner.lastInferRequest()
+        let request = try #require(recordedRequest)
         #expect(request.messages.last?.attachments?.first?.kind == "audio")
         #expect(request.messages.last?.attachments?.first?.localPath == audioURL.path)
         #expect(request.messages.last?.attachments?.first?.mimeType == "audio/ogg")
         #expect(request.messages.last?.attachments?.first?.originalFilename == "voice.ogg")
+    }
+
+    @Test func directReplyUsesMultimodalIntentForAudioGenerationPrompt() async throws {
+        let homeURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: homeURL, withIntermediateDirectories: true)
+
+        let runner = RecordingInferRunner(reply: "Generated audio file: /tmp/generated.wav (audio/wav)")
+        let adapter = EshBackedModelAdapter(
+            configuration: .init(
+                executablePath: "/opt/homebrew/bin/esh",
+                homePath: homeURL.path,
+                repoRootPath: FileManager.default.temporaryDirectory.path,
+                model: "audio-model",
+                providerID: "esh",
+                optimization: .init(enabled: true, backend: .esh, mode: .automatic, intent: .agentRun)
+            ),
+            fallback: RecordingFallbackAdapter(),
+            runner: runner,
+            createDirectory: { url in try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true) },
+            removeItem: { _ in }
+        )
+        let thread = ThreadRecord(id: UUID(), createdAt: Date())
+
+        _ = try await adapter.directReplyEnvelope(
+            history: [
+                .init(id: UUID(), threadID: thread.id, runID: nil, role: .user, content: "Generate an audio saying hello", createdAt: Date())
+            ],
+            systemPrompt: "Answer naturally.",
+            attachments: []
+        )
+
+        let recordedRequest = await runner.lastInferRequest()
+        let request = try #require(recordedRequest)
+        #expect(request.intent == "multimodal")
     }
 
     @Test func directReplyFallbackPreservesAttachmentsWhenEshFails() async throws {

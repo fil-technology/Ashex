@@ -403,6 +403,10 @@ private extension EshBackedModelAdapter {
             return configured
         }
 
+        if Self.requestsAudioGeneration(prompt) {
+            return .multimodal
+        }
+
         switch taskKind {
         case .bugFix, .feature, .refactor:
             return .code
@@ -411,6 +415,14 @@ private extension EshBackedModelAdapter {
         case .analysis, .general, .docs, .git, .shell:
             return .chat
         }
+    }
+
+    static func requestsAudioGeneration(_ prompt: String) -> Bool {
+        let lowered = prompt.lowercased()
+        let audioTerms = ["audio", "voice", "speech", "spoken", "tts", "text to speech", "read aloud"]
+        let generationTerms = ["generate", "create", "make", "record", "synthesize", "say", "speak", "read"]
+        return audioTerms.contains(where: lowered.contains)
+            && generationTerms.contains(where: lowered.contains)
     }
 
     func writeSession(

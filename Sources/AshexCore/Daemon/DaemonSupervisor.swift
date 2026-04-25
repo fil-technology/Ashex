@@ -8,6 +8,8 @@ public struct DaemonSupervisorConfig: Sendable {
     public let workspaceRootPath: String
     public let sandbox: SandboxPolicyConfig
     public let executionPolicy: ConnectorExecutionPolicyMode
+    public let responseMode: TelegramResponseMode
+    public let audioReplySynthesizer: (@Sendable (_ text: String, _ workspaceRootPath: String) async throws -> InputAttachment)?
 
     public init(
         maxIterations: Int = 8,
@@ -19,7 +21,9 @@ public struct DaemonSupervisorConfig: Sendable {
             .appendingPathComponent("DefaultWorkspace", isDirectory: true)
             .path,
         sandbox: SandboxPolicyConfig = .default,
-        executionPolicy: ConnectorExecutionPolicyMode = .assistantOnly
+        executionPolicy: ConnectorExecutionPolicyMode = .assistantOnly,
+        responseMode: TelegramResponseMode = .finalMessage,
+        audioReplySynthesizer: (@Sendable (_ text: String, _ workspaceRootPath: String) async throws -> InputAttachment)? = nil
     ) {
         self.maxIterations = maxIterations
         self.connectorLabel = connectorLabel
@@ -28,6 +32,34 @@ public struct DaemonSupervisorConfig: Sendable {
         self.workspaceRootPath = workspaceRootPath
         self.sandbox = sandbox
         self.executionPolicy = executionPolicy
+        self.responseMode = responseMode
+        self.audioReplySynthesizer = audioReplySynthesizer ?? DaemonAudioReplySynthesizer.synthesize
+    }
+}
+
+private enum DaemonAudioReplySynthesizer {
+    static func synthesize(text: String, workspaceRootPath: String) async throws -> InputAttachment {
+        let workspaceURL = URL(fileURLWithPath: workspaceRootPath, isDirectory: true)
+        let outputDirectory = workspaceURL.appendingPathComponent("generated-audio", isDirectory: true)
+        try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
+        let outputURL = outputDirectory.appendingPathComponent("\(UUID().uuidString).aiff")
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/say")
+        process.arguments = ["-o", outputURL.path, text]
+        try process.run()
+        process.waitUntilExit()
+
+        guard process.terminationStatus == 0 else {
+            throw AshexError.shell("/usr/bin/say exited with status \(process.terminationStatus)")
+        }
+
+        return InputAttachment(
+            kind: .audio,
+            localPath: outputURL.path,
+            originalFilename: outputURL.lastPathComponent,
+            mimeType: "audio/aiff"
+        )
     }
 }
 
@@ -347,7 +379,9 @@ public actor DaemonSupervisor {
                     "run_id": .string(result.runID?.uuidString ?? ""),
                 ])
                 let replyText = try await self.decorateReplyIfNeeded(result.finalText, runID: result.runID, conversation: event.conversation)
-                try await self.send(text: replyText, for: event)
+                let replyMedia = Self.extractGeneratedReplyMedia(from: replyText)
+                let outboundMedia = try await self.applyAudioChatModeIfNeeded(to: replyMedia, intent: intent)
+                try await self.send(text: outboundMedia.text, attachments: outboundMedia.attachments, for: event)
             } catch is CancellationError {
                 try? await self.send(text: "Stopped the current run.", for: event)
             } catch {
@@ -393,7 +427,89 @@ public actor DaemonSupervisor {
     }
 
     private func send(text: String, for event: InboundConnectorEvent) async throws {
-        try await registry.send(.init(connectorID: event.connectorID, conversation: event.conversation, text: text))
+        try await send(text: text, attachments: [], for: event)
+    }
+
+    private func send(text: String, attachments: [InputAttachment], for event: InboundConnectorEvent) async throws {
+        try await registry.send(.init(
+            connectorID: event.connectorID,
+            conversation: event.conversation,
+            text: text.isEmpty && !attachments.isEmpty ? "Generated audio." : text,
+            attachments: attachments
+        ))
+    }
+
+    private func applyAudioChatModeIfNeeded(
+        to media: GeneratedReplyMedia,
+        intent: ConnectorMessageIntent
+    ) async throws -> GeneratedReplyMedia {
+        guard config.responseMode == .audioChat,
+              intent == .directChat,
+              !media.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !media.attachments.contains(where: { $0.kind == .audio }),
+              let audioReplySynthesizer = config.audioReplySynthesizer
+        else {
+            return media
+        }
+
+        let attachment = try await audioReplySynthesizer(media.text, config.workspaceRootPath)
+        return .init(text: media.text, attachments: media.attachments + [attachment])
+    }
+
+    private struct GeneratedReplyMedia: Sendable {
+        let text: String
+        let attachments: [InputAttachment]
+    }
+
+    private static func extractGeneratedReplyMedia(from text: String) -> GeneratedReplyMedia {
+        var retainedLines: [String] = []
+        var attachments: [InputAttachment] = []
+
+        for line in text.components(separatedBy: .newlines) {
+            if let attachment = generatedAudioAttachment(from: line) {
+                attachments.append(attachment)
+            } else {
+                retainedLines.append(line)
+            }
+        }
+
+        return GeneratedReplyMedia(
+            text: retainedLines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines),
+            attachments: attachments
+        )
+    }
+
+    private static func generatedAudioAttachment(from line: String) -> InputAttachment? {
+        let prefix = "Generated audio file:"
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.lowercased().hasPrefix(prefix.lowercased()) else {
+            return nil
+        }
+
+        var remainder = trimmed.dropFirst(prefix.count).trimmingCharacters(in: .whitespacesAndNewlines)
+        var mimeType: String?
+        if let open = remainder.lastIndex(of: "("), remainder.hasSuffix(")") {
+            let candidate = remainder[remainder.index(after: open)..<remainder.index(before: remainder.endIndex)]
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if candidate.lowercased().hasPrefix("audio/") {
+                mimeType = candidate
+                remainder = remainder[..<open].trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+
+        guard !remainder.isEmpty else { return nil }
+        let url: URL
+        if let parsedURL = URL(string: String(remainder)), parsedURL.isFileURL {
+            url = parsedURL
+        } else {
+            url = URL(fileURLWithPath: String(remainder))
+        }
+        return InputAttachment(
+            kind: .audio,
+            localPath: url.path,
+            originalFilename: url.lastPathComponent.isEmpty ? nil : url.lastPathComponent,
+            mimeType: mimeType
+        )
     }
 
     private struct ProgressMessageState: Sendable {

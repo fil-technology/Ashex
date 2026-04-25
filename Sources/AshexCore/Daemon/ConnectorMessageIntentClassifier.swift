@@ -37,7 +37,8 @@ public enum ConnectorMessageIntentClassifier {
         ]
         let workspaceCreationObjects = [
             "html", "website", "web site", "page", "landing page", "app", "project",
-            "file", "folder", "directory", "localization", "translation", "css", "javascript"
+            "file", "folder", "directory", "localization", "translation", "css", "javascript",
+            "audio", "voice", "speech", "spoken", "tts", "text to speech", "read aloud"
         ]
         if workspaceCreationVerbs.contains(where: lowered.hasPrefix),
            workspaceCreationObjects.contains(where: lowered.contains) {

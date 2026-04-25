@@ -49,13 +49,32 @@ public actor TelegramConnector: Connector, ConnectorActivityControlling, Connect
         guard let chatID = Int64(message.conversation.externalConversationID) else {
             throw AshexError.model("Invalid Telegram chat ID: \(message.conversation.externalConversationID)")
         }
-        for chunk in Self.chunk(text: message.text, limit: 4000) {
-            _ = try await client.sendMessage(
-                token: token,
-                chatID: chatID,
-                text: TelegramMessageFormatter.format(chunk),
-                parseMode: TelegramMessageFormatter.parseMode
-            )
+        let trimmedText = message.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedText.isEmpty {
+            for chunk in Self.chunk(text: trimmedText, limit: 4000) {
+                _ = try await client.sendMessage(
+                    token: token,
+                    chatID: chatID,
+                    text: TelegramMessageFormatter.format(chunk),
+                    parseMode: TelegramMessageFormatter.parseMode
+                )
+            }
+        }
+        for attachment in message.attachments {
+            switch attachment.kind {
+            case .audio:
+                _ = try await client.sendAudio(
+                    token: token,
+                    chatID: chatID,
+                    audioURL: attachment.fileURL,
+                    caption: attachment.caption,
+                    parseMode: attachment.caption == nil ? nil : TelegramMessageFormatter.parseMode,
+                    fileName: attachment.originalFilename,
+                    mimeType: attachment.mimeType
+                )
+            case .image:
+                continue
+            }
         }
     }
 
