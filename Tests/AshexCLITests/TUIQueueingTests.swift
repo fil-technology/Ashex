@@ -189,6 +189,17 @@ import Testing
     #expect(selected == "qwen3:0.6b")
 }
 
+@Test func eshAudioModelCatalogBuildsProviderQualifiedChoices() {
+    let choices = EshAudioModelCatalog.choices(from: [
+        "audio-model • mlx",
+        "voice-model • gguf"
+    ])
+
+    #expect(choices.map(\.title) == ["esh/audio-model", "esh/voice-model"])
+    #expect(choices.first?.model == "audio-model")
+    #expect(choices.first?.subtitle == "audio-model • mlx")
+}
+
 @Test func ollamaModelOrderingShowsCuratedOnboardingModelsFirst() {
     let ordered = OllamaModelDisplayOrdering.orderedDisplayNames(
         [

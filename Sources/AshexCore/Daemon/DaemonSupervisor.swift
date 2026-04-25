@@ -37,8 +37,8 @@ public struct DaemonSupervisorConfig: Sendable {
     }
 }
 
-private enum DaemonAudioReplySynthesizer {
-    static func synthesize(text: String, workspaceRootPath: String) async throws -> InputAttachment {
+public enum DaemonAudioReplySynthesizer {
+    public static func synthesize(text: String, workspaceRootPath: String) async throws -> InputAttachment {
         let workspaceURL = URL(fileURLWithPath: workspaceRootPath, isDirectory: true)
         let outputDirectory = workspaceURL.appendingPathComponent("generated-audio", isDirectory: true)
         try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
@@ -466,7 +466,7 @@ public actor DaemonSupervisor {
         var attachments: [InputAttachment] = []
 
         for line in text.components(separatedBy: .newlines) {
-            if let attachment = generatedAudioAttachment(from: line) {
+            if let attachment = GeneratedAudioReplyParser.attachment(from: line) {
                 attachments.append(attachment)
             } else {
                 retainedLines.append(line)
@@ -476,39 +476,6 @@ public actor DaemonSupervisor {
         return GeneratedReplyMedia(
             text: retainedLines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines),
             attachments: attachments
-        )
-    }
-
-    private static func generatedAudioAttachment(from line: String) -> InputAttachment? {
-        let prefix = "Generated audio file:"
-        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.lowercased().hasPrefix(prefix.lowercased()) else {
-            return nil
-        }
-
-        var remainder = trimmed.dropFirst(prefix.count).trimmingCharacters(in: .whitespacesAndNewlines)
-        var mimeType: String?
-        if let open = remainder.lastIndex(of: "("), remainder.hasSuffix(")") {
-            let candidate = remainder[remainder.index(after: open)..<remainder.index(before: remainder.endIndex)]
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if candidate.lowercased().hasPrefix("audio/") {
-                mimeType = candidate
-                remainder = remainder[..<open].trimmingCharacters(in: .whitespacesAndNewlines)
-            }
-        }
-
-        guard !remainder.isEmpty else { return nil }
-        let url: URL
-        if let parsedURL = URL(string: String(remainder)), parsedURL.isFileURL {
-            url = parsedURL
-        } else {
-            url = URL(fileURLWithPath: String(remainder))
-        }
-        return InputAttachment(
-            kind: .audio,
-            localPath: url.path,
-            originalFilename: url.lastPathComponent.isEmpty ? nil : url.lastPathComponent,
-            mimeType: mimeType
         )
     }
 
@@ -1399,5 +1366,40 @@ enum DaemonTelegramFailureFormatter {
             "bot api",
         ]
         return markers.contains(where: lowered.contains)
+    }
+}
+
+public enum GeneratedAudioReplyParser {
+    public static func attachment(from line: String) -> InputAttachment? {
+        let prefix = "Generated audio file:"
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.lowercased().hasPrefix(prefix.lowercased()) else {
+            return nil
+        }
+
+        var remainder = trimmed.dropFirst(prefix.count).trimmingCharacters(in: .whitespacesAndNewlines)
+        var mimeType: String?
+        if let open = remainder.lastIndex(of: "("), remainder.hasSuffix(")") {
+            let candidate = remainder[remainder.index(after: open)..<remainder.index(before: remainder.endIndex)]
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if candidate.lowercased().hasPrefix("audio/") {
+                mimeType = candidate
+                remainder = remainder[..<open].trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+
+        guard !remainder.isEmpty else { return nil }
+        let url: URL
+        if let parsedURL = URL(string: String(remainder)), parsedURL.isFileURL {
+            url = parsedURL
+        } else {
+            url = URL(fileURLWithPath: String(remainder))
+        }
+        return InputAttachment(
+            kind: .audio,
+            localPath: url.path,
+            originalFilename: url.lastPathComponent.isEmpty ? nil : url.lastPathComponent,
+            mimeType: mimeType
+        )
     }
 }

@@ -258,6 +258,7 @@ enum DaemonCLI {
             listModels: listModels,
             switchModel: switchModel
         )
+        let audioReplySynthesizer = makeAudioReplySynthesizer(configuration: configuration)
         let supervisor = DaemonSupervisor(
             registry: registry,
             router: router,
@@ -275,7 +276,8 @@ enum DaemonCLI {
                 workspaceRootPath: configuration.workspaceRoot.path,
                 sandbox: configuration.userConfig.sandbox,
                 executionPolicy: configuration.userConfig.telegram.executionPolicy,
-                responseMode: configuration.userConfig.telegram.responseMode
+                responseMode: configuration.userConfig.telegram.responseMode,
+                audioReplySynthesizer: audioReplySynthesizer
             )
         )
 
@@ -577,6 +579,62 @@ enum DaemonCLI {
         case .info: return .info
         case .warning: return .warning
         case .error: return .error
+        }
+    }
+
+    private static func makeAudioReplySynthesizer(
+        configuration: CLIConfiguration
+    ) -> (@Sendable (_ text: String, _ workspaceRootPath: String) async throws -> InputAttachment)? {
+        let resolvedAudioModel = configuration.userConfig.audio.resolvedModel(
+            chatProvider: configuration.provider,
+            chatModel: configuration.model
+        )
+        guard resolvedAudioModel.provider != "local" else {
+            return nil
+        }
+
+        return { text, workspaceRootPath in
+            do {
+                let adapter = try configuration.makeModelAdapter(
+                    provider: resolvedAudioModel.provider,
+                    model: resolvedAudioModel.model
+                )
+                guard let directChatAdapter = adapter as? any DirectChatModelAdapter else {
+                    return try await DaemonAudioReplySynthesizer.synthesize(text: text, workspaceRootPath: workspaceRootPath)
+                }
+
+                let threadID = UUID()
+                let request = """
+                Generate a spoken audio file containing this assistant reply text.
+                Return the generated file as a line beginning with `Generated audio file:`.
+
+                \(text)
+                """
+                let envelope = try await directChatAdapter.directReplyEnvelope(
+                    history: [
+                        MessageRecord(
+                            id: UUID(),
+                            threadID: threadID,
+                            runID: nil,
+                            role: .user,
+                            content: request,
+                            createdAt: Date()
+                        )
+                    ],
+                    systemPrompt: "You are Ashex's audio reply synthesizer. Produce audio output when the selected model supports it.",
+                    attachments: []
+                )
+                if let attachment = envelope.text
+                    .components(separatedBy: .newlines)
+                    .compactMap(GeneratedAudioReplyParser.attachment(from:))
+                    .first {
+                    return attachment
+                }
+            } catch {
+                // Fall back to the local speech synthesizer so Telegram audio mode still replies.
+            }
+
+            return try await DaemonAudioReplySynthesizer.synthesize(text: text, workspaceRootPath: workspaceRootPath)
         }
     }
 }

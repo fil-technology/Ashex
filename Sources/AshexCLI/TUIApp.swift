@@ -7,6 +7,7 @@ final class TUIApp {
     private enum InputMode {
         case prompt
         case model
+        case audioModel
         case apiKey
         case telegramToken
         case telegramAllowedChats
@@ -14,6 +15,11 @@ final class TUIApp {
         case workspacePath
         case terminalCommand
         case onboardingText
+    }
+
+    private enum ModelPickerTarget {
+        case chat
+        case audioEsh
     }
 
     private struct MenuItem {
@@ -48,6 +54,7 @@ final class TUIApp {
         case workspace = "Workspace"
         case provider = "Provider"
         case model = "Model"
+        case audioModel = "Audio Model"
         case apiKey = "API Key"
         case reasoningDebug = "Reasoning Debug"
         case telegramEnabled = "Telegram Enabled"
@@ -69,6 +76,7 @@ final class TUIApp {
         case experimentalProvider
         case apiKey
         case model
+        case audioModel
         case modelDownload
         case telegram
         case telegramToken
@@ -85,6 +93,13 @@ final class TUIApp {
         static let idle = Self(
             headline: "Status not checked yet",
             details: ["Open settings and choose Refresh Status to verify the active provider."],
+            availableModels: [],
+            guardrailAssessment: nil
+        )
+
+        static let audioIdle = Self(
+            headline: "Audio model status not checked yet",
+            details: ["Choose Refresh Status to ask `esh capabilities` for installed audio-capable models."],
             availableModels: [],
             guardrailAssessment: nil
         )
@@ -176,6 +191,7 @@ final class TUIApp {
     private var modelSearchQuery = ""
     private var promptText = ""
     private var modelInput = ""
+    private var audioModelInput = ""
     private var apiKeyInput = ""
     private var telegramTokenInput = ""
     private var telegramAllowedChatsInput = ""
@@ -190,6 +206,7 @@ final class TUIApp {
     private var showHistory = false
     private var showSettings = false
     private var showModelPicker = false
+    private var modelPickerTarget: ModelPickerTarget = .chat
     private var showTerminalPane = false
     private var statusLine = "Ready"
     private var runLines: [String] = []
@@ -204,6 +221,7 @@ final class TUIApp {
     private var settingsScrollOffset = 0
     private var showToolDetails = false
     private var providerStatus = ProviderStatusSnapshot.idle
+    private var audioProviderStatus = ProviderStatusSnapshot.audioIdle
     private var daemonStatus: DaemonProcessStatus?
     private var daemonStartInProgress = false
     private var daemonLastError: String?
@@ -357,9 +375,7 @@ final class TUIApp {
     }
 
     private static func selectableModelName(from displayName: String) -> String? {
-        let trimmed = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        return trimmed.components(separatedBy: " • ").first?.trimmingCharacters(in: .whitespacesAndNewlines)
+        ModelCatalogDisplay.selectableModelName(from: displayName)
     }
 
     func run() async throws {
@@ -685,6 +701,9 @@ final class TUIApp {
         case .model:
             commitModelInput()
             return
+        case .audioModel:
+            commitAudioModelInput()
+            return
         case .apiKey:
             commitAPIKeyInput()
             return
@@ -752,6 +771,11 @@ final class TUIApp {
             modelInput.removeLast()
             focus = .input
             statusLine = "Editing model"
+        case .audioModel:
+            guard !audioModelInput.isEmpty else { return }
+            audioModelInput.removeLast()
+            focus = .input
+            statusLine = "Editing audio model"
         case .apiKey:
             guard !apiKeyInput.isEmpty else { return }
             apiKeyInput.removeLast()
@@ -814,6 +838,10 @@ final class TUIApp {
                 modelInput = ""
                 statusLine = "Cleared model input"
                 return
+            case .audioModel where !audioModelInput.isEmpty:
+                audioModelInput = ""
+                statusLine = "Cleared audio model input"
+                return
             case .apiKey where !apiKeyInput.isEmpty:
                 apiKeyInput = ""
                 statusLine = "Cleared API key input"
@@ -839,6 +867,11 @@ final class TUIApp {
                 statusLine = "Cleared terminal input"
                 return
             case .model:
+                inputMode = .prompt
+                focus = showSettings ? .settings : .launcher
+                statusLine = "Back to settings"
+                return
+            case .audioModel:
                 inputMode = .prompt
                 focus = showSettings ? .settings : .launcher
                 statusLine = "Back to settings"
@@ -896,6 +929,7 @@ final class TUIApp {
             if showModelPicker {
                 showModelPicker = false
                 modelSearchQuery = ""
+                modelPickerTarget = .chat
                 statusLine = "Closed model picker"
                 return
             }
@@ -977,6 +1011,9 @@ final class TUIApp {
         case .model:
             modelInput.append(character)
             statusLine = "Editing model"
+        case .audioModel:
+            audioModelInput.append(character)
+            statusLine = "Editing audio model"
         case .apiKey:
             apiKeyInput.append(character)
             statusLine = "Editing API key"
@@ -1121,6 +1158,7 @@ final class TUIApp {
         case .provider:
             cycleProvider()
         case .model:
+            modelPickerTarget = .chat
             if !providerPickerModels.isEmpty {
                 showModelPicker = true
                 modelSearchQuery = ""
@@ -1132,6 +1170,20 @@ final class TUIApp {
                 modelInput = sessionModel
                 focus = .input
                 statusLine = "Edit model and press Enter to apply"
+            }
+        case .audioModel:
+            modelPickerTarget = .audioEsh
+            if !providerPickerModels.isEmpty {
+                showModelPicker = true
+                modelSearchQuery = ""
+                modelPickerSelection = selectedProviderModelPickerIndex()
+                focus = .settings
+                statusLine = "Choose or search an esh audio model and press Enter"
+            } else {
+                inputMode = .audioModel
+                audioModelInput = audioModelInputValue()
+                focus = .input
+                statusLine = "Enter reuse, local, or provider/model for audio replies"
             }
         case .apiKey:
             inputMode = .apiKey
@@ -1264,6 +1316,21 @@ final class TUIApp {
             }
             choices.append(OnboardingChoice(title: "Skip model", subtitle: "Use \(sessionModel)"))
             return choices
+        case .audioModel:
+            let chatSupportsVoice = AudioModelSupport.supportsVoice(provider: sessionProvider, model: sessionModel)
+            var choices: [OnboardingChoice] = [
+                .init(
+                    title: "Reuse chat model",
+                    subtitle: chatSupportsVoice
+                        ? "\(sessionProvider)/\(sessionModel) supports voice-capable audio"
+                        : "\(sessionProvider)/\(sessionModel) is not voice-capable; audio replies will use local speech until you choose another model"
+                ),
+                .init(title: "Use local speech", subtitle: "Use macOS speech synthesis for Telegram audio replies")
+            ]
+            choices.append(contentsOf: audioModelChoicesFromEshStatus())
+            choices.append(.init(title: "Enter separate audio model", subtitle: "Type provider/model, for example esh/voice-model"))
+            choices.append(.init(title: "Refresh audio models", subtitle: "Ask `esh capabilities` for installed audio-capable models"))
+            return choices
         case .modelDownload:
             return [
                 .init(title: "Pull model", subtitle: "Type an Ollama model name below, then press Enter"),
@@ -1298,6 +1365,12 @@ final class TUIApp {
         }
     }
 
+    private func audioModelChoicesFromEshStatus() -> [OnboardingChoice] {
+        EshAudioModelCatalog.choices(from: audioProviderStatus.availableModels).map {
+            OnboardingChoice(title: $0.title, subtitle: $0.subtitle)
+        }
+    }
+
     private func moveOnboardingSelection(_ delta: Int) {
         let choices = onboardingChoices
         guard !choices.isEmpty else { return }
@@ -1318,6 +1391,8 @@ final class TUIApp {
             skipOnboardingStep()
         case "r" where onboardingStep == .model, "R" where onboardingStep == .model:
             refreshOnboardingModels()
+        case "r" where onboardingStep == .audioModel, "R" where onboardingStep == .audioModel:
+            refreshOnboardingAudioModels()
         case "d" where onboardingStep == .model && sessionProvider == "ollama",
              "D" where onboardingStep == .model && sessionProvider == "ollama":
             beginOnboardingText(step: .modelDownload, placeholderStatus: "Type an Ollama model name to download")
@@ -1360,13 +1435,15 @@ final class TUIApp {
             }
         case .model:
             handleOnboardingModelChoice()
+        case .audioModel:
+            handleOnboardingAudioModelChoice()
         case .modelDownload:
             if inputMode == .onboardingText {
                 commitOnboardingModelDownload()
             } else if onboardingSelection == 0 {
                 beginOnboardingText(step: .modelDownload, placeholderStatus: "Type an Ollama model name to download")
             } else {
-                advanceOnboarding(to: .telegram)
+                advanceOnboarding(to: .audioModel)
             }
         case .telegram:
             if onboardingSelection == 0 {
@@ -1422,19 +1499,58 @@ final class TUIApp {
             refreshOnboardingModels()
         case "Skip model":
             selectSafestOnboardingOllamaModelIfNeeded()
-            advanceOnboarding(to: .telegram)
+            advanceOnboarding(to: .audioModel)
         default:
             sessionModel = choice
             refreshSessionRuntime()
             persistSessionSettings()
             onboardingStatus = "Selected model \(sessionModel)"
+            advanceOnboarding(to: .audioModel)
+        }
+    }
+
+    private func handleOnboardingAudioModelChoice() {
+        let choices = onboardingChoices
+        guard choices.indices.contains(onboardingSelection) else { return }
+        let choice = choices[onboardingSelection].title
+
+        switch choice {
+        case "Reuse chat model":
+            sessionUserConfig.audio = AudioConfig(selection: .reuseChatModel)
+            persistUserConfig()
+            onboardingStatus = "Audio model follows the chat model"
+            advanceOnboarding(to: .telegram)
+        case "Use local speech":
+            sessionUserConfig.audio = AudioConfig(selection: .localSpeech)
+            persistUserConfig()
+            onboardingStatus = "Audio replies use local macOS speech"
+            advanceOnboarding(to: .telegram)
+        case "Enter separate audio model":
+            beginOnboardingText(step: .audioModel, placeholderStatus: "Type audio model as provider/model")
+        case "Refresh audio models":
+            refreshOnboardingAudioModels()
+        case let selected where selected.hasPrefix("esh/"):
+            let model = String(selected.dropFirst("esh/".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !model.isEmpty else {
+                onboardingStatus = "Selected esh audio model was empty"
+                return
+            }
+            sessionUserConfig.audio = AudioConfig(selection: .separateModel, provider: "esh", model: model)
+            persistUserConfig()
+            onboardingStatus = "Audio model set to \(audioModelStatusLabel())"
+            advanceOnboarding(to: .telegram)
+        default:
             advanceOnboarding(to: .telegram)
         }
     }
 
     private func beginOnboardingText(step: OnboardingStep, placeholderStatus: String) {
         onboardingStep = step
-        onboardingTextInput = step == .model ? sessionModel : ""
+        onboardingTextInput = step == .model
+            ? sessionModel
+            : step == .audioModel
+                ? audioModelInputValue()
+                : ""
         inputMode = .onboardingText
         focus = .input
         onboardingSelection = 0
@@ -1463,14 +1579,17 @@ final class TUIApp {
             return true
         case .model:
             guard !trimmed.isEmpty else {
-                advanceOnboarding(to: .telegram)
+                advanceOnboarding(to: .audioModel)
                 return true
             }
             sessionModel = trimmed
             refreshSessionRuntime()
             persistSessionSettings()
             onboardingStatus = "Selected model \(sessionModel)"
-            advanceOnboarding(to: .telegram)
+            advanceOnboarding(to: .audioModel)
+            return true
+        case .audioModel:
+            commitOnboardingAudioModelInput(trimmed)
             return true
         case .telegramToken:
             commitOnboardingTelegramToken()
@@ -1503,6 +1622,27 @@ final class TUIApp {
         advanceOnboarding(to: .daemon)
     }
 
+    private func commitOnboardingAudioModelInput(_ trimmed: String) {
+        guard !trimmed.isEmpty else {
+            sessionUserConfig.audio = AudioConfig(selection: .reuseChatModel)
+            persistUserConfig()
+            onboardingStatus = "Audio model follows the chat model"
+            advanceOnboarding(to: .telegram)
+            return
+        }
+
+        let parsed = parseAudioModelInput(trimmed)
+        if let config = parsed.config {
+            sessionUserConfig.audio = config
+            persistUserConfig()
+            onboardingStatus = "Audio model set to \(audioModelStatusLabel())"
+            advanceOnboarding(to: .telegram)
+        } else if let message = parsed.error {
+            onboardingStatus = message
+            beginOnboardingText(step: .audioModel, placeholderStatus: message)
+        }
+    }
+
     private func skipOnboardingTelegramToken() {
         sessionUserConfig.telegram.enabled = false
         persistUserConfig()
@@ -1513,14 +1653,14 @@ final class TUIApp {
     private func commitOnboardingModelDownload() {
         let modelName = onboardingTextInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !modelName.isEmpty else {
-            advanceOnboarding(to: .telegram)
+            advanceOnboarding(to: .audioModel)
             return
         }
         guard sessionProvider == "ollama" else {
             sessionModel = modelName
             refreshSessionRuntime()
             persistSessionSettings()
-            advanceOnboarding(to: .telegram)
+            advanceOnboarding(to: .audioModel)
             return
         }
 
@@ -1540,7 +1680,7 @@ final class TUIApp {
                 } else {
                     self.onboardingStatus = "Download failed: \(result.message ?? "unknown error")"
                 }
-                self.advanceOnboarding(to: .telegram)
+                self.advanceOnboarding(to: .audioModel)
             }
         }
     }
@@ -1581,10 +1721,26 @@ final class TUIApp {
         }
     }
 
+    private func refreshOnboardingAudioModels() {
+        onboardingStatus = "Refreshing esh audio models..."
+        Task { [weak self] in
+            await self?.refreshAudioProviderStatus()
+            await MainActor.run {
+                guard let self else { return }
+                self.onboardingSelection = min(self.onboardingSelection, max(self.onboardingChoices.count - 1, 0))
+                self.onboardingStatus = self.audioProviderStatus.availableModels.isEmpty
+                    ? self.audioProviderStatus.headline
+                    : "Discovered \(self.audioProviderStatus.availableModels.count) esh audio model(s)"
+                self.render()
+            }
+        }
+    }
+
     private func applyOnboardingProvider(_ provider: String) {
         sessionProvider = provider
         sessionModel = CLIConfiguration.defaultModel(for: provider)
         showModelPicker = false
+        modelPickerTarget = .chat
         providerStartupIssue = nil
         refreshSessionRuntime()
         persistSessionSettings()
@@ -1605,6 +1761,8 @@ final class TUIApp {
         case .apiKey:
             advanceOnboarding(to: .model)
         case .model, .modelDownload:
+            advanceOnboarding(to: .audioModel)
+        case .audioModel:
             advanceOnboarding(to: .telegram)
         case .telegram, .telegramToken:
             advanceOnboarding(to: .daemon)
@@ -1647,6 +1805,8 @@ final class TUIApp {
         showWorkspaces = false
         showCommands = false
         showHelp = false
+        showModelPicker = false
+        modelPickerTarget = .chat
         if sessionProvider == "ollama" {
             providerStartupIssue = nil
         }
@@ -1663,6 +1823,7 @@ final class TUIApp {
         sessionProvider = nextProvider
         sessionModel = CLIConfiguration.defaultModel(for: nextProvider)
         showModelPicker = false
+        modelPickerTarget = .chat
         providerStartupIssue = nil
         if Self.isProviderAttentionTranscript(runLines) {
             runLines = []
@@ -1764,20 +1925,82 @@ final class TUIApp {
         }
     }
 
+    private func commitAudioModelInput() {
+        let trimmed = audioModelInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let parsed = parseAudioModelInput(trimmed)
+        if let config = parsed.config {
+            sessionUserConfig.audio = config
+            persistUserConfig()
+            inputMode = .prompt
+            focus = showSettings ? .settings : .launcher
+            statusLine = "Audio model updated: \(audioModelStatusLabel())"
+        } else if let message = parsed.error {
+            statusLine = message
+        }
+    }
+
+    private func parseAudioModelInput(_ input: String) -> (config: AudioConfig?, error: String?) {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return (nil, "Audio model is empty. Use reuse, local, or provider/model.")
+        }
+
+        let lowered = trimmed.lowercased()
+        if lowered == "reuse" || lowered == "chat" || lowered == "same" || lowered == "reuse_chat_model" {
+            return (AudioConfig(selection: .reuseChatModel), nil)
+        }
+        if lowered == "local" || lowered == "macos" || lowered == "macos-say" || lowered == "local_speech" {
+            return (AudioConfig(selection: .localSpeech), nil)
+        }
+
+        let pieces = trimmed.split(separator: "/", maxSplits: 1).map {
+            String($0).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        if pieces.count == 2, !pieces[0].isEmpty, !pieces[1].isEmpty {
+            return (AudioConfig(selection: .separateModel, provider: pieces[0], model: pieces[1]), nil)
+        }
+        if pieces.count == 1, !pieces[0].isEmpty {
+            return (AudioConfig(selection: .separateModel, provider: sessionProvider, model: pieces[0]), nil)
+        }
+
+        return (nil, "Use reuse, local, model, or provider/model.")
+    }
+
+    private func audioModelInputValue() -> String {
+        switch sessionUserConfig.audio.selection {
+        case .reuseChatModel:
+            return "reuse"
+        case .localSpeech:
+            return "local"
+        case .separateModel:
+            if let provider = sessionUserConfig.audio.provider, let model = sessionUserConfig.audio.model {
+                return "\(provider)/\(model)"
+            }
+            return "reuse"
+        }
+    }
+
+    private func audioModelStatusLabel() -> String {
+        let resolved = sessionUserConfig.audio.resolvedModel(chatProvider: sessionProvider, chatModel: sessionModel)
+        switch sessionUserConfig.audio.selection {
+        case .reuseChatModel:
+            if resolved.usesChatModel {
+                return "Reuse chat model (\(resolved.provider)/\(resolved.model))"
+            }
+            return "Reuse chat model; fallback local speech"
+        case .localSpeech:
+            return "Local macOS speech"
+        case .separateModel:
+            return "\(resolved.provider)/\(resolved.model)"
+        }
+    }
+
     private var providerPickerModels: [String] {
         providerPickerDisplayModels.compactMap(Self.selectableModelName(from:))
     }
 
     private var providerPickerDisplayModels: [String] {
-        let displayModels: [String]
-        if sessionProvider == "ollama" {
-            displayModels = OllamaModelDisplayOrdering.orderedDisplayNames(
-                providerStatus.availableModels,
-                selectedModel: sessionModel
-            )
-        } else {
-            displayModels = providerStatus.availableModels
-        }
+        let displayModels = unfilteredProviderPickerDisplayModels()
 
         let query = modelSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else {
@@ -1786,28 +2009,64 @@ final class TUIApp {
         return displayModels.filter { $0.localizedCaseInsensitiveContains(query) }
     }
 
+    private func unfilteredProviderPickerDisplayModels() -> [String] {
+        switch modelPickerTarget {
+        case .chat:
+            if sessionProvider == "ollama" {
+                return OllamaModelDisplayOrdering.orderedDisplayNames(
+                    providerStatus.availableModels,
+                    selectedModel: sessionModel
+                )
+            }
+            return providerStatus.availableModels
+        case .audioEsh:
+            return audioProviderStatus.availableModels
+        }
+    }
+
     private func selectedProviderModelPickerIndex() -> Int {
         let models = providerPickerModels
         guard !models.isEmpty else { return 0 }
-        return models.firstIndex(of: sessionModel) ?? 0
+        let selectedModel: String
+        switch modelPickerTarget {
+        case .chat:
+            selectedModel = sessionModel
+        case .audioEsh:
+            selectedModel = sessionUserConfig.audio.provider == "esh"
+                ? sessionUserConfig.audio.model ?? ""
+                : ""
+        }
+        return models.firstIndex {
+            $0.localizedCaseInsensitiveCompare(selectedModel) == .orderedSame
+        } ?? 0
     }
 
     private func commitSelectedProviderModel() {
         let models = providerPickerModels
         guard !models.isEmpty else {
+            let providerLabel = modelPickerTarget == .audioEsh ? "esh audio" : sessionProvider
             statusLine = modelSearchQuery.isEmpty
-                ? "No \(sessionProvider) models available yet. Refresh status first."
-                : "No \(sessionProvider) models match \(modelSearchQuery)"
+                ? "No \(providerLabel) models available yet. Refresh status first."
+                : "No \(providerLabel) models match \(modelSearchQuery)"
             return
         }
 
         let index = min(max(modelPickerSelection, 0), models.count - 1)
-        sessionModel = models[index]
+        let selectedModel = models[index]
         showModelPicker = false
         modelSearchQuery = ""
-        refreshSessionRuntime()
-        persistSessionSettings()
-        statusLine = "Model updated to \(sessionModel)"
+        switch modelPickerTarget {
+        case .chat:
+            sessionModel = selectedModel
+            refreshSessionRuntime()
+            persistSessionSettings()
+            statusLine = "Model updated to \(sessionModel)"
+        case .audioEsh:
+            sessionUserConfig.audio = AudioConfig(selection: .separateModel, provider: "esh", model: selectedModel)
+            persistUserConfig()
+            statusLine = "Audio model updated: \(audioModelStatusLabel())"
+        }
+        modelPickerTarget = .chat
 
         Task { [weak self] in
             await self?.refreshProviderStatus()
@@ -3225,7 +3484,7 @@ final class TUIApp {
     }
 
     private func renderOnboardingWizardLines(width: Int, maxBodyHeight: Int) -> [String] {
-        let allSteps: [OnboardingStep] = [.provider, .apiKey, .model, .telegram, .daemon, .done]
+        let allSteps: [OnboardingStep] = [.provider, .apiKey, .model, .audioModel, .telegram, .daemon, .done]
         let stepIndex = allSteps.firstIndex(of: onboardingStep).map { $0 + 1 } ?? allSteps.count
         var lines: [String] = [
             "\(TerminalUIStyle.faint)Step \(min(stepIndex, allSteps.count))/\(allSteps.count) • Enter accepts • s skips • Esc closes setup\(TerminalUIStyle.reset)",
@@ -3238,6 +3497,7 @@ final class TUIApp {
         lines.append("")
         lines.append("\(TerminalUIStyle.ink)Current setup\(TerminalUIStyle.reset)")
         lines.append("\(TerminalUIStyle.slate)Provider: \(sessionProvider)   Model: \(sessionModel)\(TerminalUIStyle.reset)")
+        lines.append("\(TerminalUIStyle.slate)Audio: \(audioModelStatusLabel())\(TerminalUIStyle.reset)")
         lines.append("\(TerminalUIStyle.slate)Telegram: \(sessionUserConfig.telegram.enabled ? "enabled" : "disabled")   Daemon: \(daemonStatus?.isRunning == true ? "running" : "stopped")\(TerminalUIStyle.reset)")
         let status = onboardingStatus.isEmpty ? "Choose an option to continue." : onboardingStatus
         lines.append("\(TerminalUIStyle.amber)Status: \(TerminalUIStyle.truncateVisible(status, limit: max(width - 8, 10)))\(TerminalUIStyle.reset)")
@@ -3246,6 +3506,12 @@ final class TUIApp {
             lines.append("")
             lines.append("\(TerminalUIStyle.ink)Provider status\(TerminalUIStyle.reset)")
             for detail in providerStatus.details.prefix(3) {
+                lines.append("\(TerminalUIStyle.slate)\(TerminalUIStyle.truncateVisible(detail, limit: width))\(TerminalUIStyle.reset)")
+            }
+        } else if onboardingStep == .audioModel, !audioProviderStatus.details.isEmpty {
+            lines.append("")
+            lines.append("\(TerminalUIStyle.ink)Audio model status\(TerminalUIStyle.reset)")
+            for detail in audioProviderStatus.details.prefix(3) {
                 lines.append("\(TerminalUIStyle.slate)\(TerminalUIStyle.truncateVisible(detail, limit: width))\(TerminalUIStyle.reset)")
             }
         }
@@ -3272,6 +3538,9 @@ final class TUIApp {
         } else if onboardingStep == .model {
             lines.append("")
             lines.append("\(TerminalUIStyle.faint)Shortcut: press r to refresh the model list.\(TerminalUIStyle.reset)")
+        } else if onboardingStep == .audioModel {
+            lines.append("")
+            lines.append("\(TerminalUIStyle.faint)Shortcut: press r to refresh esh audio models.\(TerminalUIStyle.reset)")
         }
 
         let bodyLimit = max(maxBodyHeight - 3, 1)
@@ -3295,6 +3564,8 @@ final class TUIApp {
             return "Add the API key for \(sessionProvider.capitalized)"
         case .model:
             return "Choose a model"
+        case .audioModel:
+            return "Choose the audio model"
         case .modelDownload:
             return "Download an Ollama model"
         case .telegram:
@@ -3318,6 +3589,8 @@ final class TUIApp {
             return "Keys are stored in `.ashex/secrets.json`, not in the project config. You can also skip and add one later from Assistant Setup."
         case .model:
             return "Pick a discovered model, enter one manually, or download an Ollama model if you are using Ollama."
+        case .audioModel:
+            return "Audio replies can reuse a voice-capable chat model, use local macOS speech, or point at a separate provider/model. You can change this later in Assistant Setup."
         case .modelDownload:
             return "Ashex will run `ollama pull <model>` and select the model after it finishes."
         case .telegram:
@@ -3518,6 +3791,8 @@ final class TUIApp {
                 value = sessionProvider
             case .model:
                 value = sessionModel
+            case .audioModel:
+                value = audioModelStatusLabel()
             case .apiKey:
                 value = apiKeyStatusLabel(for: sessionProvider)
             case .reasoningDebug:
@@ -3575,20 +3850,28 @@ final class TUIApp {
         }
 
         lines.append("")
+        lines.append("\(TerminalUIStyle.ink)Audio Model Status\(TerminalUIStyle.reset)")
+        lines.append("\(TerminalUIStyle.slate)\(TerminalUIStyle.truncateVisible(audioProviderStatus.headline, limit: width))\(TerminalUIStyle.reset)")
+        for detail in audioProviderStatus.details.prefix(2) {
+            lines.append("\(TerminalUIStyle.slate)\(TerminalUIStyle.truncateVisible(detail, limit: width))\(TerminalUIStyle.reset)")
+        }
+
+        lines.append("")
         lines.append("\(TerminalUIStyle.ink)Daemon\(TerminalUIStyle.reset)")
         for detail in renderDaemonDetailLines(width: width) {
             lines.append(detail)
         }
 
+        let showingChatPicker = showModelPicker && modelPickerTarget == .chat
         if !providerStatus.availableModels.isEmpty {
             lines.append("")
-            lines.append("\(TerminalUIStyle.ink)\(showModelPicker ? "Pick a Model" : "Available Models")\(TerminalUIStyle.reset)")
-            if showModelPicker, !modelSearchQuery.isEmpty {
+            lines.append("\(TerminalUIStyle.ink)\(showingChatPicker ? "Pick a Model" : "Available Models")\(TerminalUIStyle.reset)")
+            if showingChatPicker, !modelSearchQuery.isEmpty {
                 lines.append("\(TerminalUIStyle.slate)Search: \(TerminalUIStyle.truncateVisible(modelSearchQuery, limit: max(width - 8, 10)))\(TerminalUIStyle.reset)")
             }
-            let availableModels = showModelPicker ? providerPickerDisplayModels : Array(providerStatus.availableModels.prefix(6))
+            let availableModels = showingChatPicker ? providerPickerDisplayModels : Array(providerStatus.availableModels.prefix(6))
             for (index, model) in availableModels.enumerated() {
-                let pickerSelected = showModelPicker && index == modelPickerSelection
+                let pickerSelected = showingChatPicker && index == modelPickerSelection
                 let marker = pickerSelected ? "\(TerminalUIStyle.selection) \(TerminalUIStyle.reset)" : " "
                 let color = pickerSelected ? TerminalUIStyle.cyan : TerminalUIStyle.blue
                 let line = "\(marker) \(color)\(TerminalUIStyle.truncateVisible(model, limit: max(width - 2, 10)))\(TerminalUIStyle.reset)"
@@ -3598,8 +3881,32 @@ final class TUIApp {
                     selectedLineRange = lineIndex...lineIndex
                 }
             }
-            if showModelPicker && availableModels.isEmpty {
+            if showingChatPicker && availableModels.isEmpty {
                 lines.append("\(TerminalUIStyle.slate)No models match the current search.\(TerminalUIStyle.reset)")
+            }
+        }
+
+        let showingAudioPicker = showModelPicker && modelPickerTarget == .audioEsh
+        if !audioProviderStatus.availableModels.isEmpty {
+            lines.append("")
+            lines.append("\(TerminalUIStyle.ink)\(showingAudioPicker ? "Pick an Audio Model" : "Audio Models (esh)")\(TerminalUIStyle.reset)")
+            if showingAudioPicker, !modelSearchQuery.isEmpty {
+                lines.append("\(TerminalUIStyle.slate)Search: \(TerminalUIStyle.truncateVisible(modelSearchQuery, limit: max(width - 8, 10)))\(TerminalUIStyle.reset)")
+            }
+            let availableModels = showingAudioPicker ? providerPickerDisplayModels : Array(audioProviderStatus.availableModels.prefix(6))
+            for (index, model) in availableModels.enumerated() {
+                let pickerSelected = showingAudioPicker && index == modelPickerSelection
+                let marker = pickerSelected ? "\(TerminalUIStyle.selection) \(TerminalUIStyle.reset)" : " "
+                let color = pickerSelected ? TerminalUIStyle.cyan : TerminalUIStyle.blue
+                let line = "\(marker) \(color)\(TerminalUIStyle.truncateVisible(model, limit: max(width - 2, 10)))\(TerminalUIStyle.reset)"
+                let lineIndex = lines.count
+                lines.append(line)
+                if pickerSelected {
+                    selectedLineRange = lineIndex...lineIndex
+                }
+            }
+            if showingAudioPicker && availableModels.isEmpty {
+                lines.append("\(TerminalUIStyle.slate)No esh audio models match the current search.\(TerminalUIStyle.reset)")
             }
         }
 
@@ -3623,10 +3930,14 @@ final class TUIApp {
 
         if showModelPicker {
             lines.append("")
-            lines.append("\(TerminalUIStyle.amber)Type to search, Backspace edits search, ↑/↓ chooses, Enter applies, Esc closes.\(TerminalUIStyle.reset)")
+            let pickerKind = modelPickerTarget == .audioEsh ? "audio models" : "models"
+            lines.append("\(TerminalUIStyle.amber)Type to search \(pickerKind), Backspace edits search, ↑/↓ chooses, Enter applies, Esc closes.\(TerminalUIStyle.reset)")
         } else if inputMode == .model {
             lines.append("")
             lines.append("\(TerminalUIStyle.amber)Model edit mode is active in the input bar below.\(TerminalUIStyle.reset)")
+        } else if inputMode == .audioModel {
+            lines.append("")
+            lines.append("\(TerminalUIStyle.amber)Audio model edit mode is active. Use reuse, local, or provider/model.\(TerminalUIStyle.reset)")
         } else if inputMode == .apiKey {
             lines.append("")
             lines.append("\(TerminalUIStyle.amber)API key edit mode is active in the input bar below.\(TerminalUIStyle.reset)")
@@ -3985,6 +4296,7 @@ final class TUIApp {
         switch inputMode {
         case .prompt: actualLabelText = "Chat"
         case .model: actualLabelText = "Model"
+        case .audioModel: actualLabelText = "Audio"
         case .apiKey: actualLabelText = "API Key"
         case .telegramToken: actualLabelText = "Telegram"
         case .telegramAllowedChats: actualLabelText = "Chats"
@@ -3998,6 +4310,7 @@ final class TUIApp {
         switch inputMode {
         case .prompt: currentText = promptText
         case .model: currentText = modelInput
+        case .audioModel: currentText = audioModelInput
         case .apiKey: currentText = String(repeating: "•", count: apiKeyInput.count)
         case .telegramToken: currentText = String(repeating: "•", count: telegramTokenInput.count)
         case .telegramAllowedChats: currentText = telegramAllowedChatsInput
@@ -4011,6 +4324,8 @@ final class TUIApp {
         }
         let placeholder = inputMode == .model
             ? "Type a model name, then press Enter to apply…"
+            : inputMode == .audioModel
+                ? "Type reuse, local, model, or provider/model…"
             : inputMode == .apiKey
                 ? "Paste an API key, then press Enter to save…"
                 : inputMode == .telegramToken
@@ -5873,10 +6188,18 @@ final class TUIApp {
             }
             providerStatus = updatedSnapshot
         }
+        let statusProvider = sessionProvider
+        let statusModel = sessionModel
+        let audioSnapshot = await inspectEshAudioProviderStatus()
+        guard statusProvider == sessionProvider, statusModel == sessionModel else {
+            return
+        }
+        audioProviderStatus = audioSnapshot
         if showModelPicker {
             if providerPickerModels.isEmpty {
                 showModelPicker = false
                 modelSearchQuery = ""
+                modelPickerTarget = .chat
             } else {
                 modelPickerSelection = min(max(modelPickerSelection, 0), providerPickerModels.count - 1)
             }
@@ -5969,6 +6292,35 @@ final class TUIApp {
         render()
     }
 
+    private func refreshAudioProviderStatus() async {
+        audioProviderStatus = await inspectEshAudioProviderStatus()
+        if showModelPicker, modelPickerTarget == .audioEsh {
+            if providerPickerModels.isEmpty {
+                showModelPicker = false
+                modelSearchQuery = ""
+                modelPickerTarget = .chat
+            } else {
+                modelPickerSelection = min(max(modelPickerSelection, 0), providerPickerModels.count - 1)
+            }
+        }
+        render()
+    }
+
+    private func inspectEshAudioProviderStatus() async -> ProviderStatusSnapshot {
+        let model: String
+        if sessionUserConfig.audio.provider == "esh" {
+            model = sessionUserConfig.audio.model ?? "auto"
+        } else {
+            model = "auto"
+        }
+        return await ProviderInspector.inspect(
+            provider: "esh",
+            model: model,
+            dflashConfig: sessionUserConfig.dflash,
+            userConfig: sessionUserConfig
+        )
+    }
+
     private func autoSelectOnboardingOllamaModelIfNeeded(from snapshot: ProviderStatusSnapshot) -> String? {
         guard showOnboarding,
               onboardingStep == .model,
@@ -6010,6 +6362,7 @@ final class TUIApp {
     private func applySafestOnboardingOllamaModel(_ selectedModel: String) {
         sessionModel = selectedModel
         showModelPicker = false
+        modelPickerTarget = .chat
         providerStartupIssue = nil
         refreshSessionRuntime()
         providerStartupIssue = nil
@@ -6031,9 +6384,10 @@ final class TUIApp {
            let fallbackModel = OllamaModelDisplayOrdering.safestInstalledModelName(
                 from: snapshot.availableModels,
                 excluding: trimmed
-           ) {
+            ) {
             sessionModel = fallbackModel
             showModelPicker = false
+            modelPickerTarget = .chat
             providerStartupIssue = nil
             refreshSessionRuntime()
             clearProviderAttentionTranscriptIfPresent()
@@ -6056,6 +6410,7 @@ final class TUIApp {
 
         sessionModel = selectedModel
         showModelPicker = false
+        modelPickerTarget = .chat
         providerStartupIssue = nil
         refreshSessionRuntime()
         clearProviderAttentionTranscriptIfPresent()
@@ -6165,6 +6520,35 @@ final class TUIApp {
             focus = .approval
             statusLine = "Waiting for approval"
             render()
+        }
+    }
+}
+
+struct AudioModelCatalogChoice: Equatable {
+    let title: String
+    let subtitle: String
+    let model: String
+}
+
+enum ModelCatalogDisplay {
+    static func selectableModelName(from displayName: String) -> String? {
+        let trimmed = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return trimmed.components(separatedBy: " • ").first?.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+enum EshAudioModelCatalog {
+    static func choices(from displayModels: [String], limit: Int = 8) -> [AudioModelCatalogChoice] {
+        displayModels.prefix(limit).compactMap { displayName in
+            guard let model = ModelCatalogDisplay.selectableModelName(from: displayName) else {
+                return nil
+            }
+            return AudioModelCatalogChoice(
+                title: "esh/\(model)",
+                subtitle: displayName == model ? "Available from esh" : displayName,
+                model: model
+            )
         }
     }
 }

@@ -10,6 +10,7 @@ public struct AshexUserConfig: Codable, Sendable {
     public var telegram: TelegramConfig
     public var ollama: OllamaConfig
     public var dflash: DFlashConfig
+    public var audio: AudioConfig
     public var optimization: OptimizationConfig
     public var logging: LoggingConfig
     public var exec: ExecConfig
@@ -24,6 +25,7 @@ public struct AshexUserConfig: Codable, Sendable {
         telegram: TelegramConfig = .default,
         ollama: OllamaConfig = .default,
         dflash: DFlashConfig = .default,
+        audio: AudioConfig = .default,
         optimization: OptimizationConfig = .default,
         logging: LoggingConfig = .default,
         exec: ExecConfig = .default
@@ -37,6 +39,7 @@ public struct AshexUserConfig: Codable, Sendable {
         self.telegram = telegram
         self.ollama = ollama
         self.dflash = dflash
+        self.audio = audio
         self.optimization = optimization
         self.logging = logging
         self.exec = exec
@@ -54,6 +57,7 @@ public struct AshexUserConfig: Codable, Sendable {
         case telegram
         case ollama
         case dflash
+        case audio
         case optimization
         case logging
         case exec
@@ -70,9 +74,122 @@ public struct AshexUserConfig: Codable, Sendable {
         telegram = try container.decodeIfPresent(TelegramConfig.self, forKey: .telegram) ?? .default
         ollama = try container.decodeIfPresent(OllamaConfig.self, forKey: .ollama) ?? .default
         dflash = try container.decodeIfPresent(DFlashConfig.self, forKey: .dflash) ?? .default
+        audio = try container.decodeIfPresent(AudioConfig.self, forKey: .audio) ?? .default
         optimization = try container.decodeIfPresent(OptimizationConfig.self, forKey: .optimization) ?? .default
         logging = try container.decodeIfPresent(LoggingConfig.self, forKey: .logging) ?? .default
         exec = try container.decodeIfPresent(ExecConfig.self, forKey: .exec) ?? .default
+    }
+}
+
+public enum AudioModelSelection: String, Codable, Sendable, CaseIterable {
+    case reuseChatModel = "reuse_chat_model"
+    case separateModel = "separate_model"
+    case localSpeech = "local_speech"
+}
+
+public struct ResolvedAudioModel: Sendable, Equatable {
+    public let provider: String
+    public let model: String
+    public let usesChatModel: Bool
+
+    public init(provider: String, model: String, usesChatModel: Bool) {
+        self.provider = provider
+        self.model = model
+        self.usesChatModel = usesChatModel
+    }
+}
+
+public struct AudioConfig: Codable, Sendable {
+    public var selection: AudioModelSelection
+    public var provider: String?
+    public var model: String?
+
+    public init(
+        selection: AudioModelSelection = .reuseChatModel,
+        provider: String? = nil,
+        model: String? = nil
+    ) {
+        self.selection = selection
+        self.provider = provider?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        self.model = model?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+    }
+
+    public static let `default` = AudioConfig()
+
+    private enum CodingKeys: String, CodingKey {
+        case selection
+        case provider
+        case model
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        selection = try container.decodeIfPresent(AudioModelSelection.self, forKey: .selection) ?? .reuseChatModel
+        provider = try container.decodeIfPresent(String.self, forKey: .provider)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .nilIfEmpty
+        model = try container.decodeIfPresent(String.self, forKey: .model)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .nilIfEmpty
+
+        if selection == .separateModel, provider == nil || model == nil {
+            selection = .reuseChatModel
+        }
+    }
+
+    public func resolvedModel(chatProvider: String, chatModel: String) -> ResolvedAudioModel {
+        switch selection {
+        case .reuseChatModel:
+            if AudioModelSupport.supportsVoice(provider: chatProvider, model: chatModel) {
+                return .init(provider: chatProvider, model: chatModel, usesChatModel: true)
+            }
+            return .localSpeech
+        case .separateModel:
+            guard let provider, let model else { return .localSpeech }
+            return .init(provider: provider, model: model, usesChatModel: false)
+        case .localSpeech:
+            return .localSpeech
+        }
+    }
+}
+
+public enum AudioModelSupport {
+    public static func supportsVoice(provider: String, model: String) -> Bool {
+        let loweredProvider = provider.lowercased()
+        let loweredModel = model.lowercased()
+
+        if loweredProvider == "esh" {
+            return true
+        }
+
+        let voiceTerms = [
+            "audio",
+            "voice",
+            "speech",
+            "tts",
+            "realtime",
+            "omni",
+            "multimodal"
+        ]
+        if voiceTerms.contains(where: loweredModel.contains) {
+            return true
+        }
+
+        if loweredProvider == "openai" {
+            return loweredModel.contains("gpt-4o") && loweredModel.contains("transcribe")
+        }
+
+        return false
+    }
+}
+
+private extension ResolvedAudioModel {
+    static let localSpeech = ResolvedAudioModel(provider: "local", model: "macos-say", usesChatModel: false)
+}
+
+private extension String {
+    var nilIfEmpty: String? {
+        isEmpty ? nil : self
     }
 }
 
