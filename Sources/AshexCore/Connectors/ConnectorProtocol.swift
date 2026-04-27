@@ -41,6 +41,12 @@ public enum ConnectorCommand: String, Sendable, Codable {
     case reasoningOff = "reasoningoff"
     case model
     case models
+    case provider
+    case providers
+    case audio
+    case audioModels = "audiomodels"
+    case modelSearch = "modelsearch"
+    case modelInstall = "modelinstall"
     case chunks
     case chunksOn = "chunkson"
     case chunksOff = "chunksoff"

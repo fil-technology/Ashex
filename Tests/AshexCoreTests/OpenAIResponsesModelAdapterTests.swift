@@ -89,6 +89,40 @@ struct OpenAIResponsesModelAdapterTests {
         #expect(reply == "I'm doing well. How can I help?")
     }
 
+    @Test func directReplyIgnoresOutputItemsMissingContent() async throws {
+        let session = makeStubbedSession(statusCode: 200, body: """
+        {
+          "output": [
+            {
+              "type": "message"
+            },
+            {
+              "content": [
+                {
+                  "type": "output_text",
+                  "text": "{\\"reply\\":\\"Hello from OpenAI.\\"}"
+                }
+              ]
+            }
+          ]
+        }
+        """)
+
+        let adapter = OpenAIResponsesModelAdapter(
+            configuration: .init(apiKey: "test-key", model: "gpt-5.4-mini", baseURL: URL(string: "https://example.com/v1/responses")!),
+            session: session
+        )
+
+        let reply = try await adapter.directReply(
+            history: [
+                .init(id: UUID(), threadID: UUID(), runID: UUID(), role: .user, content: "Hi", createdAt: Date())
+            ],
+            systemPrompt: "You are helpful."
+        )
+
+        #expect(reply == "Hello from OpenAI.")
+    }
+
     @Test func directReplyStripsThinkBlocksFromPlainTextOutput() async throws {
         let session = makeStubbedSession(statusCode: 200, body: """
         {

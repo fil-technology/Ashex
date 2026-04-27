@@ -1,4 +1,38 @@
 {
+  "browser" : {
+    "backend" : "chrome-cdp",
+    "blockTrackers" : true,
+    "cdp" : {
+      "endpoint" : "http:\/\/127.0.0.1:9222"
+    },
+    "environment" : {
+
+    },
+    "extraArgs" : [
+
+    ],
+    "headless" : true,
+    "navigationTimeoutSeconds" : 30,
+    "obscura" : {
+      "blockTrackers" : true,
+      "host" : "127.0.0.1",
+      "path" : "",
+      "port" : 0,
+      "stealth" : false
+    },
+    "security" : {
+      "allowFileUrls" : false,
+      "allowLocalhostNavigation" : false,
+      "allowPrivateNetworkNavigation" : false
+    },
+    "startupTimeoutSeconds" : 10,
+    "stealthEnabled" : false
+  },
+  "computer_use" : {
+    "backend_manifest_path" : ".ashex\/background-computer-use.json",
+    "enabled" : true,
+    "safety" : "strict"
+  },
   "daemon" : {
     "enabled" : false,
     "foregroundPollIntervalSeconds" : 2
@@ -70,7 +104,7 @@
 
     ],
     "enabled" : true,
-    "executionPolicy" : "assistant_only",
+    "executionPolicy" : "trusted_full_access",
     "pollingTimeoutSeconds" : 20,
     "responseMode" : "final_message"
   },

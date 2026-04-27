@@ -79,6 +79,14 @@ ashex exec --yolo -C /path/to/repo "make the requested local edit"
 
 `ashex exec` defaults to `read_only` sandboxing, approval `always`, and writes a JSONL transcript to `WORKSPACE/.ashex/runs/<run-id>.jsonl`.
 
+Rendered-page browser automation is also available:
+
+```bash
+ashex browser doctor
+ashex browser fetch https://example.com --markdown
+ashex browser screenshot https://example.com --output example.png
+```
+
 Useful options:
 
 - `onboard`: open the setup wizard even if saved settings already exist
@@ -116,6 +124,7 @@ For CLI examples, environment variables, local Ollama/DFlash setup, and provider
 - [Provider guide](docs/usage/providers.md)
 - [Daemon and Telegram guide](docs/usage/daemon-telegram.md)
 - [Configuration and safety guide](docs/usage/configuration.md)
+- [Browser backends guide](docs/browser-backends.md)
 - [Runtime and tools guide](docs/architecture/runtime-and-tools.md)
 - [Release maintenance guide](docs/release/maintenance.md)
 - [Roadmap](docs/roadmap/implementation-phases.md)

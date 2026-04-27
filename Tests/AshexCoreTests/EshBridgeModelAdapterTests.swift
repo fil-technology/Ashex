@@ -275,6 +275,54 @@ struct EshBridgeModelAdapterTests {
 
         #expect(await fallback.lastAttachments() == [attachment])
     }
+
+    @Test func directReplyRetriesWhenPreviousVoiceReplyLeaksIntoNormalChat() async throws {
+        let homeURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: homeURL, withIntermediateDirectories: true)
+
+        let runner = SequencedInferRunner(replies: [
+            """
+            ```
+            Hello, I'm Esh from Sviat
+            ```
+            Note: This is a live audio message and not a live speech message.
+            Saved: run 1.1k/$0.000
+            """,
+            "I'm doing well, thanks for asking.",
+        ])
+        let adapter = EshBackedModelAdapter(
+            configuration: .init(
+                executablePath: "/opt/homebrew/bin/esh",
+                homePath: homeURL.path,
+                repoRootPath: FileManager.default.temporaryDirectory.path,
+                model: "audio-model",
+                providerID: "esh",
+                optimization: .init(enabled: true, backend: .esh, mode: .automatic, intent: .chat)
+            ),
+            fallback: RecordingFallbackAdapter(),
+            runner: runner,
+            createDirectory: { url in try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true) },
+            removeItem: { _ in }
+        )
+        let thread = ThreadRecord(id: UUID(), createdAt: Date())
+
+        let envelope = try await adapter.directReplyEnvelope(
+            history: [
+                .init(id: UUID(), threadID: thread.id, runID: nil, role: .user, content: "Say hello in voice", createdAt: Date()),
+                .init(id: UUID(), threadID: thread.id, runID: nil, role: .assistant, content: "Hello, I'm Esh from Sviat", createdAt: Date()),
+                .init(id: UUID(), threadID: thread.id, runID: nil, role: .user, content: "Hello, how are you?", createdAt: Date()),
+            ],
+            systemPrompt: "Answer naturally.",
+            attachments: []
+        )
+
+        #expect(envelope.text == "I'm doing well, thanks for asking.")
+        let requests = await runner.recordedRequests()
+        #expect(requests.count == 2)
+        #expect(requests[0].messages.count > 2)
+        #expect(requests[1].messages.count == 2)
+        #expect(requests[1].messages.last?.text == "Hello, how are you?")
+    }
 }
 
 private struct FailingRunner: EshCommandRunning {
@@ -362,6 +410,74 @@ private actor RecordingInferRunner: EshCommandRunning {
 
     func lastInferRequest() -> EshInferRequest? {
         request
+    }
+}
+
+private actor SequencedInferRunner: EshCommandRunning {
+    private var replies: [String]
+    private var requests: [EshInferRequest] = []
+
+    init(replies: [String]) {
+        self.replies = replies
+    }
+
+    func run(command: String, workspaceURL: URL, timeout: TimeInterval) async throws -> ShellExecutionResult {
+        if command.contains(" capabilities") {
+            return ShellExecutionResult(stdout: """
+            {
+              "schemaVersion": "esh.capabilities.v1",
+              "tool": "esh",
+              "toolVersion": "0.2.0",
+              "commands": [
+                {
+                  "name": "infer",
+                  "inputSchema": "esh.infer.request.v1",
+                  "outputSchema": "esh.infer.response.v1",
+                  "transport": "json"
+                }
+              ],
+              "backends": [],
+              "installedModels": [
+                {
+                  "id": "audio-model",
+                  "displayName": "Audio Model",
+                  "backend": "mlx",
+                  "source": "audio-model",
+                  "variant": null,
+                  "runtimeVersion": null,
+                  "supportsDirectInference": true,
+                  "supportsCacheBuild": false,
+                  "supportsCacheLoad": false
+                }
+              ]
+            }
+            """, stderr: "", exitCode: 0, timedOut: false)
+        }
+
+        if let inputPath = command.inputPathArgument {
+            let data = try Data(contentsOf: URL(fileURLWithPath: inputPath))
+            let request = try JSONDecoder().decode(EshInferRequest.self, from: data)
+            requests.append(request)
+        }
+
+        let reply = replies.isEmpty ? "" : replies.removeFirst()
+        return ShellExecutionResult(stdout: """
+        {
+          "schemaVersion": "esh.infer.response.v1",
+          "modelID": "audio-model",
+          "backend": "mlx",
+          "integration": {
+            "mode": "direct",
+            "cacheArtifactID": null,
+            "cacheMode": "auto"
+          },
+          "outputText": "\(reply)"
+        }
+        """, stderr: "", exitCode: 0, timedOut: false)
+    }
+
+    func recordedRequests() -> [EshInferRequest] {
+        requests
     }
 }
 

@@ -10,6 +10,14 @@ import Testing
     #expect(DaemonCLICommand.parse(arguments: ["ashex", "daemon", "status"]) == .daemonStatus([]))
 }
 
+@Test func parsesComputerUsePrototypeCommands() {
+    #expect(ComputerUseCLICommand.parse(arguments: ["ashex", "computer-use", "prototype"]) == .prototype([]))
+    #expect(ComputerUseCLICommand.parse(arguments: [
+        "ashex", "--workspace", "/tmp/demo", "computer-use", "prototype"
+    ]) == .prototype(["--workspace", "/tmp/demo"]))
+    #expect(ComputerUseCLICommand.parse(arguments: ["ashex", "computer-use", "doctor"]) == .doctor([]))
+}
+
 @Test func parsesCommonDeamonMisspellingAsDaemonCommands() {
     #expect(DaemonCLICommand.parse(arguments: ["ashex", "deamon", "run"]) == .daemonRun([]))
     #expect(DaemonCLICommand.parse(arguments: ["ashex", "deamon", "start"]) == .daemonStart([]))
@@ -40,6 +48,14 @@ import Testing
     #expect(DaemonCLICommand.parse(arguments: [
         "ashex", "--workspace", "/tmp/demo", "telegram", "test"
     ]) == .telegramTest(["--workspace", "/tmp/demo"]))
+}
+
+@Test func parsesModelCliCommands() {
+    #expect(ModelCLICommand.parse(arguments: ["ashex", "model", "list"]) == .list([], task: nil))
+    #expect(ModelCLICommand.parse(arguments: ["ashex", "model", "list", "--task", "audio"]) == .list(["--task", "audio"], task: "audio"))
+    #expect(ModelCLICommand.parse(arguments: ["ashex", "model", "search", "orpheus"]) == .search([], query: "orpheus"))
+    #expect(ModelCLICommand.parse(arguments: ["ashex", "model", "install", "Qwen/Qwen3-TTS-12Hz-0.6B-Base"]) == .install([], query: "Qwen/Qwen3-TTS-12Hz-0.6B-Base"))
+    #expect(ModelCLICommand.parse(arguments: ["ashex", "audio", "models"]) == .audioModels([]))
 }
 
 @Test func parsesCronCommands() {

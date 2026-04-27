@@ -117,6 +117,27 @@ extension EshBackedModelAdapter: DirectChatModelAdapter {
                 attachments: attachments
             )
             if let parsed = EshBridgeReplyParser.parseReply(from: reply) {
+                if shouldRetryDirectReply(
+                    parsedReply: parsed,
+                    latestUserMessage: latestUserMessage,
+                    priorHistory: priorHistory,
+                    attachments: attachments
+                ) {
+                    let retriedReply = try await runEsh(
+                        systemPrompt: systemPrompt + "\n\nReply directly to the latest user message. Do not repeat a previous assistant answer unless the user explicitly asks you to.",
+                        history: [],
+                        message: latestUserMessage,
+                        taskKind: .analysis,
+                        taskPrompt: latestUserMessage,
+                        attachments: attachments
+                    )
+                    if let retriedParsed = EshBridgeReplyParser.parseReply(from: retriedReply) {
+                        return .init(
+                            text: retriedParsed,
+                            reasoningSummary: ReasoningSummaryExtractor.summary(fromExposedThinkingIn: retriedReply)
+                        )
+                    }
+                }
                 return .init(text: parsed, reasoningSummary: ReasoningSummaryExtractor.summary(fromExposedThinkingIn: reply))
             }
             throw AshexError.model("esh direct chat reply was empty")
@@ -567,6 +588,50 @@ private extension EshBackedModelAdapter {
     func dropTrailingUserMessageIfPresent(from history: [MessageRecord]) -> [MessageRecord] {
         guard history.last?.role == .user else { return history }
         return Array(history.dropLast())
+    }
+
+    func shouldRetryDirectReply(
+        parsedReply: String,
+        latestUserMessage: String,
+        priorHistory: [MessageRecord],
+        attachments: [InputAttachment]
+    ) -> Bool {
+        guard attachments.isEmpty else { return false }
+
+        if Self.requestsAudioGeneration(latestUserMessage) {
+            return false
+        }
+
+        let normalizedReply = Self.normalizedReplyFingerprint(parsedReply)
+        guard !normalizedReply.isEmpty else { return false }
+
+        if Self.looksLikeAudioBoilerplate(parsedReply) {
+            return true
+        }
+
+        guard let previousAssistant = priorHistory.last(where: { $0.role == .assistant })?.content else {
+            return false
+        }
+
+        return normalizedReply == Self.normalizedReplyFingerprint(previousAssistant)
+    }
+
+    static func looksLikeAudioBoilerplate(_ text: String) -> Bool {
+        let lowered = text.lowercased()
+        return lowered.contains("live audio message")
+            || lowered.contains("live speech message")
+            || lowered.contains("saved: run ")
+    }
+
+    static func normalizedReplyFingerprint(_ text: String) -> String {
+        text
+            .lowercased()
+            .replacingOccurrences(of: "`", with: "")
+            .replacingOccurrences(of: "*", with: "")
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 

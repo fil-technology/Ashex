@@ -19,7 +19,7 @@ public struct AudioTool: Tool {
                 arguments: [
                     .init(name: "operation", description: "Operation name", type: .string, required: true, enumValues: ["generate_speech"]),
                     .init(name: "text", description: "Text to speak in the generated audio", type: .string, required: true),
-                    .init(name: "output_path", description: "Workspace-relative output path. Defaults to generated-audio/<id>.aiff", type: .string, required: false),
+                    .init(name: "output_path", description: "Workspace-relative output path. Defaults to generated-audio/<id>.wav", type: .string, required: false),
                     .init(name: "voice", description: "Optional macOS voice name", type: .string, required: false),
                     .init(name: "timeout_seconds", description: "Optional timeout in seconds", type: .number, required: false),
                 ]
@@ -46,15 +46,15 @@ public struct AudioTool: Tool {
 
         let outputPath = arguments["output_path"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
         let outputURL = try workspaceGuard.resolveForMutation(
-            path: outputPath?.isEmpty == false ? outputPath! : "generated-audio/\(UUID().uuidString).aiff"
+            path: outputPath?.isEmpty == false ? outputPath! : "generated-audio/\(UUID().uuidString).wav"
         )
         try FileManager.default.createDirectory(at: outputURL.deletingLastPathComponent(), withIntermediateDirectories: true)
 
+        let tempURL = outputURL.deletingLastPathComponent().appendingPathComponent("\(UUID().uuidString).aiff")
         var parts = [
             "/usr/bin/say",
             "-o",
-            shellQuoted(outputURL.path),
-            "--data-format=LEF32@22050",
+            shellQuoted(tempURL.path),
         ]
         if let voice = arguments["voice"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines), !voice.isEmpty {
             parts.append(contentsOf: ["-v", shellQuoted(voice)])
@@ -79,6 +79,9 @@ public struct AudioTool: Tool {
             throw AshexError.shell("Audio generation failed with exit code \(result.exitCode): \(result.stderr)")
         }
 
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+        try convertAudioIfNeeded(from: tempURL, to: outputURL)
+
         return .text("Generated audio file: \(outputURL.path) (\(mimeType(for: outputURL)))")
     }
 
@@ -89,6 +92,42 @@ public struct AudioTool: Tool {
         case "m4a", "mp4": return "audio/mp4"
         case "wav": return "audio/wav"
         default: return "audio/aiff"
+        }
+    }
+
+    private func convertAudioIfNeeded(from sourceURL: URL, to outputURL: URL) throws {
+        let lowercasedExtension = outputURL.pathExtension.lowercased()
+        if lowercasedExtension == "aiff" || lowercasedExtension == "aif" || lowercasedExtension.isEmpty {
+            if FileManager.default.fileExists(atPath: outputURL.path) {
+                try FileManager.default.removeItem(at: outputURL)
+            }
+            try FileManager.default.moveItem(at: sourceURL, to: outputURL)
+            return
+        }
+
+        let formatArguments: [String]
+        switch lowercasedExtension {
+        case "wav":
+            formatArguments = ["-f", "WAVE", "-d", "LEI16@22050"]
+        case "m4a", "mp4":
+            formatArguments = ["-f", "m4af", "-d", "aac"]
+        case "caf":
+            formatArguments = ["-f", "caff", "-d", "LEI16@22050"]
+        default:
+            throw AshexError.invalidToolArguments("Unsupported audio output format .\(lowercasedExtension)")
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/afconvert")
+        process.arguments = formatArguments + [sourceURL.path, outputURL.path]
+        let stderr = Pipe()
+        process.standardError = stderr
+        try process.run()
+        process.waitUntilExit()
+
+        guard process.terminationStatus == 0 else {
+            let message = String(decoding: stderr.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            throw AshexError.shell("Audio conversion failed: \(message.trimmingCharacters(in: .whitespacesAndNewlines))")
         }
     }
 

@@ -570,11 +570,13 @@ public enum RuntimeToolFactory {
     public static func makeTools(
         workspaceURL: URL,
         persistence: PersistenceStore,
+        userConfig: AshexUserConfig,
         sandbox: SandboxPolicyConfig,
         shellExecutionPolicy: ShellExecutionPolicy
     ) throws -> [any Tool] {
         let executionRuntime = ProcessExecutionRuntime()
         let workspaceGuard = WorkspaceGuard(rootURL: workspaceURL, sandbox: sandbox)
+        let browserManager = BrowserManager(configSection: userConfig.browser)
 
         var tools: [any Tool] = [
             FileSystemTool(workspaceGuard: workspaceGuard),
@@ -583,6 +585,10 @@ public enum RuntimeToolFactory {
             BuildTool(executionRuntime: executionRuntime, workspaceURL: workspaceURL),
             ShellTool(executionRuntime: executionRuntime, workspaceURL: workspaceURL, executionPolicy: shellExecutionPolicy),
             AudioTool(executionRuntime: executionRuntime, workspaceGuard: workspaceGuard),
+            BrowserFetchTool(manager: browserManager),
+            BrowserExtractTool(manager: browserManager),
+            BrowserEvalTool(manager: browserManager),
+            BrowserScreenshotTool(manager: browserManager),
             ToolPackScaffoldTool(workspaceGuard: workspaceGuard),
         ]
 

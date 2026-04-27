@@ -571,6 +571,104 @@ private final class RecordingExecutionRuntime: ExecutionRuntime, @unchecked Send
     #expect(sawRecoveredAnswer)
 }
 
+@Test func runtimePrefersBrowserToolsForWebsiteLookupPrompts() async throws {
+    let fileManager = FileManager.default
+    let root = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let dbURL = root.appendingPathComponent(".ashex/test.sqlite")
+    try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+
+    let adapter = ToolSelectionRecordingModelAdapter()
+    let runtime = try AgentRuntime(
+        modelAdapter: adapter,
+        toolRegistry: ToolRegistry(tools: [
+            TestTool(
+                name: "filesystem",
+                description: "Read and inspect local workspace files."
+            ),
+            TestTool(
+                name: "browser_fetch",
+                description: "Render a web page and extract readable markdown or text.",
+                contract: ToolContract(
+                    name: "browser_fetch",
+                    description: "Render a web page and extract readable content.",
+                    category: "browser",
+                    operationArgumentKey: nil,
+                    defaultOperationName: "fetch",
+                    operations: [
+                        .init(
+                            name: "fetch",
+                            description: "Navigate to a page and extract readable content.",
+                            mutatesWorkspace: false,
+                            requiresNetwork: true,
+                            arguments: [
+                                .init(name: "url", description: "Absolute URL", type: .string, required: true),
+                            ]
+                        ),
+                    ],
+                    tags: ["browser", "web"]
+                )
+            ),
+        ]),
+        persistence: SQLitePersistenceStore(databaseURL: dbURL),
+        workspaceSnapshot: WorkspaceSnapshotBuilder.capture(workspaceRoot: root)
+    )
+
+    for await _ in runtime.run(RunRequest(prompt: "browse https://filsv.com and summarize it")) {}
+
+    let seenTools = await adapter.lastAvailableToolNames()
+    #expect(seenTools.contains("browser_fetch"))
+    #expect(!seenTools.contains("filesystem"))
+}
+
+@Test func runtimePrefetchesBrowserFetchForWebsiteLookupPrompts() async throws {
+    let fileManager = FileManager.default
+    let root = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let dbURL = root.appendingPathComponent(".ashex/test.sqlite")
+    try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+
+    let runtime = try AgentRuntime(
+        modelAdapter: SequencedModelAdapter(actions: [
+            .finalAnswer("Recorded tool selection."),
+        ]),
+        toolRegistry: ToolRegistry(tools: [
+            TestTool(
+                name: "browser_fetch",
+                description: "Render a web page and extract readable markdown or text.",
+                contract: ToolContract(
+                    name: "browser_fetch",
+                    description: "Render a web page and extract readable content.",
+                    category: "browser",
+                    operationArgumentKey: nil,
+                    defaultOperationName: "fetch",
+                    operations: [
+                        .init(
+                            name: "fetch",
+                            description: "Navigate to a page and extract readable content.",
+                            mutatesWorkspace: false,
+                            requiresNetwork: true,
+                            arguments: [
+                                .init(name: "url", description: "Absolute URL", type: .string, required: true),
+                            ]
+                        ),
+                    ],
+                    tags: ["browser", "web"]
+                )
+            ),
+        ]),
+        persistence: SQLitePersistenceStore(databaseURL: dbURL),
+        workspaceSnapshot: WorkspaceSnapshotBuilder.capture(workspaceRoot: root)
+    )
+
+    var startedTools: [String] = []
+    for await event in runtime.run(RunRequest(prompt: "what is filsv.com?")) {
+        if case .toolCallStarted(_, _, let toolName, _) = event.payload {
+            startedTools.append(toolName)
+        }
+    }
+
+    #expect(startedTools.contains("browser_fetch"))
+}
+
 @Test func runtimeRejectsRawToolTranscriptAsFinalAnswer() async throws {
     let fileManager = FileManager.default
     let root = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -1485,6 +1583,38 @@ private actor SequencedModelAdapter: ModelAdapter {
             throw AshexError.model("No more actions")
         }
         return actions.removeFirst()
+    }
+}
+
+private actor ToolSelectionRecordingModelAdapter: ModelAdapter {
+    let name = "tool-selection-recording-test"
+    let providerID = "test"
+    let modelID = "tool-selection-recording-test"
+    private var availableToolNames: [String] = []
+
+    func nextAction(for context: ModelContext) async throws -> ModelAction {
+        availableToolNames = context.availableTools.map(\.name)
+        return .finalAnswer("Recorded tool selection.")
+    }
+
+    func lastAvailableToolNames() -> [String] {
+        availableToolNames
+    }
+}
+
+private struct TestTool: Tool {
+    let name: String
+    let description: String
+    let contract: ToolContract
+
+    init(name: String, description: String, contract: ToolContract? = nil) {
+        self.name = name
+        self.description = description
+        self.contract = contract ?? ToolContract(name: name, description: description)
+    }
+
+    func execute(arguments: JSONObject, context: ToolContext) async throws -> ToolContent {
+        .text("ok")
     }
 }
 
