@@ -270,6 +270,7 @@ enum ExecCLI {
         let tools = try RuntimeToolFactory.makeTools(
             workspaceURL: execConfig.cwd,
             persistence: persistence,
+            userConfig: userConfig,
             sandbox: userConfig.sandbox,
             shellExecutionPolicy: shellPolicy
         )

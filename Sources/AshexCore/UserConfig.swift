@@ -3,46 +3,55 @@ import Foundation
 public struct AshexUserConfig: Codable, Sendable {
     public var version: Int
     public var debug: DebugConfig
+    public var computerUse: ComputerUseConfig
     public var sandbox: SandboxPolicyConfig
     public var network: NetworkPolicyConfig
     public var shell: ShellCommandPolicyConfig
     public var daemon: DaemonConfig
     public var telegram: TelegramConfig
     public var ollama: OllamaConfig
+    public var deepseek: DeepSeekConfig
     public var dflash: DFlashConfig
     public var audio: AudioConfig
     public var optimization: OptimizationConfig
     public var logging: LoggingConfig
     public var exec: ExecConfig
+    public var browser: BrowserConfigSection
 
     public init(
         version: Int = 1,
         debug: DebugConfig = .default,
+        computerUse: ComputerUseConfig = .default,
         sandbox: SandboxPolicyConfig = .default,
         network: NetworkPolicyConfig = .default,
         shell: ShellCommandPolicyConfig = .default,
         daemon: DaemonConfig = .default,
         telegram: TelegramConfig = .default,
         ollama: OllamaConfig = .default,
+        deepseek: DeepSeekConfig = .default,
         dflash: DFlashConfig = .default,
         audio: AudioConfig = .default,
         optimization: OptimizationConfig = .default,
         logging: LoggingConfig = .default,
-        exec: ExecConfig = .default
+        exec: ExecConfig = .default,
+        browser: BrowserConfigSection = .default
     ) {
         self.version = version
         self.debug = debug
+        self.computerUse = computerUse
         self.sandbox = sandbox
         self.network = network
         self.shell = shell
         self.daemon = daemon
         self.telegram = telegram
         self.ollama = ollama
+        self.deepseek = deepseek
         self.dflash = dflash
         self.audio = audio
         self.optimization = optimization
         self.logging = logging
         self.exec = exec
+        self.browser = browser
     }
 
     public static let `default` = AshexUserConfig()
@@ -50,34 +59,94 @@ public struct AshexUserConfig: Codable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case version
         case debug
+        case computerUse
         case sandbox
         case network
         case shell
         case daemon
         case telegram
         case ollama
+        case deepseek
         case dflash
         case audio
         case optimization
         case logging
         case exec
+        case browser
+    }
+
+    private enum SnakeCodingKeys: String, CodingKey {
+        case computerUse = "computer_use"
     }
 
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        let snakeContainer = try decoder.container(keyedBy: SnakeCodingKeys.self)
         version = try container.decodeIfPresent(Int.self, forKey: .version) ?? 1
         debug = try container.decodeIfPresent(DebugConfig.self, forKey: .debug) ?? .default
+        computerUse = try container.decodeIfPresent(ComputerUseConfig.self, forKey: .computerUse)
+            ?? snakeContainer.decodeIfPresent(ComputerUseConfig.self, forKey: .computerUse)
+            ?? .default
         sandbox = try container.decodeIfPresent(SandboxPolicyConfig.self, forKey: .sandbox) ?? .default
         network = try container.decodeIfPresent(NetworkPolicyConfig.self, forKey: .network) ?? .default
         shell = try container.decodeIfPresent(ShellCommandPolicyConfig.self, forKey: .shell) ?? .default
         daemon = try container.decodeIfPresent(DaemonConfig.self, forKey: .daemon) ?? .default
         telegram = try container.decodeIfPresent(TelegramConfig.self, forKey: .telegram) ?? .default
         ollama = try container.decodeIfPresent(OllamaConfig.self, forKey: .ollama) ?? .default
+        deepseek = try container.decodeIfPresent(DeepSeekConfig.self, forKey: .deepseek) ?? .default
         dflash = try container.decodeIfPresent(DFlashConfig.self, forKey: .dflash) ?? .default
         audio = try container.decodeIfPresent(AudioConfig.self, forKey: .audio) ?? .default
         optimization = try container.decodeIfPresent(OptimizationConfig.self, forKey: .optimization) ?? .default
         logging = try container.decodeIfPresent(LoggingConfig.self, forKey: .logging) ?? .default
         exec = try container.decodeIfPresent(ExecConfig.self, forKey: .exec) ?? .default
+        browser = try container.decodeIfPresent(BrowserConfigSection.self, forKey: .browser) ?? .default
+    }
+}
+
+public enum ComputerUseSafetyMode: String, Codable, Sendable, CaseIterable {
+    case strict
+    case normal
+    case dev
+}
+
+public struct ComputerUseConfig: Codable, Sendable {
+    public var enabled: Bool
+    public var backendManifestPath: String?
+    public var safety: ComputerUseSafetyMode
+
+    public init(
+        enabled: Bool = false,
+        backendManifestPath: String? = nil,
+        safety: ComputerUseSafetyMode = .strict
+    ) {
+        self.enabled = enabled
+        self.backendManifestPath = backendManifestPath?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        self.safety = safety
+    }
+
+    public static let `default` = ComputerUseConfig()
+
+    private enum CodingKeys: String, CodingKey {
+        case enabled
+        case backendManifestPath
+        case safety
+    }
+
+    private enum SnakeCodingKeys: String, CodingKey {
+        case backendManifestPath = "backend_manifest_path"
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let snakeContainer = try decoder.container(keyedBy: SnakeCodingKeys.self)
+        enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
+        backendManifestPath = try container.decodeIfPresent(String.self, forKey: .backendManifestPath)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .nilIfEmpty
+            ?? snakeContainer.decodeIfPresent(String.self, forKey: .backendManifestPath)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .nilIfEmpty
+        safety = try container.decodeIfPresent(ComputerUseSafetyMode.self, forKey: .safety) ?? .strict
     }
 }
 
@@ -158,10 +227,6 @@ public enum AudioModelSupport {
         let loweredProvider = provider.lowercased()
         let loweredModel = model.lowercased()
 
-        if loweredProvider == "esh" {
-            return true
-        }
-
         let voiceTerms = [
             "audio",
             "voice",
@@ -176,7 +241,30 @@ public enum AudioModelSupport {
         }
 
         if loweredProvider == "openai" {
-            return loweredModel.contains("gpt-4o") && loweredModel.contains("transcribe")
+            let exactSpeechModels: Set<String> = [
+                "gpt-4o-mini-tts",
+                "tts-1",
+                "tts-1-hd",
+                "gpt-audio",
+                "gpt-audio-mini",
+                "gpt-4o-audio-preview",
+                "gpt-4o-mini-audio-preview",
+                "gpt-realtime",
+            ]
+            return exactSpeechModels.contains(loweredModel)
+        }
+
+        if loweredProvider == "esh" {
+            let eshAudioTerms = [
+                "orpheus",
+                "soprano",
+                "vyvotts",
+                "marvis",
+                "pocket-tts",
+                "qwen3-tts",
+                "tts",
+            ]
+            return eshAudioTerms.contains(where: loweredModel.contains)
         }
 
         return false
@@ -359,6 +447,37 @@ public struct DFlashConfig: Codable, Sendable {
         model = try container.decodeIfPresent(String.self, forKey: .model)
         draftModel = try container.decodeIfPresent(String.self, forKey: .draftModel)
         requestTimeoutSeconds = max(5, try container.decodeIfPresent(Int.self, forKey: .requestTimeoutSeconds) ?? Self.default.requestTimeoutSeconds)
+    }
+}
+
+public struct DeepSeekConfig: Codable, Sendable {
+    public var baseURL: String
+    public var model: String?
+    public var requestTimeoutSeconds: Int
+
+    public init(
+        baseURL: String = "https://api.deepseek.com",
+        model: String? = nil,
+        requestTimeoutSeconds: Int = 180
+    ) {
+        self.baseURL = baseURL
+        self.model = model
+        self.requestTimeoutSeconds = requestTimeoutSeconds
+    }
+
+    public static let `default` = DeepSeekConfig()
+
+    private enum CodingKeys: String, CodingKey {
+        case baseURL
+        case model
+        case requestTimeoutSeconds
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        baseURL = try container.decodeIfPresent(String.self, forKey: .baseURL) ?? Self.default.baseURL
+        model = try container.decodeIfPresent(String.self, forKey: .model)
+        requestTimeoutSeconds = max(15, try container.decodeIfPresent(Int.self, forKey: .requestTimeoutSeconds) ?? Self.default.requestTimeoutSeconds)
     }
 }
 

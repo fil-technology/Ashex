@@ -396,6 +396,8 @@ public enum PromptBuilder {
             - Never invent tools.
             - Do not call tools for greetings, casual chat, or questions that can be answered without workspace state.
             - Only call filesystem, git, or shell when the user is asking about files, wants you to inspect project state, or explicitly asks you to run something.
+            - When the user asks what a website, domain, or URL is, or asks you to inspect live web content, prefer `browser_fetch`, `browser_extract`, `browser_eval`, or `browser_screenshot` before filesystem tools.
+            - For website or domain questions, do not infer answers from the local repository unless the user explicitly asked about workspace references to that site.
             - When the user asks about a GitHub or other remote repository URL, prefer `github_repo` for read-only inspection before using local workspace tools.
             - For coding or editing requests, prefer this workflow: explore relevant files first, plan briefly, then mutate, then validate, then summarize.
             - During exploration, bias toward `find_files`, `search_text`, `list_directory`, `file_info`, `read_text_file`, and read-only git inspection before changing anything.

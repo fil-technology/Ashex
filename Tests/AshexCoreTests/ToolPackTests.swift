@@ -108,6 +108,7 @@ private final class ToolPackRecordingExecutionRuntime: ExecutionRuntime, @unchec
     let tools = try RuntimeToolFactory.makeTools(
         workspaceURL: root,
         persistence: store,
+        userConfig: .default,
         sandbox: .default,
         shellExecutionPolicy: toolPackTestShellExecutionPolicy
     )
@@ -118,6 +119,10 @@ private final class ToolPackRecordingExecutionRuntime: ExecutionRuntime, @unchec
     #expect(names.contains("build"))
     #expect(names.contains("shell"))
     #expect(names.contains("audio"))
+    #expect(names.contains("browser_fetch"))
+    #expect(names.contains("browser_extract"))
+    #expect(names.contains("browser_eval"))
+    #expect(names.contains("browser_screenshot"))
     #expect(names.contains("toolpack"))
     #expect(names.contains("swiftpm"))
     #expect(names.contains("ios_xcode"))
@@ -137,6 +142,7 @@ private final class ToolPackRecordingExecutionRuntime: ExecutionRuntime, @unchec
     let tools = try RuntimeToolFactory.makeTools(
         workspaceURL: root,
         persistence: store,
+        userConfig: .default,
         sandbox: .default,
         shellExecutionPolicy: toolPackTestShellExecutionPolicy
     )

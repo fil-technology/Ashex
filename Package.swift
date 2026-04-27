@@ -11,6 +11,10 @@ let package = Package(
             name: "AshexCore",
             targets: ["AshexCore"]
         ),
+        .library(
+            name: "AshexComputerUse",
+            targets: ["AshexComputerUse"]
+        ),
         .executable(
             name: "ashex",
             targets: ["AshexCLI"]
@@ -34,17 +38,25 @@ let package = Package(
                 .process("Resources"),
             ]
         ),
+        .target(
+            name: "AshexComputerUse",
+            dependencies: ["AshexCore"]
+        ),
         .executableTarget(
             name: "AshexCLI",
-            dependencies: ["AshexCore"]
+            dependencies: ["AshexCore", "AshexComputerUse"]
         ),
         .testTarget(
             name: "AshexCoreTests",
             dependencies: ["AshexCore"]
         ),
         .testTarget(
+            name: "AshexComputerUseTests",
+            dependencies: ["AshexComputerUse", "AshexCore"]
+        ),
+        .testTarget(
             name: "AshexCLITests",
-            dependencies: ["AshexCLI", "AshexCore"]
+            dependencies: ["AshexCLI", "AshexCore", "AshexComputerUse"]
         ),
     ],
     swiftLanguageModes: [.v6]

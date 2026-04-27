@@ -338,6 +338,10 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                         maxIterations: request.maxIterations,
                         cancellation: cancellation,
                         executionControl: request.executionControl,
+                        allowedToolNames: Self.preferredToolNames(
+                            for: stepMessage,
+                            availableToolNames: Set(toolRegistry.schema().map(\.name))
+                        ),
                         emitter: emitter
                     )
                 }
@@ -769,6 +773,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         maxIterations: Int,
         cancellation: CancellationToken,
         executionControl: ExecutionControl?,
+        allowedToolNames: Set<String>?,
         emitter: EventEmitter
     ) async throws -> StepExecutionOutcome {
         var repeatedToolCallSignature: String?
@@ -780,6 +785,49 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         var automaticValidationAttempted = false
         var workflowState = StepWorkflowState(targetArtifacts: explorationPlan.targetPaths)
         var changedFiles: [ChangedArtifact] = existingChangedFiles
+        let filteredTools = toolRegistry.schema().filter { allowedToolNames?.contains($0.name) ?? true }
+        if let prefetchURL = Self.liveWebsiteLookupURL(for: stepPrompt),
+           filteredTools.contains(where: { $0.name == "browser_fetch" }) {
+            try emitter.emit(.status(runID: run.id, message: "Grounding the website lookup with the browser backend before summarizing."), runID: run.id)
+            let prefetchCall = ToolCallRequest(
+                toolName: "browser_fetch",
+                arguments: [
+                    "url": .string(prefetchURL.absoluteString),
+                    "format": .string("markdown"),
+                ]
+            )
+            if case .completed(let text, let safeToReuse, let metadata) = try await toolExecutor.execute(
+                call: prefetchCall,
+                threadID: thread.id,
+                runID: run.id,
+                attachments: attachments,
+                preconditions: .init(
+                    hasPriorInspection: workflowState.hasPriorInspection,
+                    phase: stepPhase,
+                    userRequest: stepPrompt
+                ),
+                cancellation: cancellation,
+                emitter: emitter
+            ) {
+                lastSafeToolResult = safeToReuse ? text : nil
+                workflowState.record(metadata: metadata)
+                try persistWorkingMemory(
+                    runID: run.id,
+                    currentTask: stepPrompt,
+                    currentPhase: stepPhase,
+                    explorationPlan: explorationPlan,
+                    workflowState: workflowState,
+                    changedFiles: changedFiles,
+                    summary: metadata.summary.isEmpty ? text : metadata.summary,
+                    completedStepSummaries: [],
+                    unresolvedItems: [],
+                    overrideSuggestions: Self.validationSuggestions(for: stepPrompt, taskKind: taskKind, phase: stepPhase, changedFiles: changedFiles.map(\.path))
+                )
+                if let summary = Self.websiteLookupSummary(for: stepPrompt, toolOutput: text, fallbackURL: prefetchURL) {
+                    return .init(summary: summary, changedFiles: changedFiles, validationNotes: [], remainingItems: [])
+                }
+            }
+        }
 
         for iteration in 0..<maxIterations {
             try await cancellation.checkCancellation()
@@ -798,7 +846,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                     thread: thread,
                     run: refreshedRun,
                     messages: messages,
-                    availableTools: toolRegistry.schema(),
+                    availableTools: filteredTools,
                     workspaceSnapshot: workspaceSnapshotRecord,
                     workingMemory: workingMemoryRecord
                 ),
@@ -849,7 +897,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                 thread: thread,
                 run: refreshedRun,
                 messages: messages,
-                availableTools: toolRegistry.schema(),
+                availableTools: filteredTools,
                 workspaceSnapshot: workspaceSnapshotRecord,
                 workingMemory: workingMemoryRecord
             ))
@@ -1865,6 +1913,143 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
             return true
         }
         return false
+    }
+
+    private static func preferredToolNames(for prompt: String, availableToolNames: Set<String>) -> Set<String>? {
+        let lowered = prompt.lowercased()
+        let websiteSignals = [
+            "http://", "https://", "www.", ".com", ".io", ".ai", ".dev", ".app", ".org", ".net",
+            "website", "site", "web page", "webpage", "domain", "url"
+        ]
+        let lookupSignals = [
+            "what is", "tell me about", "summarize", "fetch", "load", "look up", "lookup", "inspect",
+            "browse", "open", "render", "visit"
+        ]
+
+        guard websiteSignals.contains(where: lowered.contains),
+              lookupSignals.contains(where: lowered.contains) else {
+            return nil
+        }
+
+        let browserTools = Set([
+            "browser_fetch",
+            "browser_extract",
+            "browser_eval",
+            "browser_screenshot",
+        ]).intersection(availableToolNames)
+
+        return browserTools.isEmpty ? nil : browserTools
+    }
+
+    private static func liveWebsiteLookupURL(for prompt: String) -> URL? {
+        let lowered = userRequestSlice(from: prompt).lowercased()
+        let websiteSignals = [
+            "http://", "https://", "www.", ".com", ".io", ".ai", ".dev", ".app", ".org", ".net",
+            "website", "site", "web page", "webpage", "domain", "url"
+        ]
+        let lookupSignals = [
+            "what is", "tell me about", "summarize", "fetch", "load", "look up", "lookup", "inspect"
+        ]
+
+        guard websiteSignals.contains(where: lowered.contains),
+              lookupSignals.contains(where: lowered.contains) else {
+            return nil
+        }
+
+        if let explicitURL = firstMatch(
+            pattern: #"https?://[^\s)>"']+"#,
+            in: prompt
+        ), let url = URL(string: explicitURL) {
+            return url
+        }
+
+        guard let domain = firstMatch(
+            pattern: #"(?i)\b(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)+\b"#,
+            in: prompt
+        ) else {
+            return nil
+        }
+
+        return URL(string: domain.lowercased().hasPrefix("www.") ? "https://\(domain)" : "https://\(domain)")
+    }
+
+    private static func websiteLookupSummary(for prompt: String, toolOutput: String, fallbackURL: URL) -> String? {
+        guard prefersDirectWebsiteLookupSummary(prompt) else {
+            return nil
+        }
+
+        guard let data = toolOutput.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+
+        let title = object["title"] as? String
+        let content = object["content"] as? String ?? ""
+        let backend = object["backend"] as? String ?? "browser"
+        let firstParagraph = firstReadableParagraph(from: content)
+
+        var lines: [String] = []
+        if let title, !title.isEmpty {
+            if let paragraph = firstParagraph, !paragraph.localizedCaseInsensitiveContains(title) {
+                lines.append("`\(fallbackURL.host() ?? fallbackURL.absoluteString)` is \(title).")
+                lines.append(paragraph)
+            } else {
+                lines.append("`\(fallbackURL.host() ?? fallbackURL.absoluteString)` is \(title).")
+            }
+        } else if let paragraph = firstParagraph {
+            lines.append(paragraph)
+        } else {
+            return nil
+        }
+
+        lines.append("Source: rendered with `\(backend)`.")
+        return lines.joined(separator: "\n\n")
+    }
+
+    private static func prefersDirectWebsiteLookupSummary(_ prompt: String) -> Bool {
+        let lowered = userRequestSlice(from: prompt).lowercased()
+        let simplePrefixes = [
+            "what is ",
+            "what's ",
+            "tell me about ",
+            "summarize ",
+            "who is "
+        ]
+        return simplePrefixes.contains(where: lowered.hasPrefix)
+    }
+
+    private static func firstReadableParagraph(from markdown: String) -> String? {
+        let lines = markdown
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+        var current: [String] = []
+        for line in lines {
+            if line.isEmpty {
+                if !current.isEmpty { break }
+                continue
+            }
+            if line.hasPrefix("#") || line.hasPrefix("- ") || line.hasPrefix("```") || line.hasPrefix("> ") {
+                if !current.isEmpty { break }
+                continue
+            }
+            current.append(line)
+        }
+
+        let paragraph = current.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+        return paragraph.isEmpty ? nil : paragraph
+    }
+
+    private static func firstMatch(pattern: String, in text: String) -> String? {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            return nil
+        }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        guard let match = regex.firstMatch(in: text, range: range),
+              let matchRange = Range(match.range, in: text) else {
+            return nil
+        }
+        return String(text[matchRange])
     }
 
     private static func userRequestSlice(from prompt: String) -> String {

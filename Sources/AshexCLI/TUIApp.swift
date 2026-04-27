@@ -1,3 +1,4 @@
+import AshexComputerUse
 import AshexCore
 import Darwin
 import Foundation
@@ -19,7 +20,12 @@ final class TUIApp {
 
     private enum ModelPickerTarget {
         case chat
-        case audioEsh
+        case audio
+    }
+
+    private enum ComposeMode {
+        case chat
+        case audio
     }
 
     private struct MenuItem {
@@ -30,7 +36,9 @@ final class TUIApp {
 
     private enum Action {
         case compose
+        case audio
         case commands
+        case computerUse
         case terminal
         case workspaces
         case history
@@ -99,7 +107,7 @@ final class TUIApp {
 
         static let audioIdle = Self(
             headline: "Audio model status not checked yet",
-            details: ["Choose Refresh Status to ask `esh capabilities` for installed audio-capable models."],
+            details: ["Choose Refresh Status to discover audio models across current provider, esh, and OpenAI speech."],
             availableModels: [],
             guardrailAssessment: nil
         )
@@ -109,6 +117,17 @@ final class TUIApp {
         let provider: String
         let model: String
         let message: String
+    }
+
+    private struct StandaloneAudioRenderRequest {
+        let text: String
+        let outputURL: URL
+        let explicitOutput: Bool
+        let shouldPlay: Bool
+        let voice: String?
+        let responseFormat: String?
+        let speed: Double?
+        let instructions: String?
     }
 
     struct DaemonDisplayState: Equatable {
@@ -173,18 +192,9 @@ final class TUIApp {
     private let terminal = TerminalController()
     private let surface = TerminalSurface()
     private let approvalCoordinator: TUIApprovalCoordinator
-    private let menuItems: [MenuItem] = [
-        .init(title: "Chat", subtitle: "Talk to Ashex in the active thread or start a new one", action: .compose),
-        .init(title: "Commands", subtitle: "See available tools, operations, and config policy", action: .commands),
-        .init(title: "Terminal", subtitle: "Toggle the side shell pane for quick workspace commands", action: .terminal),
-        .init(title: "Workspaces", subtitle: "Switch between recent project roots and inspect their latest history", action: .workspaces),
-        .init(title: "Threads", subtitle: "Browse saved threads, switch chats, and load transcripts", action: .history),
-        .init(title: "Assistant Setup", subtitle: "Configure provider, Telegram, and daemon controls", action: .settings),
-        .init(title: "Help", subtitle: "Show keyboard shortcuts and behavior", action: .help),
-        .init(title: "Quit", subtitle: "Exit Ashex", action: .quit),
-    ]
 
     private var focus: FocusArea = .launcher
+    private var composeMode: ComposeMode = .chat
     private var selectedIndex = 0
     private var settingsSelection = 0
     private var modelPickerSelection = 0
@@ -268,6 +278,8 @@ final class TUIApp {
     private var sessionInspector: SessionInspector
     private var tokenSavingsSnapshot: TokenSavingsSnapshot?
     private var tokenUsageSnapshot: TokenUsageSnapshot?
+    private var computerUseBackendSummary = "not running"
+    private var shouldLaunchComputerUsePrototype = false
 
     init(configuration: CLIConfiguration) throws {
         let approvalCoordinator = TUIApprovalCoordinator()
@@ -341,6 +353,9 @@ final class TUIApp {
             try? await Task.sleep(for: .seconds(2))
             await self?.refreshProviderStatus()
         }
+        Task { [weak self] in
+            await self?.refreshComputerUseStatus()
+        }
         refreshDaemonStatus()
         if sessionUserConfig.daemon.enabled {
             Task { [weak self] in
@@ -378,17 +393,44 @@ final class TUIApp {
         ModelCatalogDisplay.selectableModelName(from: displayName)
     }
 
-    func run() async throws {
-        try terminal.enterRawMode()
-        defer { terminal.leaveRawMode() }
-
-        let keyStream = terminal.makeKeyStream()
-        render()
-
-        for await key in keyStream {
-            handle(key: key)
+    private func refreshComputerUseStatus() async {
+        let manifestURL = ComputerUseCLI.resolvedManifestURL(workspaceRoot: sessionWorkspaceRoot, config: sessionUserConfig.computerUse)
+        guard FileManager.default.fileExists(atPath: manifestURL.path) else {
+            computerUseBackendSummary = "not running"
             render()
-            if shouldQuit { break }
+            return
+        }
+
+        let provider = ManifestBackedComputerUseProvider(manifestURL: manifestURL)
+        do {
+            let status = try await provider.backendStatus()
+            computerUseBackendSummary = status.state.rawValue
+            render()
+        } catch {
+            computerUseBackendSummary = "not running"
+            render()
+        }
+    }
+
+    func run() async throws {
+        while !shouldQuit {
+            try terminal.enterRawMode()
+            let keyStream = terminal.makeKeyStream()
+            render()
+
+            for await key in keyStream {
+                handle(key: key)
+                render()
+                if shouldLaunchComputerUsePrototype || shouldQuit { break }
+            }
+
+            terminal.leaveRawMode()
+
+            if shouldLaunchComputerUsePrototype {
+                shouldLaunchComputerUsePrototype = false
+                try await runComputerUsePrototypeFromTUI()
+                continue
+            }
         }
     }
 
@@ -692,6 +734,15 @@ final class TUIApp {
         case .prompt:
             let prompt = promptText.trimmingCharacters(in: .whitespacesAndNewlines)
             if !prompt.isEmpty {
+                if composeMode == .audio {
+                    startStandaloneAudioRender(prompt: prompt)
+                    return
+                }
+                if Self.looksLikeStandaloneAudioPrompt(prompt) {
+                    composeMode = .audio
+                    startStandaloneAudioRender(prompt: prompt)
+                    return
+                }
                 if handleLocalPromptCommand(prompt) {
                     return
                 }
@@ -974,6 +1025,14 @@ final class TUIApp {
             return
         }
 
+        if runFinished && !runLines.isEmpty {
+            runLines = []
+            transcriptScrollOffset = 0
+            focus = .launcher
+            statusLine = "Back to launcher"
+            return
+        }
+
         if !runFinished && !runLines.isEmpty {
             runExecutionControl = nil
             runTask?.cancel()
@@ -1088,6 +1147,7 @@ final class TUIApp {
     private func activate(_ action: Action) {
         switch action {
         case .compose:
+            composeMode = .chat
             inputMode = .prompt
             showHistory = false
             showWorkspaces = false
@@ -1096,6 +1156,16 @@ final class TUIApp {
             focus = .input
             showHelp = false
             statusLine = activeThreadID == nil ? "Start a new chat below" : "Continue the active chat below"
+        case .audio:
+            composeMode = .audio
+            inputMode = .prompt
+            showHistory = false
+            showWorkspaces = false
+            showSettings = false
+            showCommands = false
+            focus = .input
+            showHelp = false
+            statusLine = "Type text to speak. Optional flags: --voice --format --speed --instructions --output"
         case .commands:
             showCommands = true
             showHistory = false
@@ -1105,6 +1175,9 @@ final class TUIApp {
             transcriptScrollOffset = 0
             focus = .transcript
             statusLine = "Commands"
+        case .computerUse:
+            shouldLaunchComputerUsePrototype = true
+            statusLine = "Launching computer use prototype"
         case .terminal:
             toggleTerminalPane()
         case .workspaces:
@@ -1148,6 +1221,45 @@ final class TUIApp {
         }
     }
 
+    private func runComputerUsePrototypeFromTUI() async throws {
+        do {
+            try await ComputerUseCLI.runPrototype(
+                workspaceRoot: sessionWorkspaceRoot,
+                userConfig: sessionUserConfig
+            )
+            statusLine = "Computer use prototype finished"
+        } catch {
+            presentLocalPromptResult(
+                lines: [
+                    "[computer-use] Prototype failed",
+                    "",
+                    error.localizedDescription,
+                    "Check `computer_use.enabled`, the backend manifest path, and backend status, then try again."
+                ],
+                status: "Computer use prototype failed"
+            )
+        }
+    }
+
+    private var menuItems: [MenuItem] {
+        [
+            .init(title: "Chat", subtitle: "Talk to Ashex in the active thread or start a new one", action: .compose),
+            .init(title: "Audio", subtitle: "Generate speech from text with the selected audio model", action: .audio),
+            .init(title: "Commands", subtitle: "See available tools, operations, and config policy", action: .commands),
+            .init(
+                title: "Computer Use / GUI Automation",
+                subtitle: "Backend: \(computerUseBackendSummary) • Enabled: \(sessionUserConfig.computerUse.enabled ? "true" : "false") • Safety: \(sessionUserConfig.computerUse.safety.rawValue)",
+                action: .computerUse
+            ),
+            .init(title: "Terminal", subtitle: "Toggle the side shell pane for quick workspace commands", action: .terminal),
+            .init(title: "Workspaces", subtitle: "Switch between recent project roots and inspect their latest history", action: .workspaces),
+            .init(title: "Threads", subtitle: "Browse saved threads, switch chats, and load transcripts", action: .history),
+            .init(title: "Assistant Setup", subtitle: "Configure provider, Telegram, and daemon controls", action: .settings),
+            .init(title: "Help", subtitle: "Show keyboard shortcuts and behavior", action: .help),
+            .init(title: "Quit", subtitle: "Exit Ashex", action: .quit),
+        ]
+    }
+
     private func activate(settingsAction: SettingsAction) {
         switch settingsAction {
         case .workspace:
@@ -1172,13 +1284,13 @@ final class TUIApp {
                 statusLine = "Edit model and press Enter to apply"
             }
         case .audioModel:
-            modelPickerTarget = .audioEsh
+            modelPickerTarget = .audio
             if !providerPickerModels.isEmpty {
                 showModelPicker = true
                 modelSearchQuery = ""
                 modelPickerSelection = selectedProviderModelPickerIndex()
                 focus = .settings
-                statusLine = "Choose or search an esh audio model and press Enter"
+                statusLine = "Choose or search an audio model and press Enter"
             } else {
                 inputMode = .audioModel
                 audioModelInput = audioModelInputValue()
@@ -1288,6 +1400,7 @@ final class TUIApp {
                 .init(title: "esh", subtitle: "Bundled/local esh runtime with MLX and GGUF models"),
                 .init(title: "ollama", subtitle: "Local Ollama models on this Mac"),
                 .init(title: "openai", subtitle: "Hosted OpenAI models with an API key"),
+                .init(title: "deepseek", subtitle: "Hosted DeepSeek models with a DeepSeek API key"),
                 .init(title: "anthropic", subtitle: "Hosted Claude models with an API key"),
                 .init(title: "mock", subtitle: "Offline mock adapter for testing tools without a model"),
                 .init(title: "Experimental providers", subtitle: "Try local experimental backends such as DFlash"),
@@ -1327,9 +1440,12 @@ final class TUIApp {
                 ),
                 .init(title: "Use local speech", subtitle: "Use macOS speech synthesis for Telegram audio replies")
             ]
-            choices.append(contentsOf: audioModelChoicesFromEshStatus())
+            choices.append(contentsOf: audioModelChoicesFromStatus())
             choices.append(.init(title: "Enter separate audio model", subtitle: "Type provider/model, for example esh/voice-model"))
-            choices.append(.init(title: "Refresh audio models", subtitle: "Ask `esh capabilities` for installed audio-capable models"))
+            if sessionProvider == "esh" {
+                choices.append(.init(title: "Install esh model", subtitle: "Type a repo, alias, or search term and let esh install it"))
+            }
+            choices.append(.init(title: "Refresh audio models", subtitle: "Refresh current provider models, esh audio, and OpenAI speech models"))
             return choices
         case .modelDownload:
             return [
@@ -1365,8 +1481,8 @@ final class TUIApp {
         }
     }
 
-    private func audioModelChoicesFromEshStatus() -> [OnboardingChoice] {
-        EshAudioModelCatalog.choices(from: audioProviderStatus.availableModels).map {
+    private func audioModelChoicesFromStatus() -> [OnboardingChoice] {
+        GenericAudioModelCatalog.choices(from: audioProviderStatus.availableModels).map {
             OnboardingChoice(title: $0.title, subtitle: $0.subtitle)
         }
     }
@@ -1527,15 +1643,17 @@ final class TUIApp {
             advanceOnboarding(to: .telegram)
         case "Enter separate audio model":
             beginOnboardingText(step: .audioModel, placeholderStatus: "Type audio model as provider/model")
+        case "Install esh model":
+            beginOnboardingText(step: .modelDownload, placeholderStatus: "Type esh model repo, alias, or search term")
         case "Refresh audio models":
             refreshOnboardingAudioModels()
-        case let selected where selected.hasPrefix("esh/"):
-            let model = String(selected.dropFirst("esh/".count)).trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !model.isEmpty else {
-                onboardingStatus = "Selected esh audio model was empty"
+        case let selected where selected.contains("/"):
+            let parsed = parseAudioModelInput(selected)
+            guard let config = parsed.config else {
+                onboardingStatus = parsed.error ?? "Selected audio model was invalid"
                 return
             }
-            sessionUserConfig.audio = AudioConfig(selection: .separateModel, provider: "esh", model: model)
+            sessionUserConfig.audio = config
             persistUserConfig()
             onboardingStatus = "Audio model set to \(audioModelStatusLabel())"
             advanceOnboarding(to: .telegram)
@@ -1656,6 +1774,21 @@ final class TUIApp {
             advanceOnboarding(to: .audioModel)
             return
         }
+        if sessionProvider == "esh" {
+            onboardingStatus = "Installing \(modelName) with esh..."
+            inputMode = .prompt
+            focus = .transcript
+            render()
+            Task { [weak self] in
+                let result = await self?.installEshModel(query: modelName, selectInstalledModel: true) ?? (false, "Install failed")
+                await MainActor.run {
+                    guard let self else { return }
+                    self.onboardingStatus = result.message ?? (result.success ? "Installed \(modelName)" : "Install failed")
+                    self.advanceOnboarding(to: .audioModel)
+                }
+            }
+            return
+        }
         guard sessionProvider == "ollama" else {
             sessionModel = modelName
             refreshSessionRuntime()
@@ -1709,6 +1842,47 @@ final class TUIApp {
         }.value
     }
 
+    private func installEshModel(query: String, selectInstalledModel: Bool) async -> (success: Bool, message: String?) {
+        do {
+            let before = Set((try? EshCommandClient.listInstalledModels(configuration: configuration)) ?? [])
+            let output = try EshCommandClient.installModel(configuration: configuration, query: query)
+            let after = Set((try? EshCommandClient.listInstalledModels(configuration: configuration)) ?? [])
+            let added = after.subtracting(before).sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+
+            await refreshProviderStatus()
+            if selectInstalledModel, let selected = added.first {
+                sessionModel = selected
+                refreshSessionRuntime()
+                persistSessionSettings()
+                return (true, "Installed and selected \(selected)")
+            }
+
+            return (true, output.isEmpty ? "Install complete" : output)
+        } catch {
+            return (false, "Install failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func installEshAudioModel(query: String) async -> (success: Bool, message: String?) {
+        do {
+            let before = Set((try? EshCommandClient.listInstalledAudioModels(configuration: configuration)) ?? [])
+            _ = try EshCommandClient.installModel(configuration: configuration, query: query)
+            let after = Set((try? EshCommandClient.listInstalledAudioModels(configuration: configuration)) ?? [])
+            let added = after.subtracting(before).sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+
+            await refreshAudioProviderStatus()
+            if let selected = added.first {
+                sessionUserConfig.audio = AudioConfig(selection: .separateModel, provider: "esh", model: selected)
+                persistUserConfig()
+                return (true, "Installed and selected esh/\(selected)")
+            }
+
+            return (true, "Install complete. Refresh audio models if needed.")
+        } catch {
+            return (false, "Install failed: \(error.localizedDescription)")
+        }
+    }
+
     private func refreshOnboardingModels() {
         onboardingStatus = "Refreshing \(sessionProvider) models..."
         Task { [weak self] in
@@ -1722,7 +1896,7 @@ final class TUIApp {
     }
 
     private func refreshOnboardingAudioModels() {
-        onboardingStatus = "Refreshing esh audio models..."
+        onboardingStatus = "Refreshing audio models..."
         Task { [weak self] in
             await self?.refreshAudioProviderStatus()
             await MainActor.run {
@@ -1730,7 +1904,7 @@ final class TUIApp {
                 self.onboardingSelection = min(self.onboardingSelection, max(self.onboardingChoices.count - 1, 0))
                 self.onboardingStatus = self.audioProviderStatus.availableModels.isEmpty
                     ? self.audioProviderStatus.headline
-                    : "Discovered \(self.audioProviderStatus.availableModels.count) esh audio model(s)"
+                    : "Discovered \(self.audioProviderStatus.availableModels.count) audio model choice(s)"
                 self.render()
             }
         }
@@ -1751,7 +1925,7 @@ final class TUIApp {
     }
 
     private func providerNeedsAPIKey(_ provider: String) -> Bool {
-        provider == "openai" || provider == "anthropic"
+        provider == "openai" || provider == "anthropic" || provider == "deepseek"
     }
 
     private func skipOnboardingStep() {
@@ -1786,6 +1960,565 @@ final class TUIApp {
         render()
     }
 
+    private func startStandaloneAudioRender(prompt: String) {
+        let request: StandaloneAudioRenderRequest
+        do {
+            request = try parseStandaloneAudioRenderRequest(prompt)
+        } catch {
+            runLines = [
+                "Audio request: \(prompt)",
+                "",
+                "[error] \(error.localizedDescription)"
+            ]
+            runFinished = true
+            runStartedAt = nil
+            statusLine = "Audio request invalid"
+            render()
+            return
+        }
+
+        queueRetryTask?.cancel()
+        queueRetryTask = nil
+        runTask?.cancel()
+        runExecutionControl = nil
+        activeRunMode = nil
+        runLines = [
+            "Audio request: \(request.text)",
+            "",
+            "[audio] model \(audioModelStatusLabel())",
+            "[audio] output \(request.outputURL.path)"
+        ]
+        if let voice = request.voice {
+            runLines.append("[audio] voice \(voice)")
+        }
+        if let format = request.responseFormat {
+            runLines.append("[audio] format \(format)")
+        }
+        if let speed = request.speed {
+            runLines.append("[audio] speed \(speed)")
+        }
+        if let instructions = request.instructions {
+            runLines.append("[audio] instructions \(instructions)")
+        }
+        if request.shouldPlay {
+            runLines.append("[audio] playback on")
+        }
+        transcriptScrollOffset = 0
+        runFinished = false
+        runStartedAt = Date()
+        currentRunPhase = nil
+        currentRunActivity = "Synthesizing audio"
+        currentExplorationTargets = []
+        currentPendingExplorationTargets = []
+        currentRejectedExplorationTargets = []
+        currentChangedFiles = []
+        currentPlannedFiles = []
+        currentPatchObjectives = []
+        currentRunTodos = []
+        promptText = ""
+        inputMode = .prompt
+        showSettings = false
+        showHelp = false
+        showHistory = false
+        focus = .input
+        statusLine = "Synthesizing audio"
+        startWorkingIndicator()
+
+        runTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let attachment = try await self.renderStandaloneAudio(request)
+                await MainActor.run {
+                    self.runLines.append("[done] Generated audio file: \(attachment.localPath)")
+                    if request.shouldPlay {
+                        self.runLines.append("[done] Played audio through macOS")
+                        self.statusLine = "Audio generated and played"
+                    } else {
+                        self.statusLine = "Audio saved"
+                    }
+                    self.runTask = nil
+                    self.finishRun()
+                    self.restorePromptEntryIfIdle()
+                }
+            } catch {
+                await MainActor.run {
+                    self.runTask = nil
+                    self.stopWorkingIndicator()
+                    self.runFinished = true
+                    self.runStartedAt = nil
+                    self.currentRunActivity = nil
+                    self.runLines.append("[error] \(error.localizedDescription)")
+                    self.statusLine = "Audio generation failed"
+                    self.render()
+                }
+            }
+        }
+    }
+
+    private func parseStandaloneAudioRenderRequest(_ prompt: String) throws -> StandaloneAudioRenderRequest {
+        let tokens = try shellStyleTokens(from: prompt)
+        var index = 0
+        var voice: String?
+        var responseFormat: String?
+        var speed: Double?
+        var instructions: String?
+        var outputPath: String?
+        var explicitPlay = false
+        var explicitNoPlay = false
+
+        func requireValue(for option: String) throws -> String {
+            guard index + 1 < tokens.count else {
+                throw AshexError.model("Missing value for \(option)")
+            }
+            index += 1
+            return tokens[index]
+        }
+
+        while index < tokens.count {
+            let token = tokens[index]
+            guard token.hasPrefix("--") else { break }
+            switch token {
+            case "--voice":
+                voice = try requireValue(for: token)
+            case "--format":
+                responseFormat = try requireValue(for: token).lowercased()
+            case "--speed":
+                let rawValue = try requireValue(for: token)
+                guard let parsed = Double(rawValue), (0.25...4.0).contains(parsed) else {
+                    throw AshexError.model("`--speed` must be between 0.25 and 4.0")
+                }
+                speed = parsed
+            case "--instructions":
+                instructions = try requireValue(for: token)
+            case "--output":
+                outputPath = try requireValue(for: token)
+            case "--play":
+                explicitPlay = true
+            case "--no-play":
+                explicitNoPlay = true
+            default:
+                throw AshexError.model("Unknown audio option \(token)")
+            }
+            index += 1
+        }
+
+        let text = tokens[index...].joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else {
+            throw AshexError.model("Audio text is empty")
+        }
+
+        let explicitOutput = outputPath?.isEmpty == false
+        let outputURL = try resolveStandaloneAudioOutputURL(
+            outputPath: outputPath,
+            requestedFormat: responseFormat
+        )
+        let shouldPlay = explicitPlay || (!explicitOutput && !explicitNoPlay)
+
+        return StandaloneAudioRenderRequest(
+            text: text,
+            outputURL: outputURL,
+            explicitOutput: explicitOutput,
+            shouldPlay: shouldPlay,
+            voice: voice,
+            responseFormat: responseFormat,
+            speed: speed,
+            instructions: instructions
+        )
+    }
+
+    private func resolveStandaloneAudioOutputURL(outputPath: String?, requestedFormat: String?) throws -> URL {
+        if let outputPath, !outputPath.isEmpty {
+            let rawURL = outputPath.hasPrefix("/")
+                ? URL(fileURLWithPath: outputPath)
+                : sessionWorkspaceRoot.appendingPathComponent(outputPath)
+            if rawURL.pathExtension.isEmpty, let requestedFormat, !requestedFormat.isEmpty {
+                return rawURL.appendingPathExtension(requestedFormat)
+            }
+            return rawURL
+        }
+
+        let fallbackFormat = (requestedFormat?.isEmpty == false ? requestedFormat! : defaultStandaloneAudioFormat()).lowercased()
+        let outputDirectory = sessionWorkspaceRoot.appendingPathComponent("generated-audio", isDirectory: true)
+        return outputDirectory.appendingPathComponent("\(UUID().uuidString).\(fallbackFormat)")
+    }
+
+    private func defaultStandaloneAudioFormat() -> String {
+        let resolved = sessionUserConfig.audio.resolvedModel(chatProvider: sessionProvider, chatModel: sessionModel)
+        switch resolved.provider {
+        case "openai":
+            return "wav"
+        case "esh", "local":
+            return "wav"
+        default:
+            return "wav"
+        }
+    }
+
+    private func renderStandaloneAudio(_ request: StandaloneAudioRenderRequest) async throws -> InputAttachment {
+        let resolved = sessionUserConfig.audio.resolvedModel(chatProvider: sessionProvider, chatModel: sessionModel)
+        let provider = resolved.provider.lowercased()
+
+        let attachment: InputAttachment
+        switch provider {
+        case "local":
+            guard request.speed == nil, request.instructions == nil else {
+                throw AshexError.model("Current local speech path supports `--voice`, `--output`, and `--play`, but not `--speed` or `--instructions`.")
+            }
+            attachment = try synthesizeLocalSpeech(
+                text: request.text,
+                outputURL: request.outputURL,
+                voice: request.voice
+            )
+        case "openai":
+            attachment = try await synthesizeOpenAISpeech(
+                text: request.text,
+                model: resolved.model,
+                outputURL: request.outputURL,
+                voice: request.voice,
+                responseFormat: request.responseFormat,
+                speed: request.speed,
+                instructions: request.instructions
+            )
+        case "esh":
+            guard request.speed == nil, request.instructions == nil, request.voice == nil else {
+                throw AshexError.model("Current `esh` speech path supports `--output` and `--format`, but not `--voice`, `--speed`, or `--instructions` yet.")
+            }
+            attachment = try synthesizeEshSpeech(
+                text: request.text,
+                model: resolved.model,
+                outputURL: request.outputURL
+            )
+        default:
+            guard request.voice == nil, request.speed == nil, request.instructions == nil else {
+                throw AshexError.model("Selected audio provider `\(provider)` does not expose custom speech controls here. Use local, OpenAI, or esh audio models.")
+            }
+            attachment = try await synthesizeGenericProviderSpeech(
+                provider: provider,
+                model: resolved.model,
+                text: request.text
+            )
+        }
+
+        guard FileManager.default.fileExists(atPath: attachment.localPath) else {
+            throw AshexError.model("Generated audio file was reported but does not exist: \(attachment.localPath)")
+        }
+
+        if request.shouldPlay {
+            try playAudioFile(at: URL(fileURLWithPath: attachment.localPath))
+        }
+
+        return attachment
+    }
+
+    private func synthesizeLocalSpeech(
+        text: String,
+        outputURL: URL,
+        voice: String?
+    ) throws -> InputAttachment {
+        try FileManager.default.createDirectory(at: outputURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let tempURL = outputURL.deletingLastPathComponent().appendingPathComponent("\(UUID().uuidString).aiff")
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/say")
+        var arguments = ["-o", tempURL.path]
+        if let voice, !voice.isEmpty {
+            arguments += ["-v", voice]
+        }
+        arguments.append(text)
+        process.arguments = arguments
+        try process.run()
+        process.waitUntilExit()
+
+        guard process.terminationStatus == 0 else {
+            throw AshexError.shell("/usr/bin/say exited with status \(process.terminationStatus)")
+        }
+
+        try convertAudioIfNeeded(from: tempURL, to: outputURL)
+        return InputAttachment(
+            kind: .audio,
+            localPath: outputURL.path,
+            originalFilename: outputURL.lastPathComponent,
+            mimeType: mimeType(for: outputURL)
+        )
+    }
+
+    private func synthesizeOpenAISpeech(
+        text: String,
+        model: String,
+        outputURL: URL,
+        voice: String?,
+        responseFormat: String?,
+        speed: Double?,
+        instructions: String?
+    ) async throws -> InputAttachment {
+        guard let apiKey = try resolvedSessionAPIKey(for: "openai"), !apiKey.isEmpty else {
+            throw AshexError.model("OPENAI_API_KEY is required for OpenAI audio generation.")
+        }
+
+        let outputExtension = outputURL.pathExtension.lowercased()
+        let effectiveFormat = responseFormat ?? (outputExtension.isEmpty ? "wav" : outputExtension)
+        try FileManager.default.createDirectory(at: outputURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+
+        var request = URLRequest(url: URL(string: "https://api.openai.com/v1/audio/speech")!)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+
+        var payload: [String: JSONValue] = [
+            "model": .string(model),
+            "voice": .string(voice ?? "alloy"),
+            "input": .string(text),
+            "response_format": .string(effectiveFormat),
+        ]
+        if let speed {
+            payload["speed"] = .number(speed)
+        }
+        if let instructions, !instructions.isEmpty, model != "tts-1", model != "tts-1-hd" {
+            payload["instructions"] = .string(instructions)
+        }
+
+        request.httpBody = try JSONEncoder().encode(payload)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse, (200..<300).contains(httpResponse.statusCode) else {
+            throw AshexError.model("OpenAI audio generation failed.")
+        }
+        try data.write(to: outputURL)
+        return InputAttachment(
+            kind: .audio,
+            localPath: outputURL.path,
+            originalFilename: outputURL.lastPathComponent,
+            mimeType: mimeType(for: outputURL)
+        )
+    }
+
+    private func synthesizeEshSpeech(
+        text: String,
+        model: String,
+        outputURL: URL
+    ) throws -> InputAttachment {
+        try FileManager.default.createDirectory(at: outputURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let requestedURL: URL
+        if outputURL.pathExtension.lowercased() == "wav" {
+            requestedURL = outputURL
+        } else {
+            requestedURL = outputURL.deletingPathExtension().appendingPathExtension("wav")
+        }
+        try EshCommandClient.speak(configuration: configuration, text: text, model: model, outputURL: requestedURL)
+        if requestedURL != outputURL {
+            try convertAudioIfNeeded(from: requestedURL, to: outputURL)
+            try? FileManager.default.removeItem(at: requestedURL)
+        }
+        return InputAttachment(
+            kind: .audio,
+            localPath: outputURL.path,
+            originalFilename: outputURL.lastPathComponent,
+            mimeType: mimeType(for: outputURL)
+        )
+    }
+
+    private func synthesizeGenericProviderSpeech(
+        provider: String,
+        model: String,
+        text: String
+    ) async throws -> InputAttachment {
+        let adapter = try configuration.makeModelAdapter(provider: provider, model: model)
+        guard let directChatAdapter = adapter as? any DirectChatModelAdapter else {
+            throw AshexError.model("Selected audio provider `\(provider)` cannot generate direct speech here.")
+        }
+
+        let threadID = UUID()
+        let envelope = try await directChatAdapter.directReplyEnvelope(
+            history: [
+                MessageRecord(
+                    id: UUID(),
+                    threadID: threadID,
+                    runID: nil,
+                    role: .user,
+                    content: """
+                    Generate a spoken audio file for this text.
+                    Return a line that begins with `Generated audio file:`.
+
+                    \(text)
+                    """,
+                    createdAt: Date()
+                )
+            ],
+            systemPrompt: "You are Ashex audio synthesis helper. Produce audio output and return only the generated file line.",
+            attachments: []
+        )
+
+        for line in envelope.text.components(separatedBy: .newlines) {
+            if let attachment = GeneratedAudioReplyParser.attachment(from: line) {
+                return attachment
+            }
+        }
+
+        throw AshexError.model("Selected audio provider reported no generated file.")
+    }
+
+    private func playAudioFile(at url: URL) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/afplay")
+        process.arguments = [url.path]
+        try process.run()
+        process.waitUntilExit()
+
+        guard process.terminationStatus == 0 else {
+            throw AshexError.shell("/usr/bin/afplay exited with status \(process.terminationStatus)")
+        }
+    }
+
+    private func convertAudioIfNeeded(from sourceURL: URL, to outputURL: URL) throws {
+        if sourceURL.standardizedFileURL == outputURL.standardizedFileURL {
+            return
+        }
+
+        try FileManager.default.createDirectory(at: outputURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let lowercasedExtension = outputURL.pathExtension.lowercased()
+        if lowercasedExtension == "aiff" || lowercasedExtension == "aif" || lowercasedExtension.isEmpty {
+            if FileManager.default.fileExists(atPath: outputURL.path) {
+                try FileManager.default.removeItem(at: outputURL)
+            }
+            try FileManager.default.moveItem(at: sourceURL, to: outputURL)
+            return
+        }
+
+        let formatArguments: [String]
+        switch lowercasedExtension {
+        case "wav":
+            formatArguments = ["-f", "WAVE", "-d", "LEI16@22050"]
+        case "m4a", "mp4":
+            formatArguments = ["-f", "m4af", "-d", "aac"]
+        case "caf":
+            formatArguments = ["-f", "caff", "-d", "LEI16@22050"]
+        default:
+            throw AshexError.model("Unsupported audio output format .\(lowercasedExtension)")
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/afconvert")
+        process.arguments = formatArguments + [sourceURL.path, outputURL.path]
+        let stderr = Pipe()
+        process.standardError = stderr
+        try process.run()
+        process.waitUntilExit()
+
+        guard process.terminationStatus == 0 else {
+            let message = String(decoding: stderr.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            throw AshexError.shell("Audio conversion failed: \(message.trimmingCharacters(in: .whitespacesAndNewlines))")
+        }
+    }
+
+    private func mimeType(for url: URL) -> String {
+        switch url.pathExtension.lowercased() {
+        case "mp3": return "audio/mpeg"
+        case "wav": return "audio/wav"
+        case "m4a", "mp4": return "audio/mp4"
+        case "ogg", "oga": return "audio/ogg"
+        case "aiff", "aif": return "audio/aiff"
+        case "caf": return "audio/x-caf"
+        default: return "application/octet-stream"
+        }
+    }
+
+    private func shellStyleTokens(from input: String) throws -> [String] {
+        var tokens: [String] = []
+        var current = ""
+        var inQuotes = false
+        var quoteCharacter: Character?
+        var escaping = false
+
+        for character in input {
+            if escaping {
+                current.append(character)
+                escaping = false
+                continue
+            }
+
+            if character == "\\" {
+                escaping = true
+                continue
+            }
+
+            if inQuotes {
+                if character == quoteCharacter {
+                    inQuotes = false
+                    quoteCharacter = nil
+                } else {
+                    current.append(character)
+                }
+                continue
+            }
+
+            if character == "\"" || character == "'" {
+                inQuotes = true
+                quoteCharacter = character
+                continue
+            }
+
+            if character.isWhitespace {
+                if !current.isEmpty {
+                    tokens.append(current)
+                    current = ""
+                }
+                continue
+            }
+
+            current.append(character)
+        }
+
+        if escaping || inQuotes {
+            throw AshexError.model("Unterminated quote or escape in audio request")
+        }
+        if !current.isEmpty {
+            tokens.append(current)
+        }
+        return tokens
+    }
+
+    private static func looksLikeStandaloneAudioPrompt(_ prompt: String) -> Bool {
+        let lowered = prompt.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !lowered.isEmpty else { return false }
+
+        let audioSignals = [
+            " in voice",
+            " as voice",
+            " in audio",
+            " as audio",
+            "read aloud",
+            "text to speech",
+            "tts",
+            "voice note",
+            "voice message",
+            "spoken audio",
+            "say this",
+            "say hello",
+            "generate audio",
+            "create audio",
+            "make audio",
+            "speak this",
+            "speak it",
+            "synthesize",
+            ".wav",
+            ".mp3"
+        ]
+        guard audioSignals.contains(where: lowered.contains) else {
+            return false
+        }
+
+        let blockers = [
+            "transcribe",
+            "listen to",
+            "audio attachment",
+            "why audio",
+            "fix audio",
+            "audio model",
+            "telegram audio"
+        ]
+        return !blockers.contains(where: lowered.contains)
+    }
+
     private func finishOnboarding(markCompleted: Bool) {
         if markCompleted {
             do {
@@ -1816,7 +2549,7 @@ final class TUIApp {
     }
 
     private func cycleProvider() {
-        let providers = ["mock", "esh", "ollama", "dflash", "openai", "anthropic"]
+        let providers = ["mock", "esh", "ollama", "dflash", "openai", "deepseek", "anthropic"]
         let currentIndex = providers.firstIndex(of: sessionProvider) ?? 0
         let nextProvider = providers[(currentIndex + 1) % providers.count]
 
@@ -1912,6 +2645,24 @@ final class TUIApp {
             return
         }
 
+        if sessionProvider == "esh", trimmed.lowercased().hasPrefix("install ") {
+            let query = String(trimmed.dropFirst("install ".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !query.isEmpty else {
+                statusLine = "Use `install <repo-or-search-term>`"
+                return
+            }
+            inputMode = .prompt
+            focus = showSettings ? .settings : .launcher
+            statusLine = "Installing \(query) with esh..."
+            Task { [weak self] in
+                let result = await self?.installEshModel(query: query, selectInstalledModel: true) ?? (false, "Install failed")
+                await MainActor.run {
+                    self?.statusLine = result.message ?? (result.success ? "Install complete" : "Install failed")
+                }
+            }
+            return
+        }
+
         sessionModel = trimmed
         inputMode = .prompt
         focus = showSettings ? .settings : .launcher
@@ -1927,6 +2678,23 @@ final class TUIApp {
 
     private func commitAudioModelInput() {
         let trimmed = audioModelInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.lowercased().hasPrefix("install ") {
+            let query = String(trimmed.dropFirst("install ".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !query.isEmpty else {
+                statusLine = "Use `install <repo-or-search-term>`"
+                return
+            }
+            inputMode = .prompt
+            focus = showSettings ? .settings : .launcher
+            statusLine = "Installing \(query) with esh..."
+            Task { [weak self] in
+                let result = await self?.installEshAudioModel(query: query) ?? (false, "Install failed")
+                await MainActor.run {
+                    self?.statusLine = result.message ?? (result.success ? "Install complete" : "Install failed")
+                }
+            }
+            return
+        }
         let parsed = parseAudioModelInput(trimmed)
         if let config = parsed.config {
             sessionUserConfig.audio = config
@@ -2019,7 +2787,7 @@ final class TUIApp {
                 )
             }
             return providerStatus.availableModels
-        case .audioEsh:
+        case .audio:
             return audioProviderStatus.availableModels
         }
     }
@@ -2031,10 +2799,8 @@ final class TUIApp {
         switch modelPickerTarget {
         case .chat:
             selectedModel = sessionModel
-        case .audioEsh:
-            selectedModel = sessionUserConfig.audio.provider == "esh"
-                ? sessionUserConfig.audio.model ?? ""
-                : ""
+        case .audio:
+            selectedModel = audioModelInputValue()
         }
         return models.firstIndex {
             $0.localizedCaseInsensitiveCompare(selectedModel) == .orderedSame
@@ -2044,7 +2810,7 @@ final class TUIApp {
     private func commitSelectedProviderModel() {
         let models = providerPickerModels
         guard !models.isEmpty else {
-            let providerLabel = modelPickerTarget == .audioEsh ? "esh audio" : sessionProvider
+            let providerLabel = modelPickerTarget == .audio ? "audio" : sessionProvider
             statusLine = modelSearchQuery.isEmpty
                 ? "No \(providerLabel) models available yet. Refresh status first."
                 : "No \(providerLabel) models match \(modelSearchQuery)"
@@ -2061,10 +2827,15 @@ final class TUIApp {
             refreshSessionRuntime()
             persistSessionSettings()
             statusLine = "Model updated to \(sessionModel)"
-        case .audioEsh:
-            sessionUserConfig.audio = AudioConfig(selection: .separateModel, provider: "esh", model: selectedModel)
-            persistUserConfig()
-            statusLine = "Audio model updated: \(audioModelStatusLabel())"
+        case .audio:
+            let parsed = parseAudioModelInput(selectedModel)
+            if let config = parsed.config {
+                sessionUserConfig.audio = config
+                persistUserConfig()
+                statusLine = "Audio model updated: \(audioModelStatusLabel())"
+            } else {
+                statusLine = parsed.error ?? "Audio model update failed"
+            }
         }
         modelPickerTarget = .chat
 
@@ -2280,6 +3051,23 @@ final class TUIApp {
         Task { [weak self] in
             await self?.refreshProviderStatus()
         }
+    }
+
+    private func resolvedSessionAPIKey(for provider: String) throws -> String? {
+        if let environmentKey = ProcessInfo.processInfo.environment[CLIConfiguration.environmentAPIKeyName(for: provider)],
+           !environmentKey.isEmpty {
+            return environmentKey
+        }
+
+        if let stored = try secretStore.readSecret(
+            namespace: "provider.credentials",
+            key: CLIConfiguration.apiKeySettingKey(for: provider)
+        ),
+           !stored.isEmpty {
+            return stored
+        }
+
+        return try configuration.resolvedAPIKey(for: provider)
     }
 
     private func refreshSessionRuntime() {
@@ -2809,7 +3597,7 @@ final class TUIApp {
         inputMode = .prompt
         focus = .input
         if promptText.isEmpty {
-            statusLine = "Type your next prompt"
+            statusLine = composeMode == .audio ? "Type text to synthesize" : "Type your next prompt"
         }
     }
 
@@ -3372,10 +4160,10 @@ final class TUIApp {
                 emptyState: "No help entries."
             )
         } else if isChatConversationVisible {
-            rightTitle = "Chat"
+            rightTitle = composeMode == .audio ? "Audio" : "Chat"
             rightLines = renderChatConversationLines(width: rightWidth - 4, maxBodyHeight: bodyHeight)
         } else if isComposeTranscriptVisible {
-            rightTitle = "New Chat"
+            rightTitle = composeMode == .audio ? "Audio" : "New Chat"
             rightLines = renderComposeLines(width: rightWidth - 4, maxBodyHeight: bodyHeight)
         } else {
             rightTitle = runFinished ? "Run Transcript" : "Live Run"
@@ -3422,10 +4210,16 @@ final class TUIApp {
 
         for (index, item) in menuItems.enumerated() {
             let selected = index == selectedIndex
-            let marker = selected ? "\(TerminalUIStyle.selection) \(TerminalUIStyle.reset)" : " "
+            let marker = selected
+                ? "\(TerminalUIStyle.selection)\(TerminalUIStyle.bold)\(TerminalUIStyle.cyan)›\(TerminalUIStyle.reset)"
+                : " "
             let titleColor = selected ? TerminalUIStyle.cyan : TerminalUIStyle.ink
-            lines.append("\(marker) \(TerminalUIStyle.bold)\(titleColor)\(item.title)\(TerminalUIStyle.reset)")
-            lines.append("   \(TerminalUIStyle.slate)\(TerminalUIStyle.truncateVisible(item.subtitle, limit: max(width - 3, 10)))\(TerminalUIStyle.reset)")
+            let titlePrefix = selected ? "\(TerminalUIStyle.selection) " : "  "
+            let titleSuffix = selected ? "\(TerminalUIStyle.reset)" : ""
+            let subtitlePrefix = selected ? "\(TerminalUIStyle.selection) " : "  "
+            let subtitleSuffix = selected ? "\(TerminalUIStyle.reset)" : ""
+            lines.append("\(marker) \(titlePrefix)\(TerminalUIStyle.bold)\(titleColor)\(item.title)\(TerminalUIStyle.reset)\(titleSuffix)")
+            lines.append("\(selected ? "  " : "   ")\(subtitlePrefix)\(TerminalUIStyle.slate)\(TerminalUIStyle.truncateVisible(item.subtitle, limit: max(width - 5, 10)))\(TerminalUIStyle.reset)\(subtitleSuffix)")
             if index != menuItems.count - 1 { lines.append("") }
         }
         return lines
@@ -3540,7 +4334,7 @@ final class TUIApp {
             lines.append("\(TerminalUIStyle.faint)Shortcut: press r to refresh the model list.\(TerminalUIStyle.reset)")
         } else if onboardingStep == .audioModel {
             lines.append("")
-            lines.append("\(TerminalUIStyle.faint)Shortcut: press r to refresh esh audio models.\(TerminalUIStyle.reset)")
+            lines.append("\(TerminalUIStyle.faint)Shortcut: press r to refresh audio models.\(TerminalUIStyle.reset)")
         }
 
         let bodyLimit = max(maxBodyHeight - 3, 1)
@@ -3711,6 +4505,13 @@ final class TUIApp {
             "\(TerminalUIStyle.slate)Bundled packs\(TerminalUIStyle.reset) swiftpm, ios_xcode, python",
             "\(TerminalUIStyle.slate)Custom pack folders\(TerminalUIStyle.reset) WORKSPACE/toolpacks and ~/.config/ashex/toolpacks",
             "\(TerminalUIStyle.slate)Manifest format\(TerminalUIStyle.reset) JSON with pack metadata, typed operations, approvals, and shell templates",
+            "",
+            "\(TerminalUIStyle.ink)Computer Use / GUI Automation\(TerminalUIStyle.reset)",
+            "\(TerminalUIStyle.slate)Launcher item\(TerminalUIStyle.reset) Run prototype loop",
+            "\(TerminalUIStyle.slate)Enabled: \(sessionUserConfig.computerUse.enabled ? "true" : "false")\(TerminalUIStyle.reset)",
+            "\(TerminalUIStyle.slate)Backend: \(computerUseBackendSummary)\(TerminalUIStyle.reset)",
+            "\(TerminalUIStyle.slate)Safety: \(sessionUserConfig.computerUse.safety.rawValue)\(TerminalUIStyle.reset)",
+            "\(TerminalUIStyle.slate)\(TerminalUIStyle.truncateVisible("Manifest: " + ComputerUseCLI.resolvedManifestURL(workspaceRoot: sessionWorkspaceRoot, config: sessionUserConfig.computerUse).path, limit: width))\(TerminalUIStyle.reset)",
             "",
             "\(TerminalUIStyle.ink)Shell Tool\(TerminalUIStyle.reset)",
             "\(TerminalUIStyle.slate)command\(TerminalUIStyle.reset) Execute a shell command from the workspace root",
@@ -3886,10 +4687,10 @@ final class TUIApp {
             }
         }
 
-        let showingAudioPicker = showModelPicker && modelPickerTarget == .audioEsh
+        let showingAudioPicker = showModelPicker && modelPickerTarget == .audio
         if !audioProviderStatus.availableModels.isEmpty {
             lines.append("")
-            lines.append("\(TerminalUIStyle.ink)\(showingAudioPicker ? "Pick an Audio Model" : "Audio Models (esh)")\(TerminalUIStyle.reset)")
+            lines.append("\(TerminalUIStyle.ink)\(showingAudioPicker ? "Pick an Audio Model" : "Audio Models")\(TerminalUIStyle.reset)")
             if showingAudioPicker, !modelSearchQuery.isEmpty {
                 lines.append("\(TerminalUIStyle.slate)Search: \(TerminalUIStyle.truncateVisible(modelSearchQuery, limit: max(width - 8, 10)))\(TerminalUIStyle.reset)")
             }
@@ -3906,7 +4707,7 @@ final class TUIApp {
                 }
             }
             if showingAudioPicker && availableModels.isEmpty {
-                lines.append("\(TerminalUIStyle.slate)No esh audio models match the current search.\(TerminalUIStyle.reset)")
+                lines.append("\(TerminalUIStyle.slate)No audio models match the current search.\(TerminalUIStyle.reset)")
             }
         }
 
@@ -3930,7 +4731,7 @@ final class TUIApp {
 
         if showModelPicker {
             lines.append("")
-            let pickerKind = modelPickerTarget == .audioEsh ? "audio models" : "models"
+            let pickerKind = modelPickerTarget == .audio ? "audio models" : "models"
             lines.append("\(TerminalUIStyle.amber)Type to search \(pickerKind), Backspace edits search, ↑/↓ chooses, Enter applies, Esc closes.\(TerminalUIStyle.reset)")
         } else if inputMode == .model {
             lines.append("")
@@ -3967,7 +4768,7 @@ final class TUIApp {
     }
 
     private func apiKeyStatusLabel(for provider: String) -> String {
-        guard provider == "openai" || provider == "anthropic" else {
+        guard provider == "openai" || provider == "anthropic" || provider == "deepseek" else {
             return "Not required"
         }
 
@@ -4102,6 +4903,8 @@ final class TUIApp {
     private func looksLikeAPIKey(_ value: String, for provider: String) -> Bool {
         switch provider {
         case "openai":
+            return value.hasPrefix("sk-")
+        case "deepseek":
             return value.hasPrefix("sk-")
         case "anthropic":
             return value.hasPrefix("sk-ant-") || value.hasPrefix("sk_live_")
@@ -4294,7 +5097,7 @@ final class TUIApp {
         let innerWidth = max(width - 4, 20)
         let actualLabelText: String
         switch inputMode {
-        case .prompt: actualLabelText = "Chat"
+        case .prompt: actualLabelText = composeMode == .audio ? "Audio" : "Chat"
         case .model: actualLabelText = "Model"
         case .audioModel: actualLabelText = "Audio"
         case .apiKey: actualLabelText = "API Key"
@@ -4340,7 +5143,9 @@ final class TUIApp {
                     ? "Type a shell command for the side terminal, then press Enter…"
                 : inputMode == .onboardingText
                     ? "Type setup answer, then press Enter…"
-                : "Type a message here, then press Enter to send…"
+                : composeMode == .audio
+                    ? "Type text to speak. Optional: --voice alloy --format wav --output clip.wav Hello…"
+                    : "Type a message here, then press Enter to send…"
         let prompt = currentText.isEmpty
             ? "\(TerminalUIStyle.faint)\(placeholder)\(TerminalUIStyle.reset)"
             : "\(TerminalUIStyle.ink)\(currentText)\(TerminalUIStyle.reset)"
@@ -4624,6 +5429,9 @@ final class TUIApp {
             if lowered.contains("gpt-4.1") { return 1_000_000 }
             if lowered.contains("gpt-4o") { return 128_000 }
             return 128_000
+        case "deepseek":
+            if lowered.contains("v4") { return 1_000_000 }
+            return 128_000
         case "anthropic":
             if lowered.contains("claude") { return 200_000 }
             return 200_000
@@ -4762,6 +5570,35 @@ final class TUIApp {
     }
 
     private func composeTranscriptLines(width: Int) -> [String] {
+        if composeMode == .audio {
+            var lines: [String] = [
+                "\(TerminalUIStyle.ink)Generate audio\(TerminalUIStyle.reset)",
+                "\(TerminalUIStyle.slate)Type text below and press Enter. Ashex will synthesize speech with current audio model.\(TerminalUIStyle.reset)",
+                "",
+                "\(TerminalUIStyle.faint)workspace\(TerminalUIStyle.reset) \(TerminalUIStyle.truncateVisible(sessionWorkspaceRoot.path, limit: width))",
+                "\(TerminalUIStyle.faint)chat model\(TerminalUIStyle.reset) \(sessionProvider)/\(sessionModel)",
+                "\(TerminalUIStyle.faint)audio model\(TerminalUIStyle.reset) \(audioModelStatusLabel())",
+                ""
+            ]
+
+            if promptText.isEmpty {
+                lines.append("\(TerminalUIStyle.cyan)Audio request\(TerminalUIStyle.reset)")
+                lines.append("\(TerminalUIStyle.faint)Draft is empty. Type text below, then press Enter to speak it.\(TerminalUIStyle.reset)")
+                lines.append("")
+                lines.append("\(TerminalUIStyle.ink)Flags\(TerminalUIStyle.reset)")
+                lines.append("\(TerminalUIStyle.slate)- `--voice alloy --format wav Hello from Ashex`\(TerminalUIStyle.reset)")
+                lines.append("\(TerminalUIStyle.slate)- `--output clips/hello.mp3 Hello from Ashex`\(TerminalUIStyle.reset)")
+                lines.append("\(TerminalUIStyle.slate)- `--instructions \\\"warm narrator\\\" --speed 1.1 Hello`\(TerminalUIStyle.reset)")
+            } else {
+                lines.append("\(TerminalUIStyle.cyan)Audio request\(TerminalUIStyle.reset)")
+                lines.append(contentsOf: wrapRunLine(promptText, width: width))
+                lines.append("")
+                lines.append("\(TerminalUIStyle.faint)Press Enter to synthesize audio. Use `--output path` to save instead of auto-playing.\(TerminalUIStyle.reset)")
+            }
+
+            return lines
+        }
+
         let threadLabel = activeThreadID.map { "thread \($0.uuidString.prefix(8))" } ?? "new thread"
         var lines: [String] = [
             "\(TerminalUIStyle.ink)\(activeThreadID == nil ? "Start a new chat" : "Continue chat")\(TerminalUIStyle.reset)",
@@ -4769,6 +5606,7 @@ final class TUIApp {
             "",
             "\(TerminalUIStyle.faint)workspace\(TerminalUIStyle.reset) \(TerminalUIStyle.truncateVisible(sessionWorkspaceRoot.path, limit: width))",
             "\(TerminalUIStyle.faint)provider\(TerminalUIStyle.reset) \(sessionProvider)  \(TerminalUIStyle.faint)model\(TerminalUIStyle.reset) \(sessionModel)",
+            "\(TerminalUIStyle.faint)audio\(TerminalUIStyle.reset) \(audioModelStatusLabel())",
             "\(TerminalUIStyle.faint)active\(TerminalUIStyle.reset) \(threadLabel)",
             ""
         ]
@@ -4886,6 +5724,9 @@ final class TUIApp {
         guard pendingApproval == nil else { return false }
         guard !showWorkspaces, !showHistory, !showSettings, !showCommands, !showHelp else { return false }
         guard runFinished, runLines.isEmpty, inputMode == .prompt else { return false }
+        if composeMode == .audio {
+            return true
+        }
         switch focus {
         case .input, .transcript:
             return true
@@ -4897,6 +5738,7 @@ final class TUIApp {
     private var isChatConversationVisible: Bool {
         guard pendingApproval == nil else { return false }
         guard !showWorkspaces, !showHistory, !showSettings, !showCommands, !showHelp else { return false }
+        guard composeMode == .chat else { return false }
         guard inputMode == .prompt, activeThreadID != nil else { return false }
         return !activeChatMessages.isEmpty || !runFinished || activeRunMode != nil
     }
@@ -6060,8 +6902,8 @@ final class TUIApp {
 
     private func queuedPromptBlockedDetails() -> [String]? {
         switch sessionProvider {
-        case "openai", "anthropic":
-            let apiKey = try? configuration.resolvedAPIKey(for: sessionProvider)
+        case "openai", "anthropic", "deepseek":
+            let apiKey = try? resolvedSessionAPIKey(for: sessionProvider)
             if (apiKey ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 return ["\(sessionProvider.capitalized) API key is missing."]
             }
@@ -6136,6 +6978,7 @@ final class TUIApp {
             toolRegistry: ToolRegistry(tools: try RuntimeToolFactory.makeTools(
                 workspaceURL: sessionWorkspaceRoot,
                 persistence: persistence,
+                userConfig: sessionUserConfig,
                 sandbox: sessionUserConfig.sandbox,
                 shellExecutionPolicy: shellExecutionPolicy
             )),
@@ -6150,7 +6993,7 @@ final class TUIApp {
     private func refreshProviderStatus() async {
         let provider = sessionProvider
         let model = sessionModel
-        let apiKey = try? configuration.resolvedAPIKey(for: provider)
+        let apiKey = try? resolvedSessionAPIKey(for: provider)
         let snapshot = await ProviderInspector.inspect(
             provider: provider,
             model: model,
@@ -6190,7 +7033,7 @@ final class TUIApp {
         }
         let statusProvider = sessionProvider
         let statusModel = sessionModel
-        let audioSnapshot = await inspectEshAudioProviderStatus()
+        let audioSnapshot = await inspectAudioProviderStatus()
         guard statusProvider == sessionProvider, statusModel == sessionModel else {
             return
         }
@@ -6293,8 +7136,8 @@ final class TUIApp {
     }
 
     private func refreshAudioProviderStatus() async {
-        audioProviderStatus = await inspectEshAudioProviderStatus()
-        if showModelPicker, modelPickerTarget == .audioEsh {
+        audioProviderStatus = await inspectAudioProviderStatus()
+        if showModelPicker, modelPickerTarget == .audio {
             if providerPickerModels.isEmpty {
                 showModelPicker = false
                 modelSearchQuery = ""
@@ -6306,18 +7149,29 @@ final class TUIApp {
         render()
     }
 
-    private func inspectEshAudioProviderStatus() async -> ProviderStatusSnapshot {
-        let model: String
-        if sessionUserConfig.audio.provider == "esh" {
-            model = sessionUserConfig.audio.model ?? "auto"
-        } else {
-            model = "auto"
+    private func inspectAudioProviderStatus() async -> ProviderStatusSnapshot {
+        let eshAudioModels = (try? EshCommandClient.listInstalledAudioModels(configuration: configuration)) ?? []
+        let combined = AudioSelectionCatalog.displayModels(
+            chatProvider: sessionProvider,
+            chatModel: sessionModel,
+            chatAvailableModels: providerStatus.availableModels,
+            eshAudioModels: eshAudioModels
+        )
+
+        var details: [String] = []
+        if !providerStatus.availableModels.isEmpty {
+            details.append("Current provider \(sessionProvider) exposes \(providerStatus.availableModels.count) model(s).")
         }
-        return await ProviderInspector.inspect(
-            provider: "esh",
-            model: model,
-            dflashConfig: sessionUserConfig.dflash,
-            userConfig: sessionUserConfig
+        if !eshAudioModels.isEmpty {
+            details.append("esh reports \(eshAudioModels.count) dedicated audio model(s).")
+        }
+        details.append("OpenAI speech models are available as cross-provider audio choices.")
+
+        return .init(
+            headline: combined.isEmpty ? "No audio models discovered yet" : "Audio model choices are ready",
+            details: details,
+            availableModels: combined,
+            guardrailAssessment: nil
         )
     }
 
@@ -6446,7 +7300,7 @@ final class TUIApp {
         switch provider {
         case "mock":
             return true
-        case "openai", "anthropic":
+        case "openai", "anthropic", "deepseek":
             return !snapshot.headline.localizedCaseInsensitiveContains("missing") &&
                 !snapshot.headline.localizedCaseInsensitiveContains("failed")
         case "esh":
@@ -6538,16 +7392,18 @@ enum ModelCatalogDisplay {
     }
 }
 
-enum EshAudioModelCatalog {
+enum GenericAudioModelCatalog {
     static func choices(from displayModels: [String], limit: Int = 8) -> [AudioModelCatalogChoice] {
         displayModels.prefix(limit).compactMap { displayName in
-            guard let model = ModelCatalogDisplay.selectableModelName(from: displayName) else {
+            let components = displayName.components(separatedBy: " • ")
+            guard let reference = components.first?.trimmingCharacters(in: .whitespacesAndNewlines), !reference.isEmpty else {
                 return nil
             }
+            let detail = components.dropFirst().joined(separator: " • ")
             return AudioModelCatalogChoice(
-                title: "esh/\(model)",
-                subtitle: displayName == model ? "Available from esh" : displayName,
-                model: model
+                title: reference,
+                subtitle: detail.isEmpty ? "Available as an audio model" : detail,
+                model: reference
             )
         }
     }
@@ -6850,6 +7706,51 @@ private enum ProviderInspector {
                     details: [
                         error.localizedDescription,
                         "A 401 usually means the saved key is malformed, expired, or was pasted incorrectly. Re-enter it in Provider Settings, then choose Refresh Status."
+                    ],
+                    availableModels: [],
+                    guardrailAssessment: nil
+                )
+            }
+        case "deepseek":
+            guard let apiKey, !apiKey.isEmpty else {
+                return .init(
+                    headline: "DeepSeek API key missing",
+                    details: [
+                        "DeepSeek needs an API key before it can fetch models or run prompts.",
+                        "Add it in Provider Settings with the API Key action, or set DEEPSEEK_API_KEY before launch.",
+                        "After saving the key, choose Refresh Status."
+                    ],
+                    availableModels: [],
+                    guardrailAssessment: nil
+                )
+            }
+
+            do {
+                let models = try await DeepSeekModelsClient.fetchModels(
+                    apiKey: apiKey,
+                    baseURL: CLIConfiguration.deepSeekBaseURL(config: userConfig.deepseek)
+                )
+                let selectedAvailable = models.contains(model)
+                return .init(
+                    headline: selectedAvailable ? "DeepSeek configuration looks ready" : "Selected DeepSeek model not found",
+                    details: [
+                        "DeepSeek API key is available.",
+                        selectedAvailable
+                            ? "The selected model is \(model)."
+                            : "The current model \(model) was not returned by the DeepSeek models API.",
+                        selectedAvailable
+                            ? "Choose Refresh Status anytime to fetch the current model list again."
+                            : "Pick one of the fetched models below or enter a known model name manually."
+                    ],
+                    availableModels: models,
+                    guardrailAssessment: nil
+                )
+            } catch {
+                return .init(
+                    headline: "DeepSeek model list fetch failed",
+                    details: [
+                        error.localizedDescription,
+                        "Check the saved API key or network connection, then choose Refresh Status."
                     ],
                     availableModels: [],
                     guardrailAssessment: nil
@@ -7301,6 +8202,42 @@ private enum OpenAIModelsClient {
                 return lowered.hasPrefix("gpt") || lowered.hasPrefix("o") || lowered.hasPrefix("codex")
             }
             .sorted()
+    }
+}
+
+private enum DeepSeekModelsClient {
+    private struct Envelope: Decodable {
+        let data: [Model]
+    }
+
+    private struct Model: Decodable {
+        let id: String
+    }
+
+    static func fetchModels(
+        apiKey: String,
+        baseURL: URL = URL(string: "https://api.deepseek.com")!,
+        session: URLSession = .shared
+    ) async throws -> [String] {
+        let requestURL = baseURL.appending(path: "models")
+        var request = URLRequest(url: requestURL)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw AshexError.model("DeepSeek model list did not return an HTTP response")
+        }
+
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            if httpResponse.statusCode == 401 {
+                throw AshexError.model("DeepSeek rejected the API key (401). Re-enter the key in Provider Settings and verify it is a valid current DeepSeek API key.")
+            }
+            throw AshexError.model("DeepSeek model list request failed with status \(httpResponse.statusCode)")
+        }
+
+        let envelope = try JSONDecoder().decode(Envelope.self, from: data)
+        return envelope.data.map(\.id).sorted()
     }
 }
 

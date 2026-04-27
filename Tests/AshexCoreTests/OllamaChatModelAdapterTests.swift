@@ -90,6 +90,27 @@ struct OllamaChatModelAdapterTests {
         #expect(!body.contains(#""type":"final_answer""#))
     }
 
+    @Test func sendsBrowserNativeToolsForBrowsePrompts() async throws {
+        let session = makeOllamaStubbedSession(statusCode: 200, body: """
+        {
+          "message": {
+            "content": "I can browse that."
+          }
+        }
+        """)
+
+        let adapter = OllamaChatModelAdapter(
+            configuration: .init(model: "llama3.2", baseURL: URL(string: "http://localhost:11434/api/chat")!),
+            session: session
+        )
+
+        _ = try await adapter.nextAction(for: browserNativeToolModelContext())
+
+        let body = try #require(OllamaStubURLProtocol.state.lastRequestBodyString)
+        #expect(body.contains(#""name":"browser_fetch__fetch""#))
+        #expect(!body.contains(#""name":"filesystem__read_text_file""#))
+    }
+
     @Test func parsesFlattenedOllamaNativeToolCall() async throws {
         let session = makeOllamaStubbedSession(statusCode: 200, body: """
         {
@@ -562,6 +583,50 @@ private func nativeToolModelContext() -> ModelContext {
                         mutatesWorkspace: true,
                         arguments: [
                             .init(name: "command", description: "Command to run", type: .string, required: true)
+                        ]
+                    )
+                ]
+            )
+        ]
+    )
+}
+
+private func browserNativeToolModelContext() -> ModelContext {
+    let thread = ThreadRecord(id: UUID(), createdAt: Date())
+    let run = RunRecord(id: UUID(), threadID: thread.id, state: .running, createdAt: Date(), updatedAt: Date())
+    return ModelContext(
+        thread: thread,
+        run: run,
+        messages: [
+            .init(id: UUID(), threadID: thread.id, runID: run.id, role: .user, content: "Browse https://example.com and summarize the website", createdAt: Date()),
+        ],
+        availableTools: [
+            .init(
+                name: "filesystem",
+                description: "Read/write text files and list or create directories within the workspace",
+                operationArgumentKey: "operation",
+                operations: [
+                    .init(
+                        name: "read_text_file",
+                        description: "Read a text file",
+                        mutatesWorkspace: false,
+                        arguments: [
+                            .init(name: "path", description: "Workspace-relative file path", type: .string, required: true)
+                        ]
+                    )
+                ]
+            ),
+            .init(
+                name: "browser_fetch",
+                description: "Render a page and extract readable content.",
+                operations: [
+                    .init(
+                        name: "fetch",
+                        description: "Navigate to a page and extract readable content.",
+                        mutatesWorkspace: false,
+                        requiresNetwork: true,
+                        arguments: [
+                            .init(name: "url", description: "Absolute URL", type: .string, required: true)
                         ]
                     )
                 ]

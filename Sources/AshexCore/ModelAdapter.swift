@@ -308,6 +308,32 @@ public struct OpenAIModelConfiguration: Sendable {
     }
 }
 
+public struct DeepSeekModelConfiguration: Sendable {
+    public let apiKey: String
+    public let model: String
+    public let baseURL: URL
+    public let requestTimeoutSeconds: Int
+
+    public init(
+        apiKey: String,
+        model: String = "deepseek-v4-flash",
+        baseURL: URL = URL(string: "https://api.deepseek.com")!,
+        requestTimeoutSeconds: Int = 180
+    ) {
+        self.apiKey = apiKey
+        self.model = model
+        self.baseURL = baseURL
+        self.requestTimeoutSeconds = requestTimeoutSeconds
+    }
+
+    var chatCompletionsURL: URL {
+        let path = baseURL.path.hasSuffix("/chat/completions")
+            ? baseURL
+            : baseURL.appending(path: "chat/completions")
+        return path
+    }
+}
+
 public struct OpenAIResponsesModelAdapter: ModelAdapter {
     public let name: String
     public let providerID = "openai"
@@ -498,6 +524,163 @@ extension OpenAIResponsesModelAdapter: TaskPlanningModelAdapter {
             throw AshexError.model("OpenAI planning response did not include structured output text")
         }
         return try TaskPlanParser.parsePlan(from: outputText, fallbackTaskKind: taskKind)
+    }
+}
+
+public struct DeepSeekChatCompletionsModelAdapter: ModelAdapter {
+    public let name: String
+    public let providerID = "deepseek"
+    public var modelID: String { configuration.model }
+
+    private let configuration: DeepSeekModelConfiguration
+    private let session: URLSession
+    private let encoder: JSONEncoder
+    private let decoder: JSONDecoder
+
+    public init(
+        configuration: DeepSeekModelConfiguration,
+        session: URLSession = .shared
+    ) {
+        self.configuration = configuration
+        self.session = session
+        self.name = "deepseek-chat-completions:\(configuration.model)"
+        self.encoder = JSONEncoder()
+        self.decoder = JSONDecoder()
+    }
+
+    fileprivate static func directChatMessages(from history: [MessageRecord]) -> [DeepSeekChatCompletionsRequest.Message] {
+        history.suffix(12).map { message in
+            .init(role: message.role == .assistant ? "assistant" : "user", content: message.content)
+        }
+    }
+
+    public func nextAction(for context: ModelContext) async throws -> ModelAction {
+        let assembly = PromptBuilder.build(for: context, provider: "deepseek", model: configuration.model)
+        let requestBody = DeepSeekChatCompletionsRequest(
+            model: configuration.model,
+            messages: [
+                .init(
+                    role: "system",
+                    content: assembly.systemPrompt + "\n\nReply with exactly one JSON object matching the requested schema and nothing else."
+                ),
+                .init(role: "user", content: assembly.userPrompt),
+            ],
+            temperature: 0,
+            stream: false,
+            responseFormat: .init(type: "json_object")
+        )
+
+        let content = try await requestContent(
+            requestBody,
+            emptyReplyMessage: "DeepSeek response did not include structured output text"
+        )
+        return try ToolInvocationParser.parseAction(from: content)
+    }
+}
+
+extension DeepSeekChatCompletionsModelAdapter: DirectChatModelAdapter {
+    public func directReply(history: [MessageRecord], systemPrompt: String) async throws -> String {
+        try await directReplyEnvelope(history: history, systemPrompt: systemPrompt, attachments: []).text
+    }
+
+    public func directReplyEnvelope(history: [MessageRecord], systemPrompt: String, attachments _: [InputAttachment]) async throws -> DirectChatReplyEnvelope {
+        do {
+            return try await requestDirectReply(history: history, systemPrompt: systemPrompt, repair: false)
+        } catch let error as AshexError {
+            guard error.localizedDescription.lowercased().contains("did not return a reply") else { throw error }
+            return try await requestDirectReply(history: history, systemPrompt: systemPrompt, repair: true)
+        }
+    }
+
+    private func requestDirectReply(
+        history: [MessageRecord],
+        systemPrompt: String,
+        repair: Bool
+    ) async throws -> DirectChatReplyEnvelope {
+        let repairInstruction = repair
+            ? "\n\nYour previous reply was empty. Reply again with a non-empty `reply` string."
+            : ""
+        let requestBody = DeepSeekChatCompletionsRequest(
+            model: configuration.model,
+            messages: [
+                .init(
+                    role: "system",
+                    content: systemPrompt + "\n\nReply naturally to latest user message. Do not call tools. Return only JSON object with single `reply` string field." + repairInstruction
+                )
+            ] + Self.directChatMessages(from: history),
+            temperature: 0.2,
+            stream: false,
+            responseFormat: .init(type: "json_object")
+        )
+
+        let content = try await requestContent(
+            requestBody,
+            emptyReplyMessage: "DeepSeek direct chat did not return a reply"
+        )
+        guard let reply = DirectChatReplyParser.parseReply(from: content) else {
+            throw AshexError.model("DeepSeek direct chat did not return a reply")
+        }
+        return .init(text: reply, reasoningSummary: ReasoningSummaryExtractor.summary(fromExposedThinkingIn: content))
+    }
+}
+
+extension DeepSeekChatCompletionsModelAdapter: TaskPlanningModelAdapter {
+    public func taskPlan(for prompt: String, taskKind: TaskKind) async throws -> TaskPlan? {
+        let requestBody = DeepSeekChatCompletionsRequest(
+            model: configuration.model,
+            messages: [
+                .init(role: "system", content: """
+                You are planning a software task for an agent.
+                Break request into short, concrete ordered task list.
+                Return 2 to 6 steps only when work is genuinely multi-step.
+                Use phases from: exploration, planning, mutation, validation.
+                Keep each title concise and action-oriented.
+                Return only a JSON object with a `steps` array of `{title, phase}` items.
+                """),
+                .init(role: "user", content: "Task kind: \(taskKind.rawValue)\n\nUser request:\n\(prompt)"),
+            ],
+            temperature: 0,
+            stream: false,
+            responseFormat: .init(type: "json_object")
+        )
+
+        let content = try await requestContent(
+            requestBody,
+            emptyReplyMessage: "DeepSeek planning response did not include structured output text"
+        )
+        return try TaskPlanParser.parsePlan(from: content, fallbackTaskKind: taskKind)
+    }
+}
+
+private extension DeepSeekChatCompletionsModelAdapter {
+    func requestContent(
+        _ requestBody: DeepSeekChatCompletionsRequest,
+        emptyReplyMessage: String
+    ) async throws -> String {
+        var request = URLRequest(url: configuration.chatCompletionsURL)
+        request.httpMethod = "POST"
+        request.timeoutInterval = TimeInterval(configuration.requestTimeoutSeconds)
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(configuration.apiKey)", forHTTPHeaderField: "Authorization")
+        request.httpBody = try encoder.encode(requestBody)
+
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw AshexError.model("DeepSeek request did not return an HTTP response")
+        }
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            let apiError = try? decoder.decode(DFlashErrorEnvelope.self, from: data)
+            throw AshexError.model(apiError?.error.message ?? "DeepSeek request failed with status \(httpResponse.statusCode)")
+        }
+
+        let envelope = try decoder.decode(DFlashChatCompletionsResponseEnvelope.self, from: data)
+        guard
+            let content = envelope.choices.first?.message.content?.trimmingCharacters(in: .whitespacesAndNewlines),
+            !content.isEmpty
+        else {
+            throw AshexError.model(emptyReplyMessage)
+        }
+        return content
     }
 }
 
@@ -757,6 +940,9 @@ public struct OllamaChatModelAdapter: ModelAdapter {
 
     private static func preferredNativeTools(from tools: [ToolSchema], prompt: String) -> [ToolSchema] {
         let lowercasedPrompt = prompt.lowercased()
+        if let browserTools = preferredBrowserNativeTools(from: tools, prompt: lowercasedPrompt) {
+            return browserTools
+        }
         let needsWorkspaceFiles = [
             "create", "generate", "write", "make", "add", "implement", "edit",
             "file", "folder", "directory", "website", "html", "css", "javascript",
@@ -766,6 +952,29 @@ public struct OllamaChatModelAdapter: ModelAdapter {
             return tools
         }
         return tools.filter { $0.name == "filesystem" }
+    }
+
+    private static func preferredBrowserNativeTools(from tools: [ToolSchema], prompt: String) -> [ToolSchema]? {
+        let websiteSignals = [
+            "http://", "https://", "www.", ".com", ".io", ".ai", ".dev", ".app", ".org", ".net",
+            "website", "site", "web page", "webpage", "domain", "url"
+        ]
+        let browseSignals = [
+            "what is", "tell me about", "summarize", "fetch", "load", "look up", "lookup", "inspect",
+            "browse", "open", "render", "visit"
+        ]
+        guard websiteSignals.contains(where: prompt.contains),
+              browseSignals.contains(where: prompt.contains) else {
+            return nil
+        }
+        let browserToolNames: Set<String> = [
+            "browser_fetch",
+            "browser_extract",
+            "browser_eval",
+            "browser_screenshot",
+        ]
+        let browserTools = tools.filter { browserToolNames.contains($0.name) }
+        return browserTools.isEmpty ? nil : browserTools
     }
 
     private func requestNativeAction(
@@ -1976,6 +2185,35 @@ private struct DFlashChatCompletionsRequest: Encodable {
     }
 }
 
+private struct DeepSeekChatCompletionsRequest: Encodable {
+    let model: String
+    let messages: [Message]
+    let temperature: Double?
+    let stream: Bool
+    let responseFormat: ResponseFormat?
+
+    struct Message: Encodable {
+        let role: String
+        let content: String
+    }
+
+    struct ResponseFormat: Encodable {
+        let type: String
+
+        enum CodingKeys: String, CodingKey {
+            case type
+        }
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case model
+        case messages
+        case temperature
+        case stream
+        case responseFormat = "response_format"
+    }
+}
+
 private struct OpenAITranscriptionResponse: Decodable {
     let text: String
 
@@ -2010,6 +2248,15 @@ private struct OpenAIResponseEnvelope: Decodable {
 
     struct OutputItem: Decodable {
         let content: [ContentItem]
+
+        private enum CodingKeys: String, CodingKey {
+            case content
+        }
+
+        init(from decoder: any Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            content = try container.decodeIfPresent([ContentItem].self, forKey: .content) ?? []
+        }
     }
 
     struct ContentItem: Decodable {

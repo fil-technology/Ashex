@@ -175,6 +175,43 @@ import Testing
     }
 }
 
+@Test func telegramConnectorNormalizesProviderAndAudioCommands() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let persistence = SQLitePersistenceStore(databaseURL: root.appendingPathComponent("ashex.sqlite"))
+    try persistence.initialize()
+
+    let connector = TelegramConnector(
+        token: "test-token",
+        config: TelegramConfig(enabled: true),
+        client: MockTelegramBotClient(),
+        persistence: persistence
+    )
+
+    let commands: [(String, ConnectorCommand)] = [
+        ("/provider openai", .provider),
+        ("/providers", .providers),
+        ("/audio openai/gpt-4o-mini-tts", .audio),
+        ("/audiomodels", .audioModels),
+        ("/modelsearch orpheus", .modelSearch),
+        ("/modelinstall orpheus", .modelInstall),
+    ]
+
+    for (index, command) in commands.enumerated() {
+        let event = try await connector.normalize(update: TelegramUpdate(
+            updateID: Int64(120 + index),
+            message: TelegramMessage(
+                messageID: Int64(220 + index),
+                from: TelegramUser(id: 44, isBot: false, firstName: "Sam", username: "sam"),
+                chat: TelegramChat(id: 55, type: "private"),
+                date: 0,
+                text: command.0
+            )
+        ))
+
+        #expect(event?.command == command.1)
+    }
+}
+
 @Test func telegramConnectorNormalizesPhotoMessagesIntoAttachmentPrompt() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     let persistence = SQLitePersistenceStore(databaseURL: root.appendingPathComponent("ashex.sqlite"))
@@ -398,11 +435,14 @@ import Testing
     #expect(ConnectorMessageIntentClassifier.classify("How are you?") == .directChat)
     #expect(ConnectorMessageIntentClassifier.classify("Tell me a joke") == .directChat)
     #expect(ConnectorMessageIntentClassifier.classify("Summarize this repository") == .directChat)
+    #expect(ConnectorMessageIntentClassifier.classify("Say hello in voice") == .directChat)
     #expect(ConnectorMessageIntentClassifier.classify("Can you use curl to fetch https://example.com?") == .workspaceTask)
     #expect(ConnectorMessageIntentClassifier.classify("What are the files in current directory?") == .workspaceTask)
     #expect(ConnectorMessageIntentClassifier.classify("List files of the project") == .workspaceTask)
     #expect(ConnectorMessageIntentClassifier.classify("Search for the weather in Petah Tikva Israel") == .workspaceTask)
     #expect(ConnectorMessageIntentClassifier.classify("Generate an audio saying hello") == .workspaceTask)
+    #expect(ConnectorMessageIntentClassifier.classify("what is filsv.com?") == .workspaceTask)
+    #expect(ConnectorMessageIntentClassifier.classify("What is https://filsv.com?") == .workspaceTask)
     #expect(ConnectorMessageIntentClassifier.classify("Give me simple swift hello world app code") == .directChat)
     #expect(ConnectorMessageIntentClassifier.classify("Create a simple html website for pet store and add Hebrew localization, split into tasks") == .workspaceTask)
     #expect(ConnectorMessageIntentClassifier.classify("Edit this html file to have a simple but beautiful page about the earth") == .workspaceTask)
@@ -536,9 +576,9 @@ import Testing
 
 @Test func telegramConnectorSendsOutboundAudioAttachment() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-    let audioURL = root.appendingPathComponent("reply.wav")
+    let audioURL = root.appendingPathComponent("reply.mp3")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    try Data([0x52, 0x49, 0x46, 0x46]).write(to: audioURL)
+    try Data([0x49, 0x44, 0x33]).write(to: audioURL)
 
     let persistence = SQLitePersistenceStore(databaseURL: root.appendingPathComponent("ashex.sqlite"))
     try persistence.initialize()
@@ -563,8 +603,8 @@ import Testing
             .init(
                 kind: .audio,
                 localPath: audioURL.path,
-                originalFilename: "reply.wav",
-                mimeType: "audio/wav"
+                originalFilename: "reply.mp3",
+                mimeType: "audio/mpeg"
             )
         ]
     ))
@@ -576,8 +616,55 @@ import Testing
     #expect(sentAudios.count == 1)
     #expect(sentAudios.first?.0 == 33)
     #expect(sentAudios.first?.1 == audioURL.path)
-    #expect(sentAudios.first?.2 == "reply.wav")
-    #expect(sentAudios.first?.3 == "audio/wav")
+    #expect(sentAudios.first?.2 == "reply.mp3")
+    #expect(sentAudios.first?.3 == "audio/mpeg")
+}
+
+@Test func telegramConnectorNormalizesOutboundAIFFAudioForTelegramDelivery() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let audioURL = root.appendingPathComponent("reply.aiff")
+    try generateTestSpeechAudio(at: audioURL, text: "Telegram audio normalization test")
+
+    let persistence = SQLitePersistenceStore(databaseURL: root.appendingPathComponent("ashex.sqlite"))
+    try persistence.initialize()
+    let client = MockTelegramBotClient()
+    let mediaRoot = root.appendingPathComponent("telegram-media", isDirectory: true)
+    let connector = TelegramConnector(
+        token: "test-token",
+        config: TelegramConfig(enabled: true),
+        client: client,
+        persistence: persistence,
+        mediaRoot: mediaRoot
+    )
+    let conversation = ConnectorConversationReference(
+        connectorKind: "telegram",
+        connectorID: "telegram",
+        externalConversationID: "33"
+    )
+
+    try await connector.send(.init(
+        connectorID: "telegram",
+        conversation: conversation,
+        text: "",
+        attachments: [
+            .init(
+                kind: .audio,
+                localPath: audioURL.path,
+                originalFilename: "reply.aiff",
+                mimeType: "audio/aiff"
+            )
+        ]
+    ))
+
+    let sentAudios = await client.sentAudios
+    #expect(sentAudios.count == 1)
+    #expect(sentAudios.first?.0 == 33)
+    #expect(sentAudios.first?.1.hasSuffix(".m4a") == true)
+    #expect(sentAudios.first?.2?.hasSuffix(".m4a") == true)
+    #expect(sentAudios.first?.3 == "audio/mp4")
+    let deliveredPath = try #require(sentAudios.first?.1)
+    #expect(FileManager.default.fileExists(atPath: deliveredPath))
 }
 
 @Test func daemonSupervisorAudioChatModeAttachesSpeechForDirectChatReplies() async throws {
@@ -929,6 +1016,70 @@ import Testing
     #expect(finalMessage.attachments.first?.mimeType == "audio/wav")
 }
 
+@Test func daemonSupervisorSynthesizesStandaloneVoicePromptRepliesInFinalMessageMode() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let audioURL = root.appendingPathComponent("standalone-reply.wav")
+    try Data([0x52, 0x49, 0x46, 0x46]).write(to: audioURL)
+
+    let persistence = SQLitePersistenceStore(databaseURL: root.appendingPathComponent("ashex.sqlite"))
+    try persistence.initialize()
+    let connector = RecordingConnector()
+    let supervisor = DaemonSupervisor(
+        registry: ConnectorRegistry(connectors: [connector]),
+        router: ConversationRouter(mappingStore: ConnectorConversationMappingStore(persistence: persistence)),
+        dispatcher: RunDispatcher(runtime: FinalTextRuntime(text: """
+        `Hello, I'm Esh from Sviat`
+
+        Note: This is a live audio message and not a live speech message.
+
+        Saved: run 805/$0.000 • today 107.6k • session 3.3k • total 321.6k
+        """)),
+        persistence: persistence,
+        logger: DaemonLogger(minimumLevel: .error),
+        runStore: DaemonConversationRunStore(),
+        remoteApprovalInbox: RemoteApprovalInbox(persistence: persistence),
+        config: .init(
+            maxIterations: 2,
+            connectorLabel: "telegram",
+            workspaceRootPath: root.path,
+            responseMode: .finalMessage,
+            audioReplySynthesizer: { text, _ in
+                #expect(text == "Hello, I'm Esh from Sviat")
+                return InputAttachment(
+                    kind: .audio,
+                    localPath: audioURL.path,
+                    originalFilename: audioURL.lastPathComponent,
+                    mimeType: "audio/wav"
+                )
+            }
+        )
+    )
+    let conversation = ConnectorConversationReference(
+        connectorKind: "telegram",
+        connectorID: "telegram",
+        externalConversationID: "chat-voice"
+    )
+
+    try await supervisor.handle(.init(
+        connectorKind: "telegram",
+        connectorID: "telegram",
+        messageID: "voice-1",
+        conversation: conversation,
+        externalUserID: "44",
+        text: "Say hello in voice",
+        command: nil
+    ))
+    try await Task.sleep(nanoseconds: 100_000_000)
+
+    let messages = await connector.recordedMessages()
+    let finalMessage = try #require(messages.last)
+    #expect(finalMessage.text == "Hello, I'm Esh from Sviat")
+    #expect(finalMessage.attachments.count == 1)
+    #expect(finalMessage.attachments.first?.kind == .audio)
+    #expect(finalMessage.attachments.first?.localPath == audioURL.path)
+}
+
 @Test func daemonSupervisorModelCommandSwitchesActiveModel() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -946,8 +1097,8 @@ import Testing
         runStore: DaemonConversationRunStore(),
         remoteApprovalInbox: RemoteApprovalInbox(persistence: persistence),
         modelControl: .init(
-            listModels: { ["gemma4:latest", "functiongemma:latest"] },
-            switchModel: { requestedModel in
+            listModels: { _ in ["gemma4:latest", "functiongemma:latest"] },
+            switchModel: { _, requestedModel in
                 await switchedModels.append(requestedModel)
             }
         ),
@@ -991,8 +1142,8 @@ import Testing
         runStore: DaemonConversationRunStore(),
         remoteApprovalInbox: RemoteApprovalInbox(persistence: persistence),
         modelControl: .init(
-            listModels: { ["gemma4:latest", "functiongemma:latest"] },
-            switchModel: { _ in }
+            listModels: { _ in ["gemma4:latest", "functiongemma:latest"] },
+            switchModel: { _, _ in }
         ),
         config: .init(maxIterations: 2, connectorLabel: "telegram", provider: "ollama", model: "gemma4:latest")
     )
@@ -1762,6 +1913,22 @@ private actor MockTelegramBotClient: TelegramBotClient {
 
     func sendChatAction(token: String, chatID: Int64, action: String) async throws {
         chatActions.append((chatID, action))
+    }
+}
+
+private func generateTestSpeechAudio(at url: URL, text: String) throws {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/say")
+    process.arguments = ["-o", url.path, text]
+    let stderr = Pipe()
+    process.standardError = stderr
+    try process.run()
+    process.waitUntilExit()
+
+    guard process.terminationStatus == 0 else {
+        let message = String(decoding: stderr.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        throw AshexError.shell("Failed to generate test audio: \(message)")
     }
 }
 

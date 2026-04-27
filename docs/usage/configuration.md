@@ -20,6 +20,60 @@ Ashex reads project config first, then optional global config. Project settings 
 - `--model MODEL`: model name for provider-backed mode.
 - `--approval-mode trusted|guarded`: execution policy, default `trusted`.
 
+## Browser Backend Config
+
+Browser automation config lives under `browser` in `ashex.config.json`.
+
+Useful commands:
+
+```bash
+ashex browser doctor
+ashex config set browser.backend obscura
+ashex config set browser.obscura.path /usr/local/bin/obscura
+```
+
+Key settings:
+
+- `browser.backend`: `auto`, `obscura`, or `chrome-cdp`.
+- `browser.obscura.path`: optional explicit Obscura executable path.
+- `browser.obscura.host`: local bind host, default `127.0.0.1`.
+- `browser.obscura.port`: CDP port, default `0` for auto-select.
+- `browser.obscura.stealth`: optional flag, default `false`.
+- `browser.obscura.blockTrackers`: optional tracker blocking, default `true`.
+- `browser.startupTimeoutSeconds`: backend startup timeout, default `10`.
+- `browser.navigationTimeoutSeconds`: page navigation timeout, default `30`.
+- `browser.security.allowFileUrls`: default `false`.
+- `browser.security.allowLocalhostNavigation`: default `false`.
+- `browser.security.allowPrivateNetworkNavigation`: default `false`.
+- `browser.cdp.endpoint`: optional existing Chrome/Chromium CDP endpoint.
+
+Example:
+
+```json
+{
+  "browser": {
+    "backend": "auto",
+    "obscura": {
+      "path": "/usr/local/bin/obscura",
+      "host": "127.0.0.1",
+      "port": 0,
+      "stealth": false,
+      "blockTrackers": true
+    },
+    "security": {
+      "allowFileUrls": false,
+      "allowLocalhostNavigation": false,
+      "allowPrivateNetworkNavigation": false
+    },
+    "cdp": {
+      "endpoint": "http://127.0.0.1:9222"
+    }
+  }
+}
+```
+
+For backend behavior, limitations, and CLI examples, see [Browser backends](../browser-backends.md).
+
 ## Shell And Sandbox Policy
 
 Shell policy config in `ashex.config.json`:

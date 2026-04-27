@@ -42,11 +42,12 @@ public enum DaemonAudioReplySynthesizer {
         let workspaceURL = URL(fileURLWithPath: workspaceRootPath, isDirectory: true)
         let outputDirectory = workspaceURL.appendingPathComponent("generated-audio", isDirectory: true)
         try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
-        let outputURL = outputDirectory.appendingPathComponent("\(UUID().uuidString).aiff")
+        let tempURL = outputDirectory.appendingPathComponent("\(UUID().uuidString).aiff")
+        let outputURL = outputDirectory.appendingPathComponent("\(UUID().uuidString).wav")
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/say")
-        process.arguments = ["-o", outputURL.path, text]
+        process.arguments = ["-o", tempURL.path, text]
         try process.run()
         process.waitUntilExit()
 
@@ -54,25 +55,57 @@ public enum DaemonAudioReplySynthesizer {
             throw AshexError.shell("/usr/bin/say exited with status \(process.terminationStatus)")
         }
 
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+        let convert = Process()
+        convert.executableURL = URL(fileURLWithPath: "/usr/bin/afconvert")
+        convert.arguments = ["-f", "WAVE", "-d", "LEI16@22050", tempURL.path, outputURL.path]
+        let stderr = Pipe()
+        convert.standardError = stderr
+        try convert.run()
+        convert.waitUntilExit()
+
+        guard convert.terminationStatus == 0 else {
+            let message = String(decoding: stderr.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            throw AshexError.shell("afconvert exited with status \(convert.terminationStatus): \(message)")
+        }
+
         return InputAttachment(
             kind: .audio,
             localPath: outputURL.path,
             originalFilename: outputURL.lastPathComponent,
-            mimeType: "audio/aiff"
+            mimeType: "audio/wav"
         )
     }
 }
 
 public struct DaemonModelControl: Sendable {
-    public let listModels: (@Sendable () async throws -> [String])?
-    public let switchModel: @Sendable (String) async throws -> Void
+    public let supportedProviders: [String]
+    public let listModels: (@Sendable (_ provider: String) async throws -> [String])?
+    public let listAudioModels: (@Sendable () async throws -> [String])?
+    public let currentAudioConfigDescription: (@Sendable () async -> String)?
+    public let switchModel: @Sendable (_ provider: String, _ model: String) async throws -> Void
+    public let switchAudioModel: (@Sendable (_ value: String) async throws -> String)?
+    public let searchModels: (@Sendable (_ query: String) async throws -> [String])?
+    public let installModel: (@Sendable (_ query: String) async throws -> String)?
 
     public init(
-        listModels: (@Sendable () async throws -> [String])? = nil,
-        switchModel: @escaping @Sendable (String) async throws -> Void
+        supportedProviders: [String] = ["mock", "esh", "ollama", "dflash", "openai", "anthropic", "deepseek"],
+        listModels: (@Sendable (_ provider: String) async throws -> [String])? = nil,
+        listAudioModels: (@Sendable () async throws -> [String])? = nil,
+        currentAudioConfigDescription: (@Sendable () async -> String)? = nil,
+        switchModel: @escaping @Sendable (_ provider: String, _ model: String) async throws -> Void,
+        switchAudioModel: (@Sendable (_ value: String) async throws -> String)? = nil,
+        searchModels: (@Sendable (_ query: String) async throws -> [String])? = nil,
+        installModel: (@Sendable (_ query: String) async throws -> String)? = nil
     ) {
+        self.supportedProviders = supportedProviders
         self.listModels = listModels
+        self.listAudioModels = listAudioModels
+        self.currentAudioConfigDescription = currentAudioConfigDescription
         self.switchModel = switchModel
+        self.switchAudioModel = switchAudioModel
+        self.searchModels = searchModels
+        self.installModel = installModel
     }
 }
 
@@ -188,8 +221,14 @@ public actor DaemonSupervisor {
             /reasoning [on|off] - show or toggle safe reasoning summaries for this chat
             /reasoningon - enable safe reasoning summaries for this chat
             /reasoningoff - disable safe reasoning summaries for this chat
-            /model [name] - show or switch the active daemon model
-            /models - list available models for the active provider
+            /provider [name] - show or switch the active text provider
+            /providers - list supported providers
+            /model [name|provider/model] - show or switch the active daemon model
+            /models [provider] - list available models for a provider
+            /audio [reuse|local|provider/model] - show or switch audio reply model
+            /audiomodels - list audio reply model choices
+            /modelsearch <query> - search installable esh models
+            /modelinstall <query> - install a model with esh
             /progress [quiet|normal|verbose] - control live run progress updates in this chat
             /stop - stop the current reply or pending run
             """, for: event)
@@ -245,11 +284,29 @@ public actor DaemonSupervisor {
         case .reasoningOff:
             try await handleReasoningCommand(for: event, forcedState: false)
             return
+        case .provider:
+            try await handleProviderCommand(for: event)
+            return
+        case .providers:
+            try await handleProvidersCommand(for: event)
+            return
         case .model:
             try await handleModelCommand(for: event)
             return
         case .models:
             try await handleModelsCommand(for: event)
+            return
+        case .audio:
+            try await handleAudioCommand(for: event)
+            return
+        case .audioModels:
+            try await handleAudioModelsCommand(for: event)
+            return
+        case .modelSearch:
+            try await handleModelSearchCommand(for: event)
+            return
+        case .modelInstall:
+            try await handleModelInstallCommand(for: event)
             return
         case .progress:
             try await handleProgressCommand(for: event)
@@ -380,7 +437,11 @@ public actor DaemonSupervisor {
                 ])
                 let replyText = try await self.decorateReplyIfNeeded(result.finalText, runID: result.runID, conversation: event.conversation)
                 let replyMedia = Self.extractGeneratedReplyMedia(from: replyText)
-                let outboundMedia = try await self.applyAudioChatModeIfNeeded(to: replyMedia, intent: intent)
+                let outboundMedia = try await self.applyAudioReplyModeIfNeeded(
+                    to: replyMedia,
+                    prompt: event.text,
+                    intent: intent
+                )
                 try await self.send(text: outboundMedia.text, attachments: outboundMedia.attachments, for: event)
             } catch is CancellationError {
                 try? await self.send(text: "Stopped the current run.", for: event)
@@ -439,12 +500,12 @@ public actor DaemonSupervisor {
         ))
     }
 
-    private func applyAudioChatModeIfNeeded(
+    private func applyAudioReplyModeIfNeeded(
         to media: GeneratedReplyMedia,
+        prompt: String,
         intent: ConnectorMessageIntent
     ) async throws -> GeneratedReplyMedia {
-        guard config.responseMode == .audioChat,
-              intent == .directChat,
+        guard intent == .directChat,
               !media.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               !media.attachments.contains(where: { $0.kind == .audio }),
               let audioReplySynthesizer = config.audioReplySynthesizer
@@ -452,8 +513,23 @@ public actor DaemonSupervisor {
             return media
         }
 
-        let attachment = try await audioReplySynthesizer(media.text, config.workspaceRootPath)
-        return .init(text: media.text, attachments: media.attachments + [attachment])
+        let isStandaloneAudioPrompt = Self.requestsStandaloneAudioReply(prompt)
+        guard config.responseMode == .audioChat || isStandaloneAudioPrompt else {
+            return media
+        }
+
+        let speechText = isStandaloneAudioPrompt
+            ? Self.sanitizedSpeechReplyText(from: media.text)
+            : media.text
+        guard !speechText.isEmpty else {
+            return media
+        }
+
+        let attachment = try await audioReplySynthesizer(speechText, config.workspaceRootPath)
+        return .init(
+            text: isStandaloneAudioPrompt ? speechText : media.text,
+            attachments: media.attachments + [attachment]
+        )
     }
 
     private struct GeneratedReplyMedia: Sendable {
@@ -477,6 +553,81 @@ public actor DaemonSupervisor {
             text: retainedLines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines),
             attachments: attachments
         )
+    }
+
+    private static func requestsStandaloneAudioReply(_ prompt: String) -> Bool {
+        let lowered = prompt.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !lowered.isEmpty else { return false }
+
+        let audioSignals = [
+            " in voice",
+            " as voice",
+            " in audio",
+            " as audio",
+            "read aloud",
+            "text to speech",
+            "tts",
+            "voice note",
+            "voice message",
+            "spoken audio",
+            "say this",
+            "say hello",
+            "generate audio",
+            "create audio",
+            "make audio",
+            "speak this",
+            "speak it",
+            "synthesize",
+            ".wav",
+            ".mp3",
+        ]
+        guard audioSignals.contains(where: lowered.contains) else {
+            return false
+        }
+
+        let blockers = [
+            "transcribe",
+            "listen to",
+            "audio attachment",
+            "why audio",
+            "fix audio",
+            "audio model",
+            "telegram audio",
+        ]
+        return !blockers.contains(where: lowered.contains)
+    }
+
+    private static func sanitizedSpeechReplyText(from reply: String) -> String {
+        let filteredLines = reply
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { line in
+                guard !line.isEmpty else { return false }
+                let lowered = line.lowercased()
+                return !lowered.hasPrefix("note:")
+                    && !lowered.hasPrefix("saved:")
+                    && !lowered.hasPrefix("generated audio file:")
+            }
+
+        let cleaned = filteredLines.joined(separator: "\n")
+            .replacingOccurrences(of: "`", with: "")
+            .replacingOccurrences(of: "**", with: "")
+            .replacingOccurrences(of: "__", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if let firstParagraph = cleaned.components(separatedBy: "\n\n").first?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !firstParagraph.isEmpty {
+            return firstParagraph
+        }
+
+        if let firstLine = cleaned.components(separatedBy: .newlines).first?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !firstLine.isEmpty {
+            return firstLine
+        }
+
+        return cleaned
     }
 
     private struct ProgressMessageState: Sendable {
@@ -907,44 +1058,63 @@ public actor DaemonSupervisor {
         )
     }
 
+    private func handleProviderCommand(for event: InboundConnectorEvent) async throws {
+        let parts = event.text.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
+        guard let modelControl else {
+            try await send(text: "Live provider switching is not available in this daemon build.", for: event)
+            return
+        }
+
+        if parts.count == 1 {
+            try await send(
+                text: "Current provider: `\(activeProvider)` with model `\(activeModel)`. Supported: \(modelControl.supportedProviders.joined(separator: ", ")).",
+                for: event
+            )
+            return
+        }
+
+        let requestedProvider = String(parts[1]).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard modelControl.supportedProviders.contains(requestedProvider) else {
+            try await send(text: "Unknown provider `\(requestedProvider)`. Use `/providers`.", for: event)
+            return
+        }
+
+        try await switchActiveModel(provider: requestedProvider, model: defaultModel(for: requestedProvider), for: event)
+    }
+
+    private func handleProvidersCommand(for event: InboundConnectorEvent) async throws {
+        let providers = modelControl?.supportedProviders.joined(separator: ", ") ?? "mock, esh, ollama, dflash, openai, anthropic"
+        try await send(
+            text: "Supported providers: \(providers)\nCurrent provider: `\(activeProvider)` with model `\(activeModel)`.",
+            for: event
+        )
+    }
+
     private func handleModelCommand(for event: InboundConnectorEvent) async throws {
         let parts = event.text.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
         if parts.count == 1 {
             try await send(
-                text: "Current model: `\(activeModel)` via `\(activeProvider)`. Use `/models` to browse available models or `/model gemma4:latest` to switch.",
+                text: "Current model: `\(activeModel)` via `\(activeProvider)`. Use `/models` to browse models or `/model openai/gpt-5-mini` to switch provider and model together.",
                 for: event
             )
             return
         }
 
-        let requestedModel = String(parts[1]).trimmingCharacters(in: .whitespacesAndNewlines)
+        let rawValue = String(parts[1]).trimmingCharacters(in: .whitespacesAndNewlines)
+        let requestedProvider: String
+        let requestedModel: String
+        if let slashIndex = rawValue.firstIndex(of: "/") {
+            requestedProvider = String(rawValue[..<slashIndex]).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            requestedModel = String(rawValue[rawValue.index(after: slashIndex)...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        } else {
+            requestedProvider = activeProvider
+            requestedModel = rawValue
+        }
         guard !requestedModel.isEmpty else {
             try await send(text: "Usage: `/model gemma4:latest`", for: event)
             return
         }
-        guard let modelControl else {
-            try await send(text: "Live model switching is not available in this daemon build.", for: event)
-            return
-        }
-        let hasActiveRuns = await runStore.hasActiveRuns()
-        guard !hasActiveRuns else {
-            try await send(text: "Ash is busy right now. Use `/stop` and wait for the run to finish before switching the model.", for: event)
-            return
-        }
-
-        do {
-            try await modelControl.switchModel(requestedModel)
-            activeModel = requestedModel
-            try await send(
-                text: "Switched model to `\(activeModel)` via `\(activeProvider)`.",
-                for: event
-            )
-        } catch {
-            try await send(
-                text: "Failed to switch model to `\(requestedModel)`: \(error.localizedDescription)",
-                for: event
-            )
-        }
+        try await switchActiveModel(provider: requestedProvider, model: requestedModel, for: event)
     }
 
     private func handleThreadsCommand(for event: InboundConnectorEvent) async throws {
@@ -1090,29 +1260,183 @@ public actor DaemonSupervisor {
             return
         }
 
+        let requestedProvider = commandArgument(from: event.text)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? activeProvider
+
         do {
-            let models = try await listModels()
+            let models = try await listModels(requestedProvider)
             guard !models.isEmpty else {
-                try await send(text: "No models were returned for `\(activeProvider)`.", for: event)
+                try await send(text: "No models were returned for `\(requestedProvider)`.", for: event)
                 return
             }
             let rendered = models.prefix(12).map { model in
-                model == activeModel ? "• `\(model)` ← current" : "• `\(model)`"
+                requestedProvider == activeProvider && model == activeModel ? "• `\(model)` ← current" : "• `\(model)`"
             }.joined(separator: "\n")
             try await send(
                 text: """
-                Available models for `\(activeProvider)`:
+                Available models for `\(requestedProvider)`:
                 \(rendered)
 
-                Switch with `/model your-model-name`.
+                Switch with `/model \(requestedProvider)/your-model-name`.
                 """,
                 for: event
             )
         } catch {
             try await send(
-                text: "Failed to fetch models for `\(activeProvider)`: \(error.localizedDescription)",
+                text: "Failed to fetch models for `\(requestedProvider)`: \(error.localizedDescription)",
                 for: event
             )
+        }
+    }
+
+    private func handleAudioCommand(for event: InboundConnectorEvent) async throws {
+        guard let modelControl else {
+            try await send(text: "Audio model switching is not available in this daemon build.", for: event)
+            return
+        }
+
+        let parts = event.text.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
+        if parts.count == 1 {
+            let description = await modelControl.currentAudioConfigDescription?() ?? "unknown"
+            try await send(text: "Current audio reply model: \(description). Use `/audio reuse`, `/audio local`, or `/audio provider/model`.", for: event)
+            return
+        }
+
+        guard let switchAudioModel = modelControl.switchAudioModel else {
+            try await send(text: "Audio model switching is not available in this daemon build.", for: event)
+            return
+        }
+
+        let requestedValue = String(parts[1]).trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            let description = try await switchAudioModel(requestedValue)
+            try await send(text: "Audio reply model updated: \(description).", for: event)
+        } catch {
+            try await send(text: "Failed to update audio reply model: \(error.localizedDescription)", for: event)
+        }
+    }
+
+    private func handleAudioModelsCommand(for event: InboundConnectorEvent) async throws {
+        guard let listAudioModels = modelControl?.listAudioModels else {
+            try await send(text: "Audio model listing is not available in this daemon build.", for: event)
+            return
+        }
+
+        do {
+            let models = try await listAudioModels()
+            guard !models.isEmpty else {
+                try await send(text: "No audio models are available right now.", for: event)
+                return
+            }
+            try await send(
+                text: """
+                Audio model choices:
+                \(models.prefix(12).map { "• `\($0)`" }.joined(separator: "\n"))
+
+                Switch with `/audio provider/model`.
+                """,
+                for: event
+            )
+        } catch {
+            try await send(text: "Failed to fetch audio models: \(error.localizedDescription)", for: event)
+        }
+    }
+
+    private func handleModelSearchCommand(for event: InboundConnectorEvent) async throws {
+        guard let searchModels = modelControl?.searchModels else {
+            try await send(text: "Model search is not available in this daemon build.", for: event)
+            return
+        }
+
+        let query = commandArgument(from: event.text)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !query.isEmpty else {
+            try await send(text: "Usage: `/modelsearch orpheus`", for: event)
+            return
+        }
+
+        do {
+            let results = try await searchModels(query)
+            guard !results.isEmpty else {
+                try await send(text: "No installable models matched `\(query)`.", for: event)
+                return
+            }
+            try await send(
+                text: "Search results:\n" + results.prefix(8).map { "• \($0)" }.joined(separator: "\n"),
+                for: event
+            )
+        } catch {
+            try await send(text: "Model search failed: \(error.localizedDescription)", for: event)
+        }
+    }
+
+    private func handleModelInstallCommand(for event: InboundConnectorEvent) async throws {
+        guard let installModel = modelControl?.installModel else {
+            try await send(text: "Model install is not available in this daemon build.", for: event)
+            return
+        }
+
+        let query = commandArgument(from: event.text)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !query.isEmpty else {
+            try await send(text: "Usage: `/modelinstall Qwen/Qwen3-TTS-12Hz-0.6B-Base`", for: event)
+            return
+        }
+
+        do {
+            let message = try await installModel(query)
+            try await send(
+                text: message.isEmpty ? "Model install completed." : message,
+                for: event
+            )
+        }
+    }
+
+    private func switchActiveModel(provider: String, model: String, for event: InboundConnectorEvent) async throws {
+        guard let modelControl else {
+            try await send(text: "Live model switching is not available in this daemon build.", for: event)
+            return
+        }
+
+        let hasActiveRuns = await runStore.hasActiveRuns()
+        guard !hasActiveRuns else {
+            try await send(text: "Ash is busy right now. Use `/stop` and wait for the run to finish before switching the model.", for: event)
+            return
+        }
+
+        do {
+            try await modelControl.switchModel(provider, model)
+            activeProvider = provider
+            activeModel = model
+            try await send(
+                text: "Switched model to `\(activeModel)` via `\(activeProvider)`.",
+                for: event
+            )
+        } catch {
+            try await send(
+                text: "Failed to switch to `\(provider)/\(model)`: \(error.localizedDescription)",
+                for: event
+            )
+        }
+    }
+
+    private func defaultModel(for provider: String) -> String {
+        switch provider {
+        case "mock":
+            return "mock"
+        case "esh":
+            return "auto"
+        case "ollama":
+            return "llama3.2"
+        case "dflash":
+            return "Qwen/Qwen3.5-4B"
+        case "openai":
+            return "gpt-5-mini"
+        case "deepseek":
+            return "deepseek-v4-flash"
+        case "anthropic":
+            return "claude-sonnet-4-20250514"
+        default:
+            return "mock"
         }
     }
 
@@ -1394,6 +1718,9 @@ public enum GeneratedAudioReplyParser {
             url = parsedURL
         } else {
             url = URL(fileURLWithPath: String(remainder))
+        }
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return nil
         }
         return InputAttachment(
             kind: .audio,

@@ -21,10 +21,22 @@ struct AshexCLI {
             if try await DaemonCLI.handle(arguments: CommandLine.arguments) {
                 return
             }
+            if try ConfigCLI.handle(arguments: CommandLine.arguments) {
+                return
+            }
+            if try ModelCLI.handle(arguments: CommandLine.arguments) {
+                return
+            }
             if try await BenchmarkCLI.handle(arguments: CommandLine.arguments) {
                 return
             }
+            if try await BrowserCLI.handle(arguments: CommandLine.arguments) {
+                return
+            }
             if try OptimizationCLI.handle(arguments: CommandLine.arguments) {
+                return
+            }
+            if try await ComputerUseCLI.handle(arguments: CommandLine.arguments) {
                 return
             }
 
@@ -122,14 +134,19 @@ struct AshexCLI {
       ashex exec [options] [prompt]
       ashex onboard [options]
       ashex daemon <run|start|stop|status> [options]
+      ashex config set <key.path> <value> [options]
+      ashex model <list|search|install> [options]
+      ashex audio models [options]
       ashex benchmark <list|run|compare> [options]
+      ashex browser <doctor|backends|fetch|eval|screenshot|serve|benchmark> [options]
+      ashex computer-use prototype [options]
       ashex telegram test [options]
       ashex cron <list|add|remove> [options]
 
     Options:
       --workspace PATH          Workspace root to use
       --storage PATH            Storage root for Ashex state
-      --provider NAME           Provider: mock, openai, anthropic, ollama, esh, dflash
+      --provider NAME           Provider: mock, openai, anthropic, deepseek, ollama, esh, dflash
       --model NAME              Provider model name
       --max-iterations N        Maximum agent loop iterations
       --approval-mode MODE      trusted or guarded
@@ -148,6 +165,9 @@ struct AshexCLI {
         }
         if message.contains("anthropic_api_key") {
             return "Action: set ANTHROPIC_API_KEY, or run `ashex --provider mock` to open the TUI without a remote provider."
+        }
+        if message.contains("deepseek_api_key") {
+            return "Action: set DEEPSEEK_API_KEY, or run `ashex --provider mock` to open the TUI without a remote provider."
         }
         if message.contains("telegram") && message.contains("bot token") {
             return "Action: save a Telegram bot token in Assistant Setup, set ASHEX_TELEGRAM_BOT_TOKEN, or add an enabled cron job."
@@ -398,6 +418,18 @@ struct CLIConfiguration {
                 configuration: .init(apiKey: apiKey, model: model),
                 audioTranscriber: audioTranscriber
             )
+        case "deepseek":
+            guard let apiKey = try resolvedAPIKey(for: "deepseek"), !apiKey.isEmpty else {
+                throw AshexError.model("DEEPSEEK_API_KEY is required when --provider deepseek is used")
+            }
+            baseAdapter = DeepSeekChatCompletionsModelAdapter(
+                configuration: .init(
+                    apiKey: apiKey,
+                    model: model,
+                    baseURL: Self.deepSeekBaseURL(config: userConfig.deepseek),
+                    requestTimeoutSeconds: userConfig.deepseek.requestTimeoutSeconds
+                )
+            )
         case "anthropic":
             guard let apiKey = try resolvedAPIKey(for: "anthropic"), !apiKey.isEmpty else {
                 throw AshexError.model("ANTHROPIC_API_KEY is required when --provider anthropic is used")
@@ -428,7 +460,7 @@ struct CLIConfiguration {
                 audioTranscriber: audioTranscriber
             )
         default:
-            throw AshexError.model("Unsupported provider '\(provider)'. Supported: mock, openai, anthropic, ollama, esh, dflash")
+            throw AshexError.model("Unsupported provider '\(provider)'. Supported: mock, openai, anthropic, deepseek, ollama, esh, dflash")
         }
 
         if provider == "esh" {
@@ -473,6 +505,7 @@ struct CLIConfiguration {
         let tools = try RuntimeToolFactory.makeTools(
             workspaceURL: workspaceURL,
             persistence: persistence,
+            userConfig: userConfig,
             sandbox: userConfig.sandbox,
             shellExecutionPolicy: shellExecutionPolicy
         )
@@ -530,6 +563,8 @@ struct CLIConfiguration {
         switch provider {
         case "openai":
             return ProcessInfo.processInfo.environment["OPENAI_MODEL"] ?? "gpt-5.4-mini"
+        case "deepseek":
+            return ProcessInfo.processInfo.environment["DEEPSEEK_MODEL"] ?? "deepseek-v4-flash"
         case "anthropic":
             return ProcessInfo.processInfo.environment["ANTHROPIC_MODEL"] ?? "claude-sonnet-4-20250514"
         case "esh":
@@ -547,6 +582,8 @@ struct CLIConfiguration {
         switch provider {
         case "openai":
             return ProcessInfo.processInfo.environment["OPENAI_MODEL"]
+        case "deepseek":
+            return ProcessInfo.processInfo.environment["DEEPSEEK_MODEL"]
         case "anthropic":
             return ProcessInfo.processInfo.environment["ANTHROPIC_MODEL"]
         case "esh":
@@ -699,6 +736,8 @@ struct CLIConfiguration {
         switch provider {
         case "openai":
             return "OPENAI_API_KEY"
+        case "deepseek":
+            return "DEEPSEEK_API_KEY"
         case "anthropic":
             return "ANTHROPIC_API_KEY"
         default:
@@ -729,6 +768,20 @@ struct CLIConfiguration {
         if persistedModel.hasPrefix("gpt-"),
            hasOpenAISecret || hasLegacyOpenAISecret {
             return "openai"
+        }
+
+        let hasDeepSeekSecret = (try secretStore.readSecret(
+            namespace: SessionSetting.credentialsNamespace,
+            key: apiKeySettingKey(for: "deepseek")
+        ))?.isEmpty == false
+        let hasLegacyDeepSeekSecret = try store.fetchSetting(
+            namespace: SessionSetting.credentialsNamespace,
+            key: apiKeySettingKey(for: "deepseek")
+        )?.value.stringValue?.isEmpty == false
+
+        if persistedModel.hasPrefix("deepseek"),
+           hasDeepSeekSecret || hasLegacyDeepSeekSecret {
+            return "deepseek"
         }
 
         let hasAnthropicSecret = (try secretStore.readSecret(
@@ -764,6 +817,10 @@ struct CLIConfiguration {
 
     static func dflashBaseURL(config: DFlashConfig) -> URL {
         URL(string: ProcessInfo.processInfo.environment["DFLASH_BASE_URL"] ?? config.baseURL)!
+    }
+
+    static func deepSeekBaseURL(config: DeepSeekConfig) -> URL {
+        URL(string: ProcessInfo.processInfo.environment["DEEPSEEK_BASE_URL"] ?? config.baseURL)!
     }
 
     static func inspectEshCapabilities(

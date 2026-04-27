@@ -190,14 +190,14 @@ import Testing
 }
 
 @Test func eshAudioModelCatalogBuildsProviderQualifiedChoices() {
-    let choices = EshAudioModelCatalog.choices(from: [
-        "audio-model • mlx",
-        "voice-model • gguf"
+    let choices = GenericAudioModelCatalog.choices(from: [
+        "esh/audio-model • Installed esh audio model",
+        "openai/gpt-4o-mini-tts • OpenAI speech model"
     ])
 
-    #expect(choices.map(\.title) == ["esh/audio-model", "esh/voice-model"])
-    #expect(choices.first?.model == "audio-model")
-    #expect(choices.first?.subtitle == "audio-model • mlx")
+    #expect(choices.map(\.title) == ["esh/audio-model", "openai/gpt-4o-mini-tts"])
+    #expect(choices.first?.model == "esh/audio-model")
+    #expect(choices.first?.subtitle == "Installed esh audio model")
 }
 
 @Test func ollamaModelOrderingShowsCuratedOnboardingModelsFirst() {

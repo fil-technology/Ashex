@@ -63,14 +63,15 @@ public actor TelegramConnector: Connector, ConnectorActivityControlling, Connect
         for attachment in message.attachments {
             switch attachment.kind {
             case .audio:
+                let outboundAudio = try prepareOutboundAudioAttachment(attachment)
                 _ = try await client.sendAudio(
                     token: token,
                     chatID: chatID,
-                    audioURL: attachment.fileURL,
-                    caption: attachment.caption,
-                    parseMode: attachment.caption == nil ? nil : TelegramMessageFormatter.parseMode,
-                    fileName: attachment.originalFilename,
-                    mimeType: attachment.mimeType
+                    audioURL: outboundAudio.fileURL,
+                    caption: outboundAudio.caption,
+                    parseMode: outboundAudio.caption == nil ? nil : TelegramMessageFormatter.parseMode,
+                    fileName: outboundAudio.originalFilename,
+                    mimeType: outboundAudio.mimeType
                 )
             case .image:
                 continue
@@ -526,5 +527,69 @@ public actor TelegramConnector: Connector, ConnectorActivityControlling, Connect
         let scalars = value.unicodeScalars.map { allowed.contains($0) ? Character($0) : "-" }
         let rendered = String(scalars)
         return rendered.isEmpty ? "attachment.bin" : rendered
+    }
+
+    private func prepareOutboundAudioAttachment(_ attachment: InputAttachment) throws -> InputAttachment {
+        guard requiresTelegramAudioNormalization(attachment) else {
+            return attachment
+        }
+
+        let outputDirectory = mediaRoot
+            .appendingPathComponent(id, isDirectory: true)
+            .appendingPathComponent("outbound-audio", isDirectory: true)
+        try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
+
+        let baseName = attachment.originalFilename.flatMap { URL(fileURLWithPath: $0).deletingPathExtension().lastPathComponent }
+            ?? attachment.fileURL.deletingPathExtension().lastPathComponent
+        let sanitizedBaseName = Self.sanitizedFilename(baseName).trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        let finalBaseName = sanitizedBaseName.isEmpty ? UUID().uuidString : sanitizedBaseName
+        let outputURL = outputDirectory.appendingPathComponent("\(finalBaseName)-\(UUID().uuidString).m4a")
+
+        try convertAudioForTelegram(from: attachment.fileURL, to: outputURL)
+
+        return InputAttachment(
+            kind: .audio,
+            localPath: outputURL.path,
+            originalFilename: "\(finalBaseName).m4a",
+            mimeType: "audio/mp4",
+            caption: attachment.caption,
+            durationSeconds: attachment.durationSeconds,
+            fileSizeBytes: (try? FileManager.default.attributesOfItem(atPath: outputURL.path)[.size] as? NSNumber)?.intValue,
+            metadata: attachment.metadata
+        )
+    }
+
+    private func requiresTelegramAudioNormalization(_ attachment: InputAttachment) -> Bool {
+        let supportedExtensions = Set(["mp3", "m4a", "mp4"])
+        let supportedMimeTypes = Set(["audio/mpeg", "audio/mp4"])
+
+        let fileExtension = attachment.fileURL.pathExtension.lowercased()
+        if supportedExtensions.contains(fileExtension) {
+            return false
+        }
+        if let mimeType = attachment.mimeType?.lowercased(), supportedMimeTypes.contains(mimeType) {
+            return false
+        }
+        return true
+    }
+
+    private func convertAudioForTelegram(from sourceURL: URL, to outputURL: URL) throws {
+        if FileManager.default.fileExists(atPath: outputURL.path) {
+            try FileManager.default.removeItem(at: outputURL)
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/afconvert")
+        process.arguments = ["-f", "m4af", "-d", "aac", sourceURL.path, outputURL.path]
+        let stderr = Pipe()
+        process.standardError = stderr
+        try process.run()
+        process.waitUntilExit()
+
+        guard process.terminationStatus == 0 else {
+            let message = String(decoding: stderr.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            throw AshexError.shell("Telegram audio conversion failed: \(message)")
+        }
     }
 }

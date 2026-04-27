@@ -22,6 +22,14 @@ public enum ConnectorMessageIntentClassifier {
             return .workspaceTask
         }
 
+        let webLookupSignals = [
+            "http://", "https://", "www.", ".com", ".io", ".ai", ".dev", ".app", ".org", ".net",
+            "website", "site", "web page", "webpage", "domain", "url"
+        ]
+        if webLookupSignals.contains(where: lowered.contains) {
+            return .workspaceTask
+        }
+
         let explicitToolSignals = [
             "shell:", "run shell", "use curl", "run curl", "curl ", "wget ", "git ", "swift test",
             "xcodebuild", "npm ", "pnpm ", "yarn ", "python ", "ruby ", "node ", "make ",

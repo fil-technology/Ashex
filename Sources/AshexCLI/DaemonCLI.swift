@@ -217,6 +217,11 @@ enum DaemonCLI {
         let mappingStore = ConnectorConversationMappingStore(persistence: persistence)
         let router = ConversationRouter(mappingStore: mappingStore)
         let dispatcher = RunDispatcher(runtime: runtime, logger: logger)
+        let liveSettings = DaemonLiveSettings(
+            provider: configuration.provider,
+            model: configuration.model,
+            audio: configuration.userConfig.audio
+        )
         let cronScheduler = CronScheduler(
             store: cronStore,
             dispatcher: dispatcher,
@@ -224,23 +229,42 @@ enum DaemonCLI {
             logger: logger,
             maxIterations: configuration.maxIterations
         )
-        let listModels: (@Sendable () async throws -> [String])?
-        if configuration.provider == "ollama" {
-            listModels = {
+        let listModels: @Sendable (String) async throws -> [String] = { provider in
+            switch provider {
+            case "ollama":
                 let models = try await OllamaCatalogClient().fetchModels(baseURL: CLIConfiguration.ollamaBaseURL())
                 return models.map(\.name).sorted()
+            case "esh":
+                return try listStandaloneEshModels(configuration: configuration)
+            case "openai":
+                return [
+                    "gpt-5-mini",
+                    "gpt-5.4-mini",
+                    "gpt-4o",
+                    "gpt-4o-mini",
+                ]
+            case "deepseek":
+                guard let apiKey = try configuration.resolvedAPIKey(for: "deepseek"), !apiKey.isEmpty else {
+                    throw AshexError.model("DEEPSEEK_API_KEY is required before listing DeepSeek models.")
+                }
+                return try await listDeepSeekModels(apiKey: apiKey, configuration: configuration)
+            case "anthropic":
+                return [
+                    "claude-sonnet-4-20250514",
+                    "claude-opus-4-20250514",
+                ]
+            case "dflash":
+                return ["Qwen/Qwen3.5-4B"]
+            case "mock":
+                return ["mock"]
+            default:
+                return []
             }
-        } else if configuration.provider == "esh" {
-            listModels = {
-                try listStandaloneEshModels(configuration: configuration)
-            }
-        } else {
-            listModels = nil
         }
-        let switchModel: @Sendable (String) async throws -> Void = { requestedModel in
+        let switchModel: @Sendable (String, String) async throws -> Void = { requestedProvider, requestedModel in
             let updatedRuntime = try configuration.makeRuntime(
                 persistence: persistence,
-                provider: configuration.provider,
+                provider: requestedProvider,
                 model: requestedModel,
                 approvalPolicy: ConnectorApprovalPolicy(
                     policyMode: configuration.userConfig.telegram.executionPolicy,
@@ -251,14 +275,62 @@ enum DaemonCLI {
             )
             await dispatcher.replaceRuntime(updatedRuntime)
             let now = Date()
-            try persistence.upsertSetting(namespace: "ui.session", key: "default_provider", value: .string(configuration.provider), now: now)
+            try persistence.upsertSetting(namespace: "ui.session", key: "default_provider", value: .string(requestedProvider), now: now)
             try persistence.upsertSetting(namespace: "ui.session", key: "default_model", value: .string(requestedModel), now: now)
+            liveSettings.updateText(provider: requestedProvider, model: requestedModel)
+        }
+        let listAudioModels: @Sendable () async throws -> [String] = {
+            let snapshot = liveSettings.textSnapshot()
+            let currentProviderModels = try await listModels(snapshot.provider)
+            let eshAudioModels = (try? EshCommandClient.listInstalledAudioModels(configuration: configuration)) ?? []
+            return AudioSelectionCatalog.displayModels(
+                chatProvider: snapshot.provider,
+                chatModel: snapshot.model,
+                chatAvailableModels: currentProviderModels,
+                eshAudioModels: eshAudioModels
+            ).compactMap { ModelCatalogDisplay.selectableModelName(from: $0) }
+        }
+        let currentAudioConfigDescription: @Sendable () async -> String = {
+            let audioConfig = liveSettings.audioSnapshot()
+            let snapshot = liveSettings.textSnapshot()
+            let resolved = audioConfig.resolvedModel(chatProvider: snapshot.provider, chatModel: snapshot.model)
+            switch audioConfig.selection {
+            case .reuseChatModel:
+                return resolved.usesChatModel
+                    ? "reuse chat model (\(resolved.provider)/\(resolved.model))"
+                    : "reuse chat model with local speech fallback"
+            case .localSpeech:
+                return "local speech"
+            case .separateModel:
+                return "\(resolved.provider)/\(resolved.model)"
+            }
+        }
+        let switchAudioModel: @Sendable (String) async throws -> String = { value in
+            let audioConfig = try parseAudioConfig(value: value, defaultProvider: liveSettings.textSnapshot().provider)
+            liveSettings.updateAudio(audioConfig)
+            var updatedConfig = configuration.userConfig
+            updatedConfig.audio = audioConfig
+            try UserConfigStore.write(updatedConfig, to: configuration.userConfigFile)
+            let snapshot = liveSettings.textSnapshot()
+            let resolved = audioConfig.resolvedModel(chatProvider: snapshot.provider, chatModel: snapshot.model)
+            return audioConfig.selection == .localSpeech ? "local speech" : "\(resolved.provider)/\(resolved.model)"
+        }
+        let searchModels: @Sendable (String) async throws -> [String] = { query in
+            try EshCommandClient.searchModels(configuration: configuration, query: query).map(\.displayName)
+        }
+        let installModel: @Sendable (String) async throws -> String = { query in
+            try EshCommandClient.installModel(configuration: configuration, query: query)
         }
         let modelControl = DaemonModelControl(
             listModels: listModels,
-            switchModel: switchModel
+            listAudioModels: listAudioModels,
+            currentAudioConfigDescription: currentAudioConfigDescription,
+            switchModel: switchModel,
+            switchAudioModel: switchAudioModel,
+            searchModels: searchModels,
+            installModel: installModel
         )
-        let audioReplySynthesizer = makeAudioReplySynthesizer(configuration: configuration)
+        let audioReplySynthesizer = makeAudioReplySynthesizer(configuration: configuration, liveSettings: liveSettings)
         let supervisor = DaemonSupervisor(
             registry: registry,
             router: router,
@@ -583,17 +655,46 @@ enum DaemonCLI {
     }
 
     private static func makeAudioReplySynthesizer(
-        configuration: CLIConfiguration
+        configuration: CLIConfiguration,
+        liveSettings: DaemonLiveSettings
     ) -> (@Sendable (_ text: String, _ workspaceRootPath: String) async throws -> InputAttachment)? {
-        let resolvedAudioModel = configuration.userConfig.audio.resolvedModel(
-            chatProvider: configuration.provider,
-            chatModel: configuration.model
-        )
-        guard resolvedAudioModel.provider != "local" else {
-            return nil
-        }
+        { text, workspaceRootPath in
+            let textSnapshot = liveSettings.textSnapshot()
+            let audioConfig = liveSettings.audioSnapshot()
+            let resolvedAudioModel = audioConfig.resolvedModel(
+                chatProvider: textSnapshot.provider,
+                chatModel: textSnapshot.model
+            )
+            guard resolvedAudioModel.provider != "local" else {
+                return try await DaemonAudioReplySynthesizer.synthesize(text: text, workspaceRootPath: workspaceRootPath)
+            }
 
-        return { text, workspaceRootPath in
+            if resolvedAudioModel.provider == "openai" {
+                do {
+                    return try await synthesizeOpenAIAudioReply(
+                        text: text,
+                        workspaceRootPath: workspaceRootPath,
+                        model: resolvedAudioModel.model,
+                        configuration: configuration
+                    )
+                } catch {
+                    // Fall through to local speech.
+                }
+            }
+
+            if resolvedAudioModel.provider == "esh" {
+                do {
+                    return try synthesizeEshAudioReply(
+                        text: text,
+                        workspaceRootPath: workspaceRootPath,
+                        model: resolvedAudioModel.model,
+                        configuration: configuration
+                    )
+                } catch {
+                    // Fall through to local speech.
+                }
+            }
+
             do {
                 let adapter = try configuration.makeModelAdapter(
                     provider: resolvedAudioModel.provider,
@@ -631,11 +732,151 @@ enum DaemonCLI {
                     return attachment
                 }
             } catch {
-                // Fall back to the local speech synthesizer so Telegram audio mode still replies.
+                // Fall through to local speech.
             }
 
             return try await DaemonAudioReplySynthesizer.synthesize(text: text, workspaceRootPath: workspaceRootPath)
         }
+    }
+
+    private static func synthesizeOpenAIAudioReply(
+        text: String,
+        workspaceRootPath: String,
+        model: String,
+        configuration: CLIConfiguration
+    ) async throws -> InputAttachment {
+        guard let apiKey = try configuration.resolvedAPIKey(for: "openai"), !apiKey.isEmpty else {
+            throw AshexError.model("OPENAI_API_KEY is required for OpenAI audio replies.")
+        }
+
+        let outputDirectory = URL(fileURLWithPath: workspaceRootPath, isDirectory: true)
+            .appendingPathComponent("generated-audio", isDirectory: true)
+        try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
+        let outputURL = outputDirectory.appendingPathComponent("\(UUID().uuidString).mp3")
+
+        var request = URLRequest(url: URL(string: "https://api.openai.com/v1/audio/speech")!)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.httpBody = try JSONEncoder().encode([
+            "model": model,
+            "voice": "alloy",
+            "input": text,
+        ])
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse, (200..<300).contains(httpResponse.statusCode) else {
+            throw AshexError.model("OpenAI audio reply generation failed.")
+        }
+        try data.write(to: outputURL)
+        return InputAttachment(
+            kind: .audio,
+            localPath: outputURL.path,
+            originalFilename: outputURL.lastPathComponent,
+            mimeType: "audio/mpeg"
+        )
+    }
+
+    private static func synthesizeEshAudioReply(
+        text: String,
+        workspaceRootPath: String,
+        model: String,
+        configuration: CLIConfiguration
+    ) throws -> InputAttachment {
+        let outputDirectory = URL(fileURLWithPath: workspaceRootPath, isDirectory: true)
+            .appendingPathComponent("generated-audio", isDirectory: true)
+        try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
+        let outputURL = outputDirectory.appendingPathComponent("\(UUID().uuidString).wav")
+        try EshCommandClient.speak(configuration: configuration, text: text, model: model, outputURL: outputURL)
+        return InputAttachment(
+            kind: .audio,
+            localPath: outputURL.path,
+            originalFilename: outputURL.lastPathComponent,
+            mimeType: "audio/wav"
+        )
+    }
+
+    private static func parseAudioConfig(value: String, defaultProvider: String) throws -> AudioConfig {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw AshexError.model("Audio value is empty. Use reuse, local, or provider/model.")
+        }
+
+        let lowered = trimmed.lowercased()
+        if ["reuse", "chat", "same", "reuse_chat_model"].contains(lowered) {
+            return AudioConfig(selection: .reuseChatModel)
+        }
+        if ["local", "macos", "macos-say", "local_speech"].contains(lowered) {
+            return AudioConfig(selection: .localSpeech)
+        }
+        let pieces = trimmed.split(separator: "/", maxSplits: 1).map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+        if pieces.count == 2, !pieces[0].isEmpty, !pieces[1].isEmpty {
+            return AudioConfig(selection: .separateModel, provider: pieces[0], model: pieces[1])
+        }
+        return AudioConfig(selection: .separateModel, provider: defaultProvider, model: trimmed)
+    }
+}
+
+private func listDeepSeekModels(apiKey: String, configuration: CLIConfiguration) async throws -> [String] {
+    let requestURL = CLIConfiguration.deepSeekBaseURL(config: configuration.userConfig.deepseek).appending(path: "models")
+    var request = URLRequest(url: requestURL)
+    request.httpMethod = "GET"
+    request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+
+    let (data, response) = try await URLSession.shared.data(for: request)
+    guard let httpResponse = response as? HTTPURLResponse else {
+        throw AshexError.model("DeepSeek model list did not return an HTTP response")
+    }
+    guard (200..<300).contains(httpResponse.statusCode) else {
+        throw AshexError.model("DeepSeek model list request failed with status \(httpResponse.statusCode)")
+    }
+
+    struct Envelope: Decodable {
+        struct Model: Decodable {
+            let id: String
+        }
+
+        let data: [Model]
+    }
+
+    return try JSONDecoder().decode(Envelope.self, from: data).data.map(\.id).sorted()
+}
+
+private final class DaemonLiveSettings: @unchecked Sendable {
+    private let lock = NSLock()
+    private var provider: String
+    private var model: String
+    private var audio: AudioConfig
+
+    init(provider: String, model: String, audio: AudioConfig) {
+        self.provider = provider
+        self.model = model
+        self.audio = audio
+    }
+
+    func textSnapshot() -> (provider: String, model: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        return (provider, model)
+    }
+
+    func audioSnapshot() -> AudioConfig {
+        lock.lock()
+        defer { lock.unlock() }
+        return audio
+    }
+
+    func updateText(provider: String, model: String) {
+        lock.lock()
+        self.provider = provider
+        self.model = model
+        lock.unlock()
+    }
+
+    func updateAudio(_ audio: AudioConfig) {
+        lock.lock()
+        self.audio = audio
+        lock.unlock()
     }
 }
 

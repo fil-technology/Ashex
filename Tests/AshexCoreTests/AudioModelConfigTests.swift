@@ -43,9 +43,16 @@ import Testing
 @Test(arguments: [
     ("openai", "gpt-4o-audio-preview"),
     ("openai", "gpt-realtime"),
+    ("openai", "gpt-4o-mini-tts"),
+    ("openai", "tts-1"),
     ("esh", "voice-model"),
+    ("esh", "mlx-community/orpheus-3b-0.1-ft-bf16"),
     ("ollama", "llama3.2-omni"),
 ])
 func voiceSupportRecognizesMultimodalAudioModels(provider: String, model: String) {
     #expect(AudioModelSupport.supportsVoice(provider: provider, model: model))
+}
+
+@Test func voiceSupportDoesNotTreatAllEshModelsAsAudioCapable() {
+    #expect(AudioModelSupport.supportsVoice(provider: "esh", model: "granite4:1b") == false)
 }
