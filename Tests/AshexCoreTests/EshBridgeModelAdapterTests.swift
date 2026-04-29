@@ -393,19 +393,12 @@ private actor RecordingInferRunner: EshCommandRunning {
             request = try JSONDecoder().decode(EshInferRequest.self, from: data)
         }
 
-        return ShellExecutionResult(stdout: """
-        {
-          "schemaVersion": "esh.infer.response.v1",
-          "modelID": "audio-model",
-          "backend": "mlx",
-          "integration": {
-            "mode": "direct",
-            "cacheArtifactID": null,
-            "cacheMode": "auto"
-          },
-          "outputText": "\(reply)"
-        }
-        """, stderr: "", exitCode: 0, timedOut: false)
+        return ShellExecutionResult(
+            stdout: try inferResponseJSON(outputText: reply),
+            stderr: "",
+            exitCode: 0,
+            timedOut: false
+        )
     }
 
     func lastInferRequest() -> EshInferRequest? {
@@ -461,19 +454,12 @@ private actor SequencedInferRunner: EshCommandRunning {
         }
 
         let reply = replies.isEmpty ? "" : replies.removeFirst()
-        return ShellExecutionResult(stdout: """
-        {
-          "schemaVersion": "esh.infer.response.v1",
-          "modelID": "audio-model",
-          "backend": "mlx",
-          "integration": {
-            "mode": "direct",
-            "cacheArtifactID": null,
-            "cacheMode": "auto"
-          },
-          "outputText": "\(reply)"
-        }
-        """, stderr: "", exitCode: 0, timedOut: false)
+        return ShellExecutionResult(
+            stdout: try inferResponseJSON(outputText: reply),
+            stderr: "",
+            exitCode: 0,
+            timedOut: false
+        )
     }
 
     func recordedRequests() -> [EshInferRequest] {
@@ -503,6 +489,22 @@ private actor RecordingFallbackAdapter: DirectChatModelAdapter {
     func lastAttachments() -> [InputAttachment] {
         attachments
     }
+}
+
+private func inferResponseJSON(outputText: String) throws -> String {
+    let payload: [String: Any] = [
+        "schemaVersion": "esh.infer.response.v1",
+        "modelID": "audio-model",
+        "backend": "mlx",
+        "integration": [
+            "mode": "direct",
+            "cacheArtifactID": NSNull(),
+            "cacheMode": "auto",
+        ],
+        "outputText": outputText,
+    ]
+    let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+    return String(decoding: data, as: UTF8.self)
 }
 
 private extension String {

@@ -10,6 +10,8 @@ enum LocalPromptCommand: Equatable {
     case installToolPack(String)
     case uninstallToolPack(String)
     case switchWorkspace(String)
+    case showGenerationOptions
+    case setGenerationOption(GenerationOptionCommand)
     case simpleWorkspace(SimpleWorkspaceCommand)
     case openWorkspaces
     case showHelp
@@ -31,10 +33,16 @@ enum LocalPromptCommand: Equatable {
             return .showToolPacks
         case ":workspaces", "/workspaces":
             return .openWorkspaces
+        case ":options", "/options", "options":
+            return .showGenerationOptions
         case ":cd", "/cd", "cd", ":mkdir", "/mkdir", "mkdir", ":install-pack", "/install-pack", ":uninstall-pack", "/uninstall-pack":
             return .showHelp
         default:
             break
+        }
+
+        if let generationCommand = GenerationOptionCommand.parse(trimmed) {
+            return .setGenerationOption(generationCommand)
         }
 
         if let simpleWorkspaceCommand = SimpleWorkspaceCommand.parse(trimmed) {
@@ -84,6 +92,57 @@ enum LocalPromptCommand: Equatable {
             "Enable a bundled pack: /install-pack swiftpm",
             "Disable a bundled pack: /uninstall-pack swiftpm",
             "Open recent workspaces view: /workspaces",
+            "Show model options: /options",
+            "Set model options: /temperature 0.7, /top-p 0.9, /top-k 40, /min-p 0.05, /repetition-penalty 1.1, /seed 42",
+            "Merge raw provider options: /options {\"mirostat\":1}",
         ]
+    }
+}
+
+enum GenerationOptionCommand: Equatable {
+    case temperature(Double?)
+    case topP(Double?)
+    case topK(Int?)
+    case minP(Double?)
+    case repetitionPenalty(Double?)
+    case seed(Int?)
+    case rawOptions(String)
+
+    static func parse(_ prompt: String) -> GenerationOptionCommand? {
+        let commands: [(String, (String) -> GenerationOptionCommand?)] = [
+            ("temperature", { .temperature(parseOptionalDouble($0)) }),
+            ("top-p", { .topP(parseOptionalDouble($0)) }),
+            ("top_k", { .topK(parseOptionalInt($0)) }),
+            ("top-k", { .topK(parseOptionalInt($0)) }),
+            ("min-p", { .minP(parseOptionalDouble($0)) }),
+            ("repetition-penalty", { .repetitionPenalty(parseOptionalDouble($0)) }),
+            ("seed", { .seed(parseOptionalInt($0)) }),
+            ("options", { value in value.isEmpty ? nil : .rawOptions(value) }),
+        ]
+
+        for (name, makeCommand) in commands {
+            for prefix in ["/\(name) ", ":\(name) ", "\(name) "] {
+                guard prompt.hasPrefix(prefix) else { continue }
+                let value = String(prompt.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                return makeCommand(value)
+            }
+        }
+        return nil
+    }
+
+    private static func parseOptionalDouble(_ value: String) -> Double? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.lowercased() != "default", trimmed.lowercased() != "reset", trimmed.lowercased() != "null" else {
+            return nil
+        }
+        return Double(trimmed)
+    }
+
+    private static func parseOptionalInt(_ value: String) -> Int? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.lowercased() != "default", trimmed.lowercased() != "reset", trimmed.lowercased() != "null" else {
+            return nil
+        }
+        return Int(trimmed)
     }
 }

@@ -8,6 +8,7 @@ final class TUIApp {
     private enum InputMode {
         case prompt
         case model
+        case modelInstall
         case audioModel
         case apiKey
         case telegramToken
@@ -62,7 +63,10 @@ final class TUIApp {
         case workspace = "Workspace"
         case provider = "Provider"
         case model = "Model"
+        case modelInstall = "Install Model"
         case audioModel = "Audio Model"
+        case computerUseEnabled = "Computer Use"
+        case computerUseSafety = "Computer Safety"
         case apiKey = "API Key"
         case reasoningDebug = "Reasoning Debug"
         case telegramEnabled = "Telegram Enabled"
@@ -395,16 +399,16 @@ final class TUIApp {
 
     private func refreshComputerUseStatus() async {
         let manifestURL = ComputerUseCLI.resolvedManifestURL(workspaceRoot: sessionWorkspaceRoot, config: sessionUserConfig.computerUse)
-        guard FileManager.default.fileExists(atPath: manifestURL.path) else {
-            computerUseBackendSummary = "not running"
-            render()
-            return
-        }
-
-        let provider = ManifestBackedComputerUseProvider(manifestURL: manifestURL)
+        let backend = ComputerUseCLI.backendProvider(manifestURL: manifestURL)
         do {
-            let status = try await provider.backendStatus()
-            computerUseBackendSummary = status.state.rawValue
+            let status = try await backend.provider.backendStatus()
+            if status.state == .running {
+                computerUseBackendSummary = status.state.rawValue
+            } else if let detail = status.detail, !detail.isEmpty {
+                computerUseBackendSummary = detail
+            } else {
+                computerUseBackendSummary = status.state.rawValue
+            }
             render()
         } catch {
             computerUseBackendSummary = "not running"
@@ -752,6 +756,9 @@ final class TUIApp {
         case .model:
             commitModelInput()
             return
+        case .modelInstall:
+            commitModelInstallInput()
+            return
         case .audioModel:
             commitAudioModelInput()
             return
@@ -822,6 +829,11 @@ final class TUIApp {
             modelInput.removeLast()
             focus = .input
             statusLine = "Editing model"
+        case .modelInstall:
+            guard !modelInput.isEmpty else { return }
+            modelInput.removeLast()
+            focus = .input
+            statusLine = "Editing model install"
         case .audioModel:
             guard !audioModelInput.isEmpty else { return }
             audioModelInput.removeLast()
@@ -889,6 +901,10 @@ final class TUIApp {
                 modelInput = ""
                 statusLine = "Cleared model input"
                 return
+            case .modelInstall where !modelInput.isEmpty:
+                modelInput = ""
+                statusLine = "Cleared model install input"
+                return
             case .audioModel where !audioModelInput.isEmpty:
                 audioModelInput = ""
                 statusLine = "Cleared audio model input"
@@ -918,6 +934,11 @@ final class TUIApp {
                 statusLine = "Cleared terminal input"
                 return
             case .model:
+                inputMode = .prompt
+                focus = showSettings ? .settings : .launcher
+                statusLine = "Back to settings"
+                return
+            case .modelInstall:
                 inputMode = .prompt
                 focus = showSettings ? .settings : .launcher
                 statusLine = "Back to settings"
@@ -1070,6 +1091,9 @@ final class TUIApp {
         case .model:
             modelInput.append(character)
             statusLine = "Editing model"
+        case .modelInstall:
+            modelInput.append(character)
+            statusLine = "Editing model install"
         case .audioModel:
             audioModelInput.append(character)
             statusLine = "Editing audio model"
@@ -1176,6 +1200,10 @@ final class TUIApp {
             focus = .transcript
             statusLine = "Commands"
         case .computerUse:
+            if !sessionUserConfig.computerUse.enabled {
+                sessionUserConfig.computerUse.enabled = true
+                persistUserConfig()
+            }
             shouldLaunchComputerUsePrototype = true
             statusLine = "Launching computer use prototype"
         case .terminal:
@@ -1234,6 +1262,7 @@ final class TUIApp {
                     "[computer-use] Prototype failed",
                     "",
                     error.localizedDescription,
+                    "Active config: \(sessionUserConfigFile.path)",
                     "Check `computer_use.enabled`, the backend manifest path, and backend status, then try again."
                 ],
                 status: "Computer use prototype failed"
@@ -1283,6 +1312,17 @@ final class TUIApp {
                 focus = .input
                 statusLine = "Edit model and press Enter to apply"
             }
+        case .modelInstall:
+            guard sessionProvider == "esh" || sessionProvider == "ollama" else {
+                statusLine = "Model install is available for esh and Ollama"
+                return
+            }
+            inputMode = .modelInstall
+            modelInput = ""
+            focus = .input
+            statusLine = sessionProvider == "ollama"
+                ? "Type an Ollama model name to pull and select"
+                : "Type an esh repo, alias, or search term to install and select"
         case .audioModel:
             modelPickerTarget = .audio
             if !providerPickerModels.isEmpty {
@@ -1297,6 +1337,27 @@ final class TUIApp {
                 focus = .input
                 statusLine = "Enter reuse, local, or provider/model for audio replies"
             }
+        case .computerUseEnabled:
+            sessionUserConfig.computerUse.enabled.toggle()
+            persistUserConfig()
+            statusLine = sessionUserConfig.computerUse.enabled
+                ? "Computer use enabled"
+                : "Computer use disabled"
+            Task { [weak self] in
+                await self?.refreshComputerUseStatus()
+            }
+        case .computerUseSafety:
+            let modes = ComputerUseSafetyMode.allCases
+            if let currentIndex = modes.firstIndex(of: sessionUserConfig.computerUse.safety) {
+                let nextIndex = modes.index(after: currentIndex)
+                sessionUserConfig.computerUse.safety = nextIndex == modes.endIndex
+                    ? modes[modes.startIndex]
+                    : modes[nextIndex]
+            } else {
+                sessionUserConfig.computerUse.safety = .strict
+            }
+            persistUserConfig()
+            statusLine = "Computer safety: \(sessionUserConfig.computerUse.safety.rawValue)"
         case .apiKey:
             inputMode = .apiKey
             apiKeyInput = ""
@@ -1820,44 +1881,55 @@ final class TUIApp {
 
     private static func runOllamaPull(modelName: String) async -> (success: Bool, message: String?) {
         await Task.detached {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            process.arguments = ["ollama", "pull", modelName]
-            let pipe = Pipe()
-            process.standardOutput = pipe
-            process.standardError = pipe
-
             do {
-                try process.run()
-                process.waitUntilExit()
-                if process.terminationStatus == 0 {
-                    return (true, nil)
-                }
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                let output = String(data: data, encoding: .utf8) ?? "ollama pull exited \(process.terminationStatus)"
-                return (false, output.trimmingCharacters(in: .whitespacesAndNewlines))
+                let output = try OllamaCommandClient.installModel(modelName: modelName)
+                return (true, output.isEmpty ? nil : output)
             } catch {
                 return (false, error.localizedDescription)
             }
         }.value
     }
 
-    private func installEshModel(query: String, selectInstalledModel: Bool) async -> (success: Bool, message: String?) {
-        do {
-            let before = Set((try? EshCommandClient.listInstalledModels(configuration: configuration)) ?? [])
-            let output = try EshCommandClient.installModel(configuration: configuration, query: query)
-            let after = Set((try? EshCommandClient.listInstalledModels(configuration: configuration)) ?? [])
-            let added = after.subtracting(before).sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
-
-            await refreshProviderStatus()
-            if selectInstalledModel, let selected = added.first {
-                sessionModel = selected
+    private func installCurrentProviderModel(query: String, selectInstalledModel: Bool) async -> (success: Bool, message: String?) {
+        switch sessionProvider {
+        case "esh":
+            return await installEshModel(query: query, selectInstalledModel: selectInstalledModel)
+        case "ollama":
+            let result = await Self.runOllamaPull(modelName: query)
+            if result.success, selectInstalledModel {
+                sessionModel = query.trimmingCharacters(in: .whitespacesAndNewlines)
                 refreshSessionRuntime()
                 persistSessionSettings()
-                return (true, "Installed and selected \(selected)")
+                await refreshProviderStatus()
+                return (true, "Downloaded and selected \(sessionModel)")
+            }
+            if result.success {
+                await refreshProviderStatus()
+            }
+            return result.success
+                ? (true, result.message ?? "Ollama install complete")
+                : (false, "Install failed: \(result.message ?? "unknown error")")
+        default:
+            return (false, "Model install is available for esh and Ollama")
+        }
+    }
+
+    private func installEshModel(query: String, selectInstalledModel: Bool) async -> (success: Bool, message: String?) {
+        do {
+            let selected = try EshCommandClient.installModelResolvingSelection(
+                configuration: configuration,
+                query: query
+            )
+
+            await refreshProviderStatus()
+            if selectInstalledModel {
+                sessionModel = selected.model
+                refreshSessionRuntime()
+                persistSessionSettings()
+                return (true, "Installed and selected \(selected.model)")
             }
 
-            return (true, output.isEmpty ? "Install complete" : output)
+            return (true, selected.output.isEmpty ? "Install complete" : selected.output)
         } catch {
             return (false, "Install failed: \(error.localizedDescription)")
         }
@@ -2322,7 +2394,7 @@ final class TUIApp {
         model: String,
         text: String
     ) async throws -> InputAttachment {
-        let adapter = try configuration.makeModelAdapter(provider: provider, model: model)
+        let adapter = try configuration.makeModelAdapter(provider: provider, model: model, userConfig: sessionUserConfig)
         guard let directChatAdapter = adapter as? any DirectChatModelAdapter else {
             throw AshexError.model("Selected audio provider `\(provider)` cannot generate direct speech here.")
         }
@@ -2645,7 +2717,7 @@ final class TUIApp {
             return
         }
 
-        if sessionProvider == "esh", trimmed.lowercased().hasPrefix("install ") {
+        if trimmed.lowercased().hasPrefix("install ") {
             let query = String(trimmed.dropFirst("install ".count)).trimmingCharacters(in: .whitespacesAndNewlines)
             guard !query.isEmpty else {
                 statusLine = "Use `install <repo-or-search-term>`"
@@ -2653,9 +2725,9 @@ final class TUIApp {
             }
             inputMode = .prompt
             focus = showSettings ? .settings : .launcher
-            statusLine = "Installing \(query) with esh..."
+            statusLine = "Installing \(query) with \(sessionProvider)..."
             Task { [weak self] in
-                let result = await self?.installEshModel(query: query, selectInstalledModel: true) ?? (false, "Install failed")
+                let result = await self?.installCurrentProviderModel(query: query, selectInstalledModel: true) ?? (false, "Install failed")
                 await MainActor.run {
                     self?.statusLine = result.message ?? (result.success ? "Install complete" : "Install failed")
                 }
@@ -2673,6 +2745,25 @@ final class TUIApp {
 
         Task { [weak self] in
             await self?.refreshProviderStatus()
+        }
+    }
+
+    private func commitModelInstallInput() {
+        let query = modelInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else {
+            statusLine = "Model install input is empty"
+            return
+        }
+
+        inputMode = .prompt
+        focus = showSettings ? .settings : .launcher
+        modelInput = ""
+        statusLine = "Installing \(query) with \(sessionProvider)..."
+        Task { [weak self] in
+            let result = await self?.installCurrentProviderModel(query: query, selectInstalledModel: true) ?? (false, "Install failed")
+            await MainActor.run {
+                self?.statusLine = result.message ?? (result.success ? "Install complete" : "Install failed")
+            }
         }
     }
 
@@ -3253,6 +3344,34 @@ final class TUIApp {
         case .showToolPacks:
             presentToolPackStatus(prompt: "/toolpacks")
             return true
+        case .showGenerationOptions:
+            presentLocalPromptResult(
+                lines: generationOptionLines(prompt: prompt.trimmingCharacters(in: .whitespacesAndNewlines)),
+                status: "Model options shown"
+            )
+            return true
+        case .setGenerationOption(let optionCommand):
+            do {
+                try applyGenerationOptionCommand(optionCommand)
+                persistUserConfig()
+                refreshSessionRuntime()
+                if runTask == nil {
+                    presentLocalPromptResult(
+                        lines: generationOptionLines(prompt: prompt.trimmingCharacters(in: .whitespacesAndNewlines)),
+                        status: "Model options apply to the next prompt"
+                    )
+                } else {
+                    promptText = ""
+                    statusLine = "Model options apply to the next prompt"
+                }
+            } catch {
+                presentLocalPromptResult(lines: [
+                    "Prompt: \(prompt.trimmingCharacters(in: .whitespacesAndNewlines))",
+                    "",
+                    "[error] \(error.localizedDescription)"
+                ], status: "Model option rejected")
+            }
+            return true
         case .installToolPack(let packID):
             installBundledToolPack(packID)
             return true
@@ -3314,6 +3433,83 @@ final class TUIApp {
         showCommands = false
         focus = .transcript
         statusLine = status
+    }
+
+    private func applyGenerationOptionCommand(_ command: GenerationOptionCommand) throws {
+        switch command {
+        case .temperature(let value):
+            sessionUserConfig.generation.temperature = value
+        case .topP(let value):
+            sessionUserConfig.generation.topP = value
+        case .topK(let value):
+            sessionUserConfig.generation.topK = value
+        case .minP(let value):
+            sessionUserConfig.generation.minP = value
+        case .repetitionPenalty(let value):
+            sessionUserConfig.generation.repetitionPenalty = value
+        case .seed(let value):
+            sessionUserConfig.generation.seed = value
+        case .rawOptions(let json):
+            sessionUserConfig.generation.options = try Self.parseGenerationOptions(json)
+        }
+    }
+
+    private func generationOptionLines(prompt: String) -> [String] {
+        let config = sessionUserConfig.generation
+        let rawOptions: String
+        if config.options.isEmpty {
+            rawOptions = "{}"
+        } else if let data = try? JSONEncoder().encode(JSONValue.object(config.options)),
+                  let text = String(data: data, encoding: .utf8) {
+            rawOptions = text
+        } else {
+            rawOptions = "<unavailable>"
+        }
+        return [
+            "Prompt: \(prompt)",
+            "",
+            "[local] Model options",
+            "Temperature: \(Self.renderOptional(config.temperature))",
+            "Top-p: \(Self.renderOptional(config.topP))",
+            "Top-k: \(Self.renderOptional(config.topK))",
+            "Min-p: \(Self.renderOptional(config.minP))",
+            "Repetition penalty: \(Self.renderOptional(config.repetitionPenalty))",
+            "Seed: \(Self.renderOptional(config.seed))",
+            "Raw options: \(rawOptions)",
+            "Applies to the next prompt."
+        ]
+    }
+
+    private static func renderOptional<T>(_ value: T?) -> String {
+        value.map(String.init(describing:)) ?? "default"
+    }
+
+    private static func parseGenerationOptions(_ json: String) throws -> JSONObject {
+        let data = Data(json.utf8)
+        let object = try JSONSerialization.jsonObject(with: data)
+        guard let dictionary = object as? [String: Any] else {
+            throw AshexError.model("/options expects a JSON object, for example /options {\"mirostat\":1}")
+        }
+        return try dictionary.mapValues(jsonValue)
+    }
+
+    private static func jsonValue(from value: Any) throws -> JSONValue {
+        switch value {
+        case let string as String:
+            return .string(string)
+        case let bool as Bool:
+            return .bool(bool)
+        case let number as NSNumber:
+            return .number(number.doubleValue)
+        case let dictionary as [String: Any]:
+            return .object(try dictionary.mapValues(jsonValue))
+        case let array as [Any]:
+            return .array(try array.map(jsonValue))
+        case _ as NSNull:
+            return .null
+        default:
+            throw AshexError.model("Unsupported /options JSON value")
+        }
     }
 
     private func presentToolPackStatus(prompt: String) {
@@ -4592,8 +4788,18 @@ final class TUIApp {
                 value = sessionProvider
             case .model:
                 value = sessionModel
+            case .modelInstall:
+                value = sessionProvider == "ollama"
+                    ? "Run ollama pull, refresh, and select"
+                    : sessionProvider == "esh"
+                        ? "Install with esh, refresh, and select"
+                        : "Available for esh and Ollama"
             case .audioModel:
                 value = audioModelStatusLabel()
+            case .computerUseEnabled:
+                value = sessionUserConfig.computerUse.enabled ? "Enabled" : "Disabled"
+            case .computerUseSafety:
+                value = sessionUserConfig.computerUse.safety.rawValue
             case .apiKey:
                 value = apiKeyStatusLabel(for: sessionProvider)
             case .reasoningDebug:
@@ -4736,6 +4942,9 @@ final class TUIApp {
         } else if inputMode == .model {
             lines.append("")
             lines.append("\(TerminalUIStyle.amber)Model edit mode is active in the input bar below.\(TerminalUIStyle.reset)")
+        } else if inputMode == .modelInstall {
+            lines.append("")
+            lines.append("\(TerminalUIStyle.amber)Model install mode is active in the input bar below.\(TerminalUIStyle.reset)")
         } else if inputMode == .audioModel {
             lines.append("")
             lines.append("\(TerminalUIStyle.amber)Audio model edit mode is active. Use reuse, local, or provider/model.\(TerminalUIStyle.reset)")
@@ -5099,6 +5308,7 @@ final class TUIApp {
         switch inputMode {
         case .prompt: actualLabelText = composeMode == .audio ? "Audio" : "Chat"
         case .model: actualLabelText = "Model"
+        case .modelInstall: actualLabelText = "Install"
         case .audioModel: actualLabelText = "Audio"
         case .apiKey: actualLabelText = "API Key"
         case .telegramToken: actualLabelText = "Telegram"
@@ -5113,6 +5323,7 @@ final class TUIApp {
         switch inputMode {
         case .prompt: currentText = promptText
         case .model: currentText = modelInput
+        case .modelInstall: currentText = modelInput
         case .audioModel: currentText = audioModelInput
         case .apiKey: currentText = String(repeating: "•", count: apiKeyInput.count)
         case .telegramToken: currentText = String(repeating: "•", count: telegramTokenInput.count)
@@ -5127,6 +5338,8 @@ final class TUIApp {
         }
         let placeholder = inputMode == .model
             ? "Type a model name, then press Enter to apply…"
+            : inputMode == .modelInstall
+                ? "Type a model name, repo, alias, or search term to install…"
             : inputMode == .audioModel
                 ? "Type reuse, local, model, or provider/model…"
             : inputMode == .apiKey
@@ -6965,7 +7178,7 @@ final class TUIApp {
             ? TUIApprovalPolicy(coordinator: approvalCoordinator)
             : TrustedApprovalPolicy()
 
-        let modelAdapter = try configuration.makeModelAdapter(provider: provider, model: model)
+        let modelAdapter = try configuration.makeModelAdapter(provider: provider, model: model, userConfig: sessionUserConfig)
         let persistence = SQLitePersistenceStore(databaseURL: sessionStorageRoot.appendingPathComponent("ashex.sqlite"))
         let shellPolicy = ShellCommandPolicy(config: sessionUserConfig.shell)
         let shellExecutionPolicy = ShellExecutionPolicy(

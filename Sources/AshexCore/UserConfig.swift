@@ -13,6 +13,7 @@ public struct AshexUserConfig: Codable, Sendable {
     public var deepseek: DeepSeekConfig
     public var dflash: DFlashConfig
     public var audio: AudioConfig
+    public var generation: ModelGenerationConfig
     public var optimization: OptimizationConfig
     public var logging: LoggingConfig
     public var exec: ExecConfig
@@ -31,6 +32,7 @@ public struct AshexUserConfig: Codable, Sendable {
         deepseek: DeepSeekConfig = .default,
         dflash: DFlashConfig = .default,
         audio: AudioConfig = .default,
+        generation: ModelGenerationConfig = .default,
         optimization: OptimizationConfig = .default,
         logging: LoggingConfig = .default,
         exec: ExecConfig = .default,
@@ -48,6 +50,7 @@ public struct AshexUserConfig: Codable, Sendable {
         self.deepseek = deepseek
         self.dflash = dflash
         self.audio = audio
+        self.generation = generation
         self.optimization = optimization
         self.logging = logging
         self.exec = exec
@@ -69,6 +72,7 @@ public struct AshexUserConfig: Codable, Sendable {
         case deepseek
         case dflash
         case audio
+        case generation
         case optimization
         case logging
         case exec
@@ -96,10 +100,100 @@ public struct AshexUserConfig: Codable, Sendable {
         deepseek = try container.decodeIfPresent(DeepSeekConfig.self, forKey: .deepseek) ?? .default
         dflash = try container.decodeIfPresent(DFlashConfig.self, forKey: .dflash) ?? .default
         audio = try container.decodeIfPresent(AudioConfig.self, forKey: .audio) ?? .default
+        generation = try container.decodeIfPresent(ModelGenerationConfig.self, forKey: .generation) ?? .default
         optimization = try container.decodeIfPresent(OptimizationConfig.self, forKey: .optimization) ?? .default
         logging = try container.decodeIfPresent(LoggingConfig.self, forKey: .logging) ?? .default
         exec = try container.decodeIfPresent(ExecConfig.self, forKey: .exec) ?? .default
         browser = try container.decodeIfPresent(BrowserConfigSection.self, forKey: .browser) ?? .default
+    }
+}
+
+public struct ModelGenerationConfig: Codable, Sendable, Equatable {
+    public var temperature: Double?
+    public var topP: Double?
+    public var topK: Int?
+    public var minP: Double?
+    public var repetitionPenalty: Double?
+    public var seed: Int?
+    public var options: JSONObject
+
+    public init(
+        temperature: Double? = nil,
+        topP: Double? = nil,
+        topK: Int? = nil,
+        minP: Double? = nil,
+        repetitionPenalty: Double? = nil,
+        seed: Int? = nil,
+        options: JSONObject = [:]
+    ) {
+        self.temperature = temperature
+        self.topP = topP
+        self.topK = topK
+        self.minP = minP
+        self.repetitionPenalty = repetitionPenalty
+        self.seed = seed
+        self.options = options
+    }
+
+    public static let `default` = ModelGenerationConfig()
+
+    private enum CodingKeys: String, CodingKey {
+        case temperature
+        case topP
+        case topK
+        case minP
+        case repetitionPenalty
+        case seed
+        case options
+    }
+
+    private enum SnakeCodingKeys: String, CodingKey {
+        case topP = "top_p"
+        case topK = "top_k"
+        case minP = "min_p"
+        case repetitionPenalty = "repetition_penalty"
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let snakeContainer = try decoder.container(keyedBy: SnakeCodingKeys.self)
+        temperature = try container.decodeIfPresent(Double.self, forKey: .temperature)
+        topP = try container.decodeIfPresent(Double.self, forKey: .topP)
+            ?? snakeContainer.decodeIfPresent(Double.self, forKey: .topP)
+        topK = try container.decodeIfPresent(Int.self, forKey: .topK)
+            ?? snakeContainer.decodeIfPresent(Int.self, forKey: .topK)
+        minP = try container.decodeIfPresent(Double.self, forKey: .minP)
+            ?? snakeContainer.decodeIfPresent(Double.self, forKey: .minP)
+        repetitionPenalty = try container.decodeIfPresent(Double.self, forKey: .repetitionPenalty)
+            ?? snakeContainer.decodeIfPresent(Double.self, forKey: .repetitionPenalty)
+        seed = try container.decodeIfPresent(Int.self, forKey: .seed)
+        options = try container.decodeIfPresent(JSONObject.self, forKey: .options) ?? [:]
+    }
+
+    public func mergedOllamaOptions(defaults: JSONObject) -> JSONObject {
+        var merged = defaults
+        for (key, value) in options {
+            merged[key] = value
+        }
+        if let temperature {
+            merged["temperature"] = .number(temperature)
+        }
+        if let topP {
+            merged["top_p"] = .number(topP)
+        }
+        if let topK {
+            merged["top_k"] = .number(Double(topK))
+        }
+        if let minP {
+            merged["min_p"] = .number(minP)
+        }
+        if let repetitionPenalty {
+            merged["repeat_penalty"] = .number(repetitionPenalty)
+        }
+        if let seed {
+            merged["seed"] = .number(Double(seed))
+        }
+        return merged
     }
 }
 

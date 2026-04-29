@@ -689,17 +689,20 @@ public struct OllamaModelConfiguration: Sendable {
     public let baseURL: URL
     public let requestTimeoutSeconds: Int
     public let contextWindowTokens: Int
+    public let generation: ModelGenerationConfig
 
     public init(
         model: String = "llama3.2",
         baseURL: URL = URL(string: "http://localhost:11434/api/chat")!,
         requestTimeoutSeconds: Int = 180,
-        contextWindowTokens: Int = 4096
+        contextWindowTokens: Int = 4096,
+        generation: ModelGenerationConfig = .default
     ) {
         self.model = model
         self.baseURL = baseURL
         self.requestTimeoutSeconds = requestTimeoutSeconds
         self.contextWindowTokens = max(512, contextWindowTokens)
+        self.generation = generation
     }
 }
 
@@ -985,10 +988,10 @@ public struct OllamaChatModelAdapter: ModelAdapter {
             model: configuration.model,
             messages: messages,
             tools: tools,
-            options: [
+            options: configuration.generation.mergedOllamaOptions(defaults: [
                 "num_ctx": .number(Double(configuration.contextWindowTokens)),
                 "temperature": .number(0),
-            ],
+            ]),
             stream: false
         )
 
@@ -1226,10 +1229,10 @@ extension OllamaChatModelAdapter: DirectChatModelAdapter {
                 "required": .array([.string("reply")]),
                 "additionalProperties": .bool(false),
             ],
-            options: [
+            options: configuration.generation.mergedOllamaOptions(defaults: [
                 "num_ctx": .number(Double(configuration.contextWindowTokens)),
                 "temperature": .number(0.2),
-            ],
+            ]),
             stream: false
         )
 
@@ -1290,10 +1293,10 @@ extension OllamaChatModelAdapter: TaskPlanningModelAdapter {
                 .init(role: "user", content: "Task kind: \(taskKind.rawValue)\n\nUser request:\n\(prompt)")
             ],
             format: ModelPromptRenderer.taskPlanSchema(),
-            options: [
+            options: configuration.generation.mergedOllamaOptions(defaults: [
                 "num_ctx": .number(Double(configuration.contextWindowTokens)),
                 "temperature": .number(0),
-            ],
+            ]),
             stream: false
         )
 

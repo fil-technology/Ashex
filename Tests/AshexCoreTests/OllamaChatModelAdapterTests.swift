@@ -242,6 +242,43 @@ struct OllamaChatModelAdapterTests {
         #expect(OllamaStubURLProtocol.state.lastRequestBodyString?.contains(#""num_ctx":2048"#) == true)
     }
 
+    @Test func sendsConfiguredGenerationOptionsToOllamaRequests() async throws {
+        let session = makeOllamaStubbedSession(statusCode: 200, body: """
+        {
+          "message": {
+            "content": "{\\"type\\":\\"final_answer\\",\\"final_answer\\":\\"done locally\\",\\"tool_name\\":null,\\"arguments\\":null}"
+          }
+        }
+        """)
+
+        let adapter = OllamaChatModelAdapter(
+            configuration: .init(
+                model: "llama3.2",
+                baseURL: URL(string: "http://localhost:11434/api/chat")!,
+                generation: .init(
+                    temperature: 0.8,
+                    topP: 0.9,
+                    topK: 40,
+                    minP: 0.05,
+                    repetitionPenalty: 1.1,
+                    seed: 42,
+                    options: ["mirostat": .number(1)]
+                )
+            ),
+            session: session
+        )
+
+        _ = try await adapter.nextAction(for: sampleModelContext())
+        let body = try #require(OllamaStubURLProtocol.state.lastRequestBodyString)
+        #expect(body.contains(#""temperature":0.8"#))
+        #expect(body.contains(#""top_p":0.9"#))
+        #expect(body.contains(#""top_k":40"#))
+        #expect(body.contains(#""min_p":0.05"#))
+        #expect(body.contains(#""repeat_penalty":1.1"#))
+        #expect(body.contains(#""seed":42"#))
+        #expect(body.contains(#""mirostat":1"#))
+    }
+
     @Test func sendsConfiguredContextWindowToDirectChatOllamaRequests() async throws {
         let session = makeOllamaStubbedSession(statusCode: 200, body: """
         {

@@ -9,4 +9,6 @@ import Testing
 
 @Test func configCLIHelpMentionsConfigSet() {
     #expect(ConfigCLI.helpText.contains("ashex config set"))
+    #expect(ConfigCLI.helpText.contains("ashex config paths"))
+    #expect(ConfigCLI.helpText.contains("--global"))
 }

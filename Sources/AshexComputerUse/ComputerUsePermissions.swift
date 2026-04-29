@@ -32,15 +32,21 @@ public struct ComputerUsePermissionStatus: Codable, Sendable, Equatable {
         guard !missing.isEmpty else {
             return "Computer-use permissions are granted."
         }
+        let processName = ProcessInfo.processInfo.processName
         return """
         Missing macOS permission(s): \(missing.joined(separator: ", ")).
-        Open System Settings > Privacy & Security, grant Accessibility and Screen Recording to the app or terminal running ashex, then restart that app.
+        macOS does not let command-line tools grant these permissions programmatically.
+        Open System Settings > Privacy & Security, grant Accessibility and Screen Recording to the app or terminal running ashex (currently: \(processName)), then fully quit and restart that app.
+        Direct pane: x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility
         """
     }
 }
 
 public enum ComputerUsePermissionChecker {
-    public static func current(promptForAccessibility: Bool = false) -> ComputerUsePermissionStatus {
+    public static func current(
+        promptForAccessibility: Bool = false,
+        promptForScreenRecording: Bool = false
+    ) -> ComputerUsePermissionStatus {
         let accessibility: ComputerUsePermissionGrant
         if promptForAccessibility {
             let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
@@ -49,7 +55,10 @@ public enum ComputerUsePermissionChecker {
             accessibility = AXIsProcessTrusted() ? .granted : .denied
         }
 
-        let screenRecording: ComputerUsePermissionGrant = CGPreflightScreenCaptureAccess() ? .granted : .denied
+        let hasScreenRecording = promptForScreenRecording
+            ? CGRequestScreenCaptureAccess()
+            : CGPreflightScreenCaptureAccess()
+        let screenRecording: ComputerUsePermissionGrant = hasScreenRecording ? .granted : .denied
         return .init(accessibility: accessibility, screenRecording: screenRecording)
     }
 }

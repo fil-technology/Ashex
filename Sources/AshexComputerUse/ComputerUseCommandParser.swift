@@ -36,11 +36,18 @@ public struct ComputerUseCommandParser: Sendable {
         }
 
         if trimmed.hasPrefix("scroll ") {
-            let directionText = String(trimmed.dropFirst("scroll ".count)).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let tokens = String(trimmed.dropFirst("scroll ".count))
+                .split(whereSeparator: \.isWhitespace)
+                .map { String($0).lowercased() }
+            let directionText = tokens.first ?? ""
             guard let direction = ScrollDirection(rawValue: directionText) else {
                 throw ComputerUseCommandError.invalid("Unsupported scroll direction `\(directionText)`. Use `scroll up` or `scroll down`.")
             }
-            return .scroll(direction: direction, amount: 1)
+            let amount = tokens.dropFirst().first.flatMap(Int.init) ?? 1
+            guard amount > 0 else {
+                throw ComputerUseCommandError.invalid("Scroll amount must be greater than zero.")
+            }
+            return .scroll(direction: direction, amount: amount)
         }
 
         if trimmed.hasPrefix("press ") {
@@ -81,9 +88,15 @@ public struct ComputerUseCommandParser: Sendable {
         case "enter": key = "Enter"
         case "escape", "esc": key = "Escape"
         case "tab": key = "Tab"
+        case "space": key = "Space"
+        case "delete", "backspace": key = "Delete"
+        case "up": key = "Up"
+        case "down": key = "Down"
+        case "left": key = "Left"
+        case "right": key = "Right"
         default:
             guard keyToken.count == 1 else {
-                throw ComputerUseCommandError.invalid("Unsupported key `\(keyToken)`. Start with enter, escape, tab, or a single letter shortcut.")
+                throw ComputerUseCommandError.invalid("Unsupported key `\(keyToken)`. Start with enter, escape, tab, arrows, delete, space, or a single key shortcut.")
             }
             key = keyToken.uppercased()
         }

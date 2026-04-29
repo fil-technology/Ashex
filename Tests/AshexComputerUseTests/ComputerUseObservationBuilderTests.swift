@@ -39,4 +39,6 @@ import Testing
     #expect(denied.guidance.contains("Accessibility"))
     #expect(denied.guidance.contains("Screen Recording"))
     #expect(denied.guidance.contains("System Settings"))
+    #expect(denied.guidance.contains("does not let command-line tools grant"))
+    #expect(denied.guidance.contains(ProcessInfo.processInfo.processName))
 }

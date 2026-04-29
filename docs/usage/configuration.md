@@ -9,6 +9,8 @@ Ashex reads project config first, then optional global config. Project settings 
 - Persistence directory: `WORKSPACE/.ashex` unless overridden with `--storage PATH`
 - Default workspace: `~/Ashex/DefaultWorkspace`, created on first run when `--workspace` is not provided.
 
+Use `ashex config paths` to see the exact workspace and config files active for the current launch. Use `ashex config set <key.path> <value> --global` for machine-wide defaults, and omit `--global` for a workspace-specific override.
+
 ## CLI Options
 
 - `onboard`: open the setup wizard even if saved settings already exist.
@@ -19,6 +21,14 @@ Ashex reads project config first, then optional global config. Project settings 
 - `--provider mock|openai|anthropic|ollama|esh|dflash`: model adapter selection.
 - `--model MODEL`: model name for provider-backed mode.
 - `--approval-mode trusted|guarded`: execution policy, default `trusted`.
+
+Examples:
+
+```bash
+ashex config paths
+ashex config set computer_use.enabled true
+ashex config set computer_use.enabled true --global
+```
 
 ## Browser Backend Config
 

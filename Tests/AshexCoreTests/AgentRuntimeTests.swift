@@ -613,7 +613,7 @@ private final class RecordingExecutionRuntime: ExecutionRuntime, @unchecked Send
         workspaceSnapshot: WorkspaceSnapshotBuilder.capture(workspaceRoot: root)
     )
 
-    for await _ in runtime.run(RunRequest(prompt: "browse https://filsv.com and summarize it")) {}
+    for await _ in runtime.run(RunRequest(prompt: "search filsv.com")) {}
 
     let seenTools = await adapter.lastAvailableToolNames()
     #expect(seenTools.contains("browser_fetch"))
@@ -660,7 +660,7 @@ private final class RecordingExecutionRuntime: ExecutionRuntime, @unchecked Send
     )
 
     var startedTools: [String] = []
-    for await event in runtime.run(RunRequest(prompt: "what is filsv.com?")) {
+    for await event in runtime.run(RunRequest(prompt: "search filsv.com")) {
         if case .toolCallStarted(_, _, let toolName, _) = event.payload {
             startedTools.append(toolName)
         }

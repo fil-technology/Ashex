@@ -8,6 +8,7 @@ public struct EshBridgeConfiguration: Sendable, Equatable {
     public let providerID: String
     public let optimization: OptimizationConfig
     public let requestTimeoutSeconds: Int
+    public let generation: ModelGenerationConfig
 
     public init(
         executablePath: String,
@@ -16,7 +17,8 @@ public struct EshBridgeConfiguration: Sendable, Equatable {
         model: String,
         providerID: String,
         optimization: OptimizationConfig,
-        requestTimeoutSeconds: Int = 180
+        requestTimeoutSeconds: Int = 180,
+        generation: ModelGenerationConfig = .default
     ) {
         self.executablePath = executablePath
         self.homePath = homePath
@@ -25,6 +27,7 @@ public struct EshBridgeConfiguration: Sendable, Equatable {
         self.providerID = providerID
         self.optimization = optimization
         self.requestTimeoutSeconds = requestTimeoutSeconds
+        self.generation = generation
     }
 }
 
@@ -521,7 +524,7 @@ private extension EshBackedModelAdapter {
             cacheMode: resolveOptimization(taskKind: taskKind, prompt: taskPrompt).mode.rawValue,
             intent: resolvedIntent(taskKind: taskKind, prompt: taskPrompt).rawValue,
             messages: buildInferMessages(systemPrompt: systemPrompt, history: history, message: message, attachments: attachments),
-            generation: .init()
+            generation: .init(config: configuration.generation)
         )
 
         let encoder = JSONEncoder()
@@ -958,12 +961,35 @@ struct EshInferAttachment: Codable, Equatable {
 }
 
 struct EshGenerationConfig: Codable {
-    let maxTokens: Int
-    let temperature: Double
+    let maxTokens: Int?
+    let temperature: Double?
+    let topP: Double?
+    let topK: Int?
+    let minP: Double?
+    let repetitionPenalty: Double?
+    let seed: Int?
+    let options: JSONObject?
 
-    init(maxTokens: Int = 512, temperature: Double = 0.7) {
+    init(maxTokens: Int? = 512, temperature: Double? = 0.7) {
         self.maxTokens = maxTokens
         self.temperature = temperature
+        self.topP = nil
+        self.topK = nil
+        self.minP = nil
+        self.repetitionPenalty = nil
+        self.seed = nil
+        self.options = nil
+    }
+
+    init(config: ModelGenerationConfig) {
+        self.maxTokens = 512
+        self.temperature = config.temperature ?? 0.7
+        self.topP = config.topP
+        self.topK = config.topK
+        self.minP = config.minP
+        self.repetitionPenalty = config.repetitionPenalty
+        self.seed = config.seed
+        self.options = config.options.isEmpty ? nil : config.options
     }
 }
 

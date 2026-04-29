@@ -114,10 +114,91 @@ struct AshexCLI {
                     print("\(pack.id): \(enabledIDs.contains(pack.id) ? "enabled" : "disabled")")
                 }
             }
+        case .showGenerationOptions:
+            print(Self.generationOptionsText(configuration.userConfig.generation))
+        case .setGenerationOption(let optionCommand):
+            var userConfig = configuration.userConfig
+            try Self.applyGenerationOptionCommand(optionCommand, to: &userConfig)
+            try UserConfigStore.write(userConfig, to: configuration.userConfigFile)
+            print(Self.generationOptionsText(userConfig.generation))
+            print("Applies to the next prompt.")
         case .installToolPack, .uninstallToolPack, .openWorkspaces, .switchWorkspace, .showHelp:
             print(LocalPromptCommand.helpLines.joined(separator: "\n"))
         }
         return true
+    }
+
+    private static func generationOptionsText(_ config: ModelGenerationConfig) -> String {
+        let rawOptions: String
+        if config.options.isEmpty {
+            rawOptions = "{}"
+        } else if let data = try? JSONEncoder().encode(JSONValue.object(config.options)),
+                  let text = String(data: data, encoding: .utf8) {
+            rawOptions = text
+        } else {
+            rawOptions = "<unavailable>"
+        }
+        return """
+        Model options
+        Temperature: \(renderOptional(config.temperature))
+        Top-p: \(renderOptional(config.topP))
+        Top-k: \(renderOptional(config.topK))
+        Min-p: \(renderOptional(config.minP))
+        Repetition penalty: \(renderOptional(config.repetitionPenalty))
+        Seed: \(renderOptional(config.seed))
+        Raw options: \(rawOptions)
+        """
+    }
+
+    private static func renderOptional<T>(_ value: T?) -> String {
+        value.map(String.init(describing:)) ?? "default"
+    }
+
+    private static func applyGenerationOptionCommand(_ command: GenerationOptionCommand, to config: inout AshexUserConfig) throws {
+        switch command {
+        case .temperature(let value):
+            config.generation.temperature = value
+        case .topP(let value):
+            config.generation.topP = value
+        case .topK(let value):
+            config.generation.topK = value
+        case .minP(let value):
+            config.generation.minP = value
+        case .repetitionPenalty(let value):
+            config.generation.repetitionPenalty = value
+        case .seed(let value):
+            config.generation.seed = value
+        case .rawOptions(let json):
+            config.generation.options = try parseGenerationOptions(json)
+        }
+    }
+
+    private static func parseGenerationOptions(_ json: String) throws -> JSONObject {
+        let data = Data(json.utf8)
+        let object = try JSONSerialization.jsonObject(with: data)
+        guard let dictionary = object as? [String: Any] else {
+            throw AshexError.model("/options expects a JSON object, for example /options {\"mirostat\":1}")
+        }
+        return try dictionary.mapValues(jsonValue)
+    }
+
+    private static func jsonValue(from value: Any) throws -> JSONValue {
+        switch value {
+        case let string as String:
+            return .string(string)
+        case let bool as Bool:
+            return .bool(bool)
+        case let number as NSNumber:
+            return .number(number.doubleValue)
+        case let dictionary as [String: Any]:
+            return .object(try dictionary.mapValues(jsonValue))
+        case let array as [Any]:
+            return .array(try array.map(jsonValue))
+        case _ as NSNull:
+            return .null
+        default:
+            throw AshexError.model("Unsupported /options JSON value")
+        }
     }
 
     static func isHelpRequested(arguments: [String]) -> Bool {
@@ -148,6 +229,7 @@ struct AshexCLI {
       --storage PATH            Storage root for Ashex state
       --provider NAME           Provider: mock, openai, anthropic, deepseek, ollama, esh, dflash
       --model NAME              Provider model name
+      --select                  With `model install`, save the installed model as the default
       --max-iterations N        Maximum agent loop iterations
       --approval-mode MODE      trusted or guarded
       --onboarding              Open first-run setup
@@ -404,7 +486,8 @@ struct CLIConfiguration {
         try makeModelAdapter(provider: provider, model: model)
     }
 
-    func makeModelAdapter(provider: String, model: String) throws -> any ModelAdapter {
+    func makeModelAdapter(provider: String, model: String, userConfig overrideUserConfig: AshexUserConfig? = nil) throws -> any ModelAdapter {
+        let effectiveUserConfig = overrideUserConfig ?? userConfig
         let audioTranscriber = makeAudioTranscriberIfAvailable(for: provider)
         let baseAdapter: any ModelAdapter
         switch provider {
@@ -426,8 +509,8 @@ struct CLIConfiguration {
                 configuration: .init(
                     apiKey: apiKey,
                     model: model,
-                    baseURL: Self.deepSeekBaseURL(config: userConfig.deepseek),
-                    requestTimeoutSeconds: userConfig.deepseek.requestTimeoutSeconds
+                    baseURL: Self.deepSeekBaseURL(config: effectiveUserConfig.deepseek),
+                    requestTimeoutSeconds: effectiveUserConfig.deepseek.requestTimeoutSeconds
                 )
             )
         case "anthropic":
@@ -442,20 +525,21 @@ struct CLIConfiguration {
             baseAdapter = DFlashServerModelAdapter(
                 configuration: .init(
                     model: model,
-                    baseURL: Self.dflashBaseURL(config: userConfig.dflash),
-                    requestTimeoutSeconds: userConfig.dflash.requestTimeoutSeconds,
-                    draftModel: userConfig.dflash.draftModel
+                    baseURL: Self.dflashBaseURL(config: effectiveUserConfig.dflash),
+                    requestTimeoutSeconds: effectiveUserConfig.dflash.requestTimeoutSeconds,
+                    draftModel: effectiveUserConfig.dflash.draftModel
                 )
             )
         case "esh":
-            baseAdapter = try makeStandaloneEshAdapter(model: model)
+            baseAdapter = try makeStandaloneEshAdapter(model: model, userConfig: effectiveUserConfig)
         case "ollama":
             baseAdapter = OllamaChatModelAdapter(
                 configuration: .init(
                     model: model,
                     baseURL: URL(string: ProcessInfo.processInfo.environment["OLLAMA_BASE_URL"] ?? "http://localhost:11434/api/chat")!,
-                    requestTimeoutSeconds: Self.ollamaRequestTimeoutSeconds(config: userConfig.ollama),
-                    contextWindowTokens: Self.ollamaContextWindowTokens(config: userConfig.ollama)
+                    requestTimeoutSeconds: Self.ollamaRequestTimeoutSeconds(config: effectiveUserConfig.ollama),
+                    contextWindowTokens: Self.ollamaContextWindowTokens(config: effectiveUserConfig.ollama),
+                    generation: effectiveUserConfig.generation
                 ),
                 audioTranscriber: audioTranscriber
             )
@@ -466,7 +550,7 @@ struct CLIConfiguration {
         if provider == "esh" {
             return baseAdapter
         }
-        return makeOptimizedAdapterIfNeeded(baseAdapter: baseAdapter, provider: provider, model: model)
+        return makeOptimizedAdapterIfNeeded(baseAdapter: baseAdapter, provider: provider, model: model, userConfig: effectiveUserConfig)
     }
 
     func makeRuntime() throws -> AgentRuntime {
@@ -510,7 +594,7 @@ struct CLIConfiguration {
             shellExecutionPolicy: shellExecutionPolicy
         )
         return try AgentRuntime(
-            modelAdapter: makeModelAdapter(provider: provider, model: model),
+            modelAdapter: makeModelAdapter(provider: provider, model: model, userConfig: userConfig),
             toolRegistry: ToolRegistry(tools: tools),
             persistence: persistence,
             approvalPolicy: approvalPolicy,
@@ -540,6 +624,10 @@ struct CLIConfiguration {
 
     func persistSessionSettings() throws {
         guard shouldPersistSessionDefaults else { return }
+        try persistSessionSelection(provider: provider, model: model)
+    }
+
+    func persistSessionSelection(provider: String, model: String) throws {
         let store = try Self.makeSettingsStore(storageRoot: storageRoot)
         let now = Date()
         try store.upsertSetting(namespace: SessionSetting.namespace, key: SessionSetting.provider, value: .string(provider), now: now)
@@ -618,7 +706,8 @@ struct CLIConfiguration {
     private func makeOptimizedAdapterIfNeeded(
         baseAdapter: any ModelAdapter,
         provider: String,
-        model: String
+        model: String,
+        userConfig: AshexUserConfig
     ) -> any ModelAdapter {
         guard let executablePath = resolvedEshExecutablePathIfEnabled(for: provider) else {
             return baseAdapter
@@ -640,7 +729,8 @@ struct CLIConfiguration {
                 model: model,
                 providerID: provider,
                 optimization: optimization,
-                requestTimeoutSeconds: Self.ollamaRequestTimeoutSeconds(config: userConfig.ollama)
+                requestTimeoutSeconds: Self.ollamaRequestTimeoutSeconds(config: userConfig.ollama),
+                generation: userConfig.generation
             ),
             fallback: baseAdapter
         )
@@ -663,7 +753,7 @@ struct CLIConfiguration {
         return executablePath
     }
 
-    private func makeStandaloneEshAdapter(model: String) throws -> any ModelAdapter {
+    private func makeStandaloneEshAdapter(model: String, userConfig: AshexUserConfig) throws -> any ModelAdapter {
         let optimization = userConfig.optimization
         let inspector = EshOptimizationInspector()
         guard let executablePath = inspector.resolveExecutablePath(config: optimization.esh),
@@ -693,7 +783,8 @@ struct CLIConfiguration {
                     intent: optimization.intent,
                     esh: optimization.esh
                 ),
-                requestTimeoutSeconds: Self.ollamaRequestTimeoutSeconds(config: userConfig.ollama)
+                requestTimeoutSeconds: Self.ollamaRequestTimeoutSeconds(config: userConfig.ollama),
+                generation: userConfig.generation
             ),
             fallback: EshUnavailableModelAdapter(message: "The selected `esh` runtime could not complete the request.")
         )

@@ -1923,7 +1923,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         ]
         let lookupSignals = [
             "what is", "tell me about", "summarize", "fetch", "load", "look up", "lookup", "inspect",
-            "browse", "open", "render", "visit"
+            "browse", "open", "render", "visit", "search"
         ]
 
         guard websiteSignals.contains(where: lowered.contains),
@@ -1948,7 +1948,8 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
             "website", "site", "web page", "webpage", "domain", "url"
         ]
         let lookupSignals = [
-            "what is", "tell me about", "summarize", "fetch", "load", "look up", "lookup", "inspect"
+            "what is", "tell me about", "summarize", "fetch", "load", "look up", "lookup", "inspect",
+            "search"
         ]
 
         guard websiteSignals.contains(where: lowered.contains),

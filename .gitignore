@@ -3,6 +3,7 @@
 /.dist
 /Packages
 /.ashex
+/.esh
 /scripts/.ashex/
 /scripts/ashex.config.json
 /.vscode

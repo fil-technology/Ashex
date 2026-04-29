@@ -72,6 +72,11 @@ enum AudioSelectionCatalog {
 }
 
 enum EshCommandClient {
+    struct InstallSelection: Equatable, Sendable {
+        let output: String
+        let model: String
+    }
+
     static func listInstalledModels(configuration: CLIConfiguration) throws -> [String] {
         let resolved = try resolvedPaths(configuration: configuration)
         let capabilities = try CLIConfiguration.inspectEshCapabilities(
@@ -125,6 +130,25 @@ enum EshCommandClient {
             throw AshexError.model("Model search term is empty.")
         }
         return try run(configuration: configuration, arguments: ["model", "install", trimmed])
+    }
+
+    static func installModelResolvingSelection(
+        configuration: CLIConfiguration,
+        query: String
+    ) throws -> InstallSelection {
+        let before = Set((try? listInstalledModels(configuration: configuration)) ?? [])
+        let output = try installModel(configuration: configuration, query: query)
+        let after = Set((try? listInstalledModels(configuration: configuration)) ?? [])
+        let added = after.subtracting(before).sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let selected = added.first ??
+            after.first { $0.localizedCaseInsensitiveCompare(trimmed) == .orderedSame } ??
+            after.first { model in
+                trimmed.localizedCaseInsensitiveContains(model) ||
+                    model.localizedCaseInsensitiveContains(trimmed)
+            } ??
+            trimmed
+        return .init(output: output, model: selected)
     }
 
     static func speak(
@@ -226,5 +250,70 @@ enum EshCommandClient {
         environment["ESH_HOME"] = homePath
         environment["COLUMNS"] = "240"
         return environment
+    }
+}
+
+struct LocalModelCommandResult: Equatable, Sendable {
+    let terminationStatus: Int32
+    let output: String
+    let errorOutput: String
+}
+
+enum OllamaCommandClient {
+    typealias Runner = ([String]) throws -> LocalModelCommandResult
+
+    static func listInstalledModels(run: Runner = runOllama) throws -> [String] {
+        let result = try run(["list"])
+        guard result.terminationStatus == 0 else {
+            throw AshexError.model(errorMessage(from: result, fallback: "`ollama list` failed."))
+        }
+
+        return result.output
+            .split(whereSeparator: \.isNewline)
+            .dropFirst()
+            .compactMap { line -> String? in
+                let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { return nil }
+                guard let name = trimmed.split(whereSeparator: \.isWhitespace).first else { return nil }
+                return String(name)
+            }
+    }
+
+    static func installModel(modelName: String, run: Runner = runOllama) throws -> String {
+        let trimmed = modelName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw AshexError.model("Ollama model name is empty.")
+        }
+
+        let result = try run(["pull", trimmed])
+        guard result.terminationStatus == 0 else {
+            throw AshexError.model(errorMessage(from: result, fallback: "`ollama pull \(trimmed)` failed."))
+        }
+        return result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func runOllama(arguments: [String]) throws -> LocalModelCommandResult {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["ollama"] + arguments
+        let stdout = Pipe()
+        let stderr = Pipe()
+        process.standardOutput = stdout
+        process.standardError = stderr
+        try process.run()
+        process.waitUntilExit()
+
+        return .init(
+            terminationStatus: process.terminationStatus,
+            output: String(decoding: stdout.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self),
+            errorOutput: String(decoding: stderr.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        )
+    }
+
+    private static func errorMessage(from result: LocalModelCommandResult, fallback: String) -> String {
+        let stderr = result.errorOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !stderr.isEmpty { return stderr }
+        let stdout = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+        return stdout.isEmpty ? fallback : stdout
     }
 }

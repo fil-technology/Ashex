@@ -3,7 +3,7 @@ import Foundation
 enum ModelCLICommand: Equatable {
     case list([String], task: String?)
     case search([String], query: String)
-    case install([String], query: String)
+    case install([String], query: String, select: Bool)
     case audioModels([String])
 
     static func parse(arguments: [String]) -> ModelCLICommand? {
@@ -22,10 +22,12 @@ enum ModelCLICommand: Equatable {
                 let commandExtras = extras.filter { !queryParts.contains($0) }
                 return query.isEmpty ? nil : .search(commandExtras, query: query)
             case "install":
-                let queryParts = positionalValues(in: extras)
+                let select = extras.contains("--select")
+                let filteredExtras = extras.filter { $0 != "--select" }
+                let queryParts = positionalValues(in: filteredExtras)
                 let query = queryParts.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
-                let commandExtras = extras.filter { !queryParts.contains($0) }
-                return query.isEmpty ? nil : .install(commandExtras, query: query)
+                let commandExtras = filteredExtras.filter { !queryParts.contains($0) }
+                return query.isEmpty ? nil : .install(commandExtras, query: query, select: select)
             default:
                 return nil
             }
@@ -85,7 +87,10 @@ enum ModelCLI {
         switch command {
         case .list(let extraArguments, let task):
             let configuration = try CLIConfiguration(arguments: [arguments[0]] + extraArguments)
-            if configuration.provider == "esh" || task == "audio" || task == "tool" {
+            if configuration.provider == "ollama", task == nil {
+                let models = try OllamaCommandClient.listInstalledModels()
+                print(models.isEmpty ? "No installed Ollama models." : models.joined(separator: "\n"))
+            } else if configuration.provider == "esh" || task == "audio" || task == "tool" {
                 let models = try EshCommandClient.listInstalledModels(configuration: configuration)
                 if let task, task == "audio" {
                     let audioModels = try EshCommandClient.listInstalledAudioModels(configuration: configuration)
@@ -94,7 +99,7 @@ enum ModelCLI {
                     print(models.isEmpty ? "No installed esh models." : models.joined(separator: "\n"))
                 }
             } else {
-                print("`ashex model list` currently supports local esh-backed model discovery. Use `--provider esh` or `ashex audio models`.")
+                print("`ashex model list` supports local esh and Ollama discovery. Use `--provider esh`, `--provider ollama`, or `ashex audio models`.")
             }
         case .search(let extraArguments, let query):
             let configuration = try CLIConfiguration(arguments: [arguments[0]] + extraArguments)
@@ -106,10 +111,26 @@ enum ModelCLI {
                     print("\(result.displayName)\n  \(result.detail)")
                 }
             }
-        case .install(let extraArguments, let query):
+        case .install(let extraArguments, let query, let select):
             let configuration = try CLIConfiguration(arguments: [arguments[0]] + extraArguments)
-            let output = try EshCommandClient.installModel(configuration: configuration, query: query)
-            print(output.isEmpty ? "Install complete." : output)
+            if configuration.provider == "ollama" {
+                let output = try OllamaCommandClient.installModel(modelName: query)
+                print(output.isEmpty ? "Ollama install complete." : output)
+                if select {
+                    try configuration.persistSessionSelection(provider: "ollama", model: query.trimmingCharacters(in: .whitespacesAndNewlines))
+                    print("Selected ollama/\(query.trimmingCharacters(in: .whitespacesAndNewlines))")
+                }
+            } else {
+                let selected = try EshCommandClient.installModelResolvingSelection(
+                    configuration: configuration,
+                    query: query
+                )
+                print(selected.output.isEmpty ? "Install complete." : selected.output)
+                if select {
+                    try configuration.persistSessionSelection(provider: "esh", model: selected.model)
+                    print("Selected esh/\(selected.model)")
+                }
+            }
         case .audioModels(let extraArguments):
             let configuration = try CLIConfiguration(arguments: [arguments[0]] + extraArguments)
             let models = try EshCommandClient.listInstalledAudioModels(configuration: configuration)

@@ -18,6 +18,17 @@ import Testing
     #expect(ComputerUseCLICommand.parse(arguments: ["ashex", "computer-use", "doctor"]) == .doctor([]))
 }
 
+@Test func computerUseBackendFallsBackToNativeWhenManifestIsMissing() {
+    let missingManifest = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString)
+        .appendingPathComponent("background-computer-use.json")
+
+    let backend = ComputerUseCLI.backendProvider(manifestURL: missingManifest)
+
+    #expect(!backend.requiresManifest)
+    #expect(backend.description.contains("native macOS"))
+}
+
 @Test func parsesCommonDeamonMisspellingAsDaemonCommands() {
     #expect(DaemonCLICommand.parse(arguments: ["ashex", "deamon", "run"]) == .daemonRun([]))
     #expect(DaemonCLICommand.parse(arguments: ["ashex", "deamon", "start"]) == .daemonStart([]))
@@ -54,8 +65,35 @@ import Testing
     #expect(ModelCLICommand.parse(arguments: ["ashex", "model", "list"]) == .list([], task: nil))
     #expect(ModelCLICommand.parse(arguments: ["ashex", "model", "list", "--task", "audio"]) == .list(["--task", "audio"], task: "audio"))
     #expect(ModelCLICommand.parse(arguments: ["ashex", "model", "search", "orpheus"]) == .search([], query: "orpheus"))
-    #expect(ModelCLICommand.parse(arguments: ["ashex", "model", "install", "Qwen/Qwen3-TTS-12Hz-0.6B-Base"]) == .install([], query: "Qwen/Qwen3-TTS-12Hz-0.6B-Base"))
+    #expect(ModelCLICommand.parse(arguments: ["ashex", "model", "install", "Qwen/Qwen3-TTS-12Hz-0.6B-Base"]) == .install([], query: "Qwen/Qwen3-TTS-12Hz-0.6B-Base", select: false))
+    #expect(ModelCLICommand.parse(arguments: ["ashex", "model", "install", "granite4:1b", "--provider", "ollama", "--select"]) == .install(["--provider", "ollama"], query: "granite4:1b", select: true))
     #expect(ModelCLICommand.parse(arguments: ["ashex", "audio", "models"]) == .audioModels([]))
+}
+
+@Test func ollamaCommandClientInstallsModelWithPull() throws {
+    var receivedArguments: [String] = []
+    let output = try OllamaCommandClient.installModel(modelName: " granite4:1b ") { arguments in
+        receivedArguments = arguments
+        return .init(terminationStatus: 0, output: "pulled granite4:1b\n", errorOutput: "")
+    }
+
+    #expect(receivedArguments == ["pull", "granite4:1b"])
+    #expect(output == "pulled granite4:1b")
+}
+
+@Test func ollamaCommandClientParsesInstalledModels() throws {
+    let output = """
+    NAME              ID              SIZE      MODIFIED
+    granite4:1b       abc123          815 MB    1 hour ago
+    qwen2.5:7b        def456          4.7 GB    2 days ago
+    """
+
+    let models = try OllamaCommandClient.listInstalledModels { arguments in
+        #expect(arguments == ["list"])
+        return .init(terminationStatus: 0, output: output, errorOutput: "")
+    }
+
+    #expect(models == ["granite4:1b", "qwen2.5:7b"])
 }
 
 @Test func parsesCronCommands() {

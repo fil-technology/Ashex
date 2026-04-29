@@ -70,9 +70,35 @@ import Testing
         }
     }
 
-    #expect(await browser.fetchedURLs() == ["https://example.com"])
+    #expect(await browser.fetchedURLs().contains("https://example.com"))
     #expect(sawBrowserToolFinish)
     #expect(finalAnswer == "Fetched Example Domain.")
+}
+
+@Test func browserFetchToolAcceptsSchemelessURL() async throws {
+    let browser = RecordingBrowserManager()
+    let tool = BrowserFetchTool(manager: browser)
+
+    _ = try await tool.execute(arguments: [
+        "url": .string("example.com"),
+    ], context: ToolContext(runID: UUID(), emit: { _ in }, cancellation: CancellationToken()))
+
+    #expect(await browser.fetchedURLs() == ["https://example.com"])
+}
+
+@Test func browserFetchToolAcceptsBareDomainURL() async throws {
+    let browser = RecordingBrowserManager()
+    let tool = BrowserFetchTool(manager: browser)
+
+    _ = try await tool.execute(arguments: [
+        "url": .string("filsv.com"),
+    ], context: ToolContext(runID: UUID(), emit: { _ in }, cancellation: CancellationToken()))
+
+    _ = try await tool.execute(arguments: [
+        "url": .string("www.filsv.com"),
+    ], context: ToolContext(runID: UUID(), emit: { _ in }, cancellation: CancellationToken()))
+
+    #expect(await browser.fetchedURLs() == ["https://filsv.com", "https://www.filsv.com"])
 }
 
 private actor RecordingBrowserManager: BrowserManaging {

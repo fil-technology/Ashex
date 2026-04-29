@@ -73,36 +73,38 @@ enum ComputerUseCLI {
 
     static func runPrototype(workspaceRoot: URL, userConfig: AshexUserConfig) async throws {
         let manifestURL = resolvedManifestURL(workspaceRoot: workspaceRoot, config: userConfig.computerUse)
-        let provider = ManifestBackedComputerUseProvider(manifestURL: manifestURL)
+        let backend = backendProvider(manifestURL: manifestURL)
         let loop = ComputerUsePrototypeLoop(
-            provider: provider,
+            provider: backend.provider,
             safetyPolicy: .init(mode: userConfig.computerUse.safety),
             observationBuilder: .init(),
             parser: .init(),
-            executor: .init(provider: provider),
+            executor: .init(provider: backend.provider),
             configuration: userConfig.computerUse,
-            manifestURL: manifestURL
+            manifestURL: manifestURL,
+            requiresBackendManifest: backend.requiresManifest,
+            backendDescription: backend.description
         )
         try await loop.run()
     }
 
     static func runDoctor(workspaceRoot: URL, userConfig: AshexUserConfig) async throws {
         let manifestURL = resolvedManifestURL(workspaceRoot: workspaceRoot, config: userConfig.computerUse)
-        let provider = ManifestBackedComputerUseProvider(manifestURL: manifestURL)
-        let permissions = await provider.permissionStatus()
+        let backend = backendProvider(manifestURL: manifestURL)
+        let permissions = ComputerUsePermissionChecker.current(promptForAccessibility: true, promptForScreenRecording: true)
         print("Computer Use Doctor")
         print("Enabled: \(userConfig.computerUse.enabled)")
         print("Backend manifest: \(manifestURL.path)")
+        print("Selected backend: \(backend.description)")
         print("Accessibility: \(permissions.accessibility.rawValue)")
         print("Screen Recording: \(permissions.screenRecording.rawValue)")
         print(permissions.guidance)
 
-        guard FileManager.default.fileExists(atPath: manifestURL.path) else {
-            print("Backend: manifest missing")
-            return
+        if !FileManager.default.fileExists(atPath: manifestURL.path) {
+            print("Backend manifest: missing; using native macOS fallback")
         }
 
-        let status = try await provider.backendStatus()
+        let status = try await backend.provider.backendStatus()
         print("Backend: \(status.state.rawValue)\(status.detail.map { " (\($0))" } ?? "")")
     }
 
@@ -117,5 +119,24 @@ enum ComputerUseCLI {
         return workspaceRoot
             .appendingPathComponent(".ashex", isDirectory: true)
             .appendingPathComponent("background-computer-use.json")
+    }
+
+    static func backendProvider(manifestURL: URL) -> (
+        provider: any ComputerUseProvider,
+        requiresManifest: Bool,
+        description: String
+    ) {
+        if FileManager.default.fileExists(atPath: manifestURL.path) {
+            return (
+                ManifestBackedComputerUseProvider(manifestURL: manifestURL),
+                true,
+                "manifest \(manifestURL.path)"
+            )
+        }
+        return (
+            NativeMacOSComputerUseProvider(),
+            false,
+            "native macOS Accessibility/CoreGraphics"
+        )
     }
 }

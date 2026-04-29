@@ -8,7 +8,7 @@ Ashex can run against local, hosted, and mock providers. You can change the acti
 ashex onboard
 ```
 
-The onboarding flow lets you choose a provider, choose or type a model, save hosted-provider API keys in local secrets JSON, and skip anything you want to configure later.
+The onboarding flow lets you choose a provider, choose or type a model, install local models for `esh` or Ollama, save hosted-provider API keys in local secrets JSON, and skip anything you want to configure later.
 
 ## Provider Options
 
@@ -28,6 +28,13 @@ ashex --provider esh --model your-installed-esh-model "list the files in this wo
 ```
 
 If you omit a concrete model in the TUI, Ashex will try to use the first installed model reported by `esh capabilities`.
+
+You can discover and install `esh` models from Ashex:
+
+```bash
+ashex model search qwen --provider esh
+ashex model install Qwen/Qwen3-TTS-12Hz-0.6B-Base --provider esh --select
+```
 
 ## OpenAI
 
@@ -51,9 +58,11 @@ You can also save the API key from `Assistant Setup`; Ashex stores it in `.ashex
 
 ```bash
 ollama serve
-ollama pull llama3.2
+ashex model install llama3.2 --provider ollama --select
 ashex --provider ollama --model llama3.2 "list the files in this workspace"
 ```
+
+`ashex model list --provider ollama` shows models reported by the local Ollama CLI. Assistant Setup also has an `Install Model` action that pulls an Ollama model and selects it for the next run.
 
 Ashex applies local-model memory guardrails for Ollama based on the Mac's available RAM and the installed model size. If you intentionally want to override that guardrail:
 

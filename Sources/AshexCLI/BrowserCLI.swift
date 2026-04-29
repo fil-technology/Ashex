@@ -252,7 +252,7 @@ private struct FetchOptions {
                 configurationArguments.append(argument)
                 configurationArguments.append(value)
             default:
-                if url == nil, let parsed = URL(string: argument) {
+                if url == nil, let parsed = BrowserURLNormalizer.normalize(argument) {
                     url = parsed
                 } else {
                     throw AshexError.model("Unknown browser fetch argument '\(argument)'")
@@ -308,7 +308,7 @@ private struct EvalOptions {
                 remaining.append(argument)
             }
         }
-        guard remaining.count >= 2, let url = URL(string: remaining[0]) else {
+        guard remaining.count >= 2, let url = BrowserURLNormalizer.normalize(remaining[0]) else {
             throw AshexError.model("browser eval requires a URL and JavaScript expression")
         }
         self.url = url
@@ -354,7 +354,7 @@ private struct ScreenshotOptions {
                 configurationArguments.append(argument)
                 configurationArguments.append(value)
             default:
-                if url == nil, let parsed = URL(string: argument) {
+                if url == nil, let parsed = BrowserURLNormalizer.normalize(argument) {
                     url = parsed
                 } else {
                     throw AshexError.model("Unknown browser screenshot argument '\(argument)'")
@@ -439,7 +439,7 @@ private struct BenchmarkOptions {
                 configurationArguments.append(argument)
                 configurationArguments.append(value)
             default:
-                if url == nil, let parsed = URL(string: argument) {
+                if url == nil, let parsed = BrowserURLNormalizer.normalize(argument) {
                     url = parsed
                 } else {
                     throw AshexError.model("Unknown browser benchmark argument '\(argument)'")

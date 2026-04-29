@@ -86,3 +86,59 @@ public struct BrowserURLValidator: Sendable {
         return false
     }
 }
+
+public enum BrowserURLNormalizer {
+    public static func normalize(_ rawURL: String) -> URL? {
+        let trimmed = rawURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        if trimmed.hasPrefix("//") {
+            return URL(string: "https:" + trimmed)
+        }
+
+        if trimmed.hasPrefix("/") {
+            return nil
+        }
+
+        if explicitScheme(in: trimmed) != nil {
+            return URL(string: trimmed)
+        }
+
+        return URL(string: "https://" + trimmed)
+    }
+
+    private static func explicitScheme(in value: String) -> String? {
+        guard let colonIndex = value.firstIndex(of: ":") else { return nil }
+
+        let candidate = String(value[..<colonIndex]).lowercased()
+        guard isValidScheme(candidate) else { return nil }
+
+        let remainder = value[value.index(after: colonIndex)...]
+        if isLikelyBareHostWithPort(candidate, remainder: remainder) {
+            return nil
+        }
+
+        return candidate
+    }
+
+    private static func isValidScheme(_ value: String) -> Bool {
+        guard let first = value.unicodeScalars.first,
+              CharacterSet.letters.contains(first) else {
+            return false
+        }
+
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "+-."))
+        return value.unicodeScalars.allSatisfy { allowed.contains($0) }
+    }
+
+    private static func isLikelyBareHostWithPort(_ host: String, remainder: Substring) -> Bool {
+        let port = remainder.prefix { character in
+            character != "/" && character != "?" && character != "#"
+        }
+        guard !port.isEmpty, port.allSatisfy(\.isNumber) else {
+            return false
+        }
+
+        return host == "localhost" || host.contains(".")
+    }
+}

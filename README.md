@@ -101,14 +101,14 @@ Useful options:
 ## TUI Basics
 
 - Use `Chat` to send messages and continue the active thread.
-- Use `Assistant Setup` to choose provider/model, save API keys, configure Telegram, and start or stop the daemon.
+- Use `Assistant Setup` to choose provider/model, install local `esh` or Ollama models, save API keys, configure Telegram, and start or stop the daemon.
 - Use `Workspaces` to switch between recent project roots.
 - Use `Threads` to browse saved conversations.
 - Press `Tab` to move focus, `Enter` to select or send, `Esc` to back out, and `t` to open the side terminal.
 
 ## Providers
 
-Ashex supports `mock`, `openai`, `anthropic`, `ollama`, and experimental `dflash`.
+Ashex supports `mock`, `openai`, `anthropic`, `esh`, `ollama`, and experimental `dflash`.
 
 The fastest setup path is inside the TUI:
 

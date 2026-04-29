@@ -25,7 +25,7 @@ public struct BrowserFetchTool: Tool {
                 requiresNetwork: true,
                 progressSummary: "fetched rendered browser content",
                 arguments: [
-                    .init(name: "url", description: "Absolute URL to fetch", type: .string, required: true),
+                    .init(name: "url", description: "URL to fetch", type: .string, required: true),
                     .init(name: "backend", description: "Browser backend selection", type: .string, required: false, enumValues: BrowserBackendID.allCases.map(\.rawValue)),
                     .init(name: "format", description: "Desired content format", type: .string, required: false, enumValues: ["markdown", "text", "html"]),
                     .init(name: "timeout_seconds", description: "Navigation timeout in seconds", type: .number, required: false),
@@ -80,7 +80,7 @@ public struct BrowserExtractTool: Tool {
                 requiresNetwork: true,
                 progressSummary: "extracted rendered browser content",
                 arguments: [
-                    .init(name: "url", description: "Absolute URL to extract", type: .string, required: true),
+                    .init(name: "url", description: "URL to extract", type: .string, required: true),
                     .init(name: "backend", description: "Browser backend selection", type: .string, required: false, enumValues: BrowserBackendID.allCases.map(\.rawValue)),
                     .init(name: "format", description: "Desired content format", type: .string, required: false, enumValues: ["markdown", "text", "html"]),
                     .init(name: "timeout_seconds", description: "Navigation timeout in seconds", type: .number, required: false),
@@ -118,7 +118,7 @@ public struct BrowserEvalTool: Tool {
                 requiresNetwork: true,
                 progressSummary: "evaluated JavaScript in browser",
                 arguments: [
-                    .init(name: "url", description: "Absolute URL to open", type: .string, required: true),
+                    .init(name: "url", description: "URL to open", type: .string, required: true),
                     .init(name: "javascript", description: "JavaScript expression to evaluate", type: .string, required: true),
                     .init(name: "backend", description: "Browser backend selection", type: .string, required: false, enumValues: BrowserBackendID.allCases.map(\.rawValue)),
                     .init(name: "timeout_seconds", description: "Navigation timeout in seconds", type: .number, required: false),
@@ -169,7 +169,7 @@ public struct BrowserScreenshotTool: Tool {
                 requiresNetwork: true,
                 progressSummary: "captured browser screenshot",
                 arguments: [
-                    .init(name: "url", description: "Absolute URL to open", type: .string, required: true),
+                    .init(name: "url", description: "URL to open", type: .string, required: true),
                     .init(name: "backend", description: "Browser backend selection", type: .string, required: false, enumValues: BrowserBackendID.allCases.map(\.rawValue)),
                     .init(name: "timeout_seconds", description: "Navigation timeout in seconds", type: .number, required: false),
                 ]
@@ -201,9 +201,9 @@ public struct BrowserScreenshotTool: Tool {
 
 private func requiredURL(arguments: JSONObject) throws -> URL {
     guard let rawURL = arguments["url"]?.stringValue,
-          let url = URL(string: rawURL),
+          let url = BrowserURLNormalizer.normalize(rawURL),
           url.scheme != nil else {
-        throw AshexError.invalidToolArguments("browser.url must be a valid absolute URL")
+        throw AshexError.invalidToolArguments("browser.url must be a valid URL")
     }
     return url
 }

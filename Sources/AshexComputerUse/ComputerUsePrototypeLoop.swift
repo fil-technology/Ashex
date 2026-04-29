@@ -10,6 +10,8 @@ public final class ComputerUsePrototypeLoop {
 
     private let configuration: ComputerUseConfig
     private let manifestURL: URL
+    private let requiresBackendManifest: Bool
+    private let backendDescription: String
     private let io: any ComputerUseIO
     private let fileManager: FileManager
 
@@ -21,6 +23,8 @@ public final class ComputerUsePrototypeLoop {
         executor: ComputerUseActionExecutor,
         configuration: ComputerUseConfig,
         manifestURL: URL,
+        requiresBackendManifest: Bool = true,
+        backendDescription: String? = nil,
         io: any ComputerUseIO = ConsoleComputerUseIO(),
         fileManager: FileManager = .default
     ) {
@@ -31,6 +35,8 @@ public final class ComputerUsePrototypeLoop {
         self.executor = executor
         self.configuration = configuration
         self.manifestURL = manifestURL
+        self.requiresBackendManifest = requiresBackendManifest
+        self.backendDescription = backendDescription ?? manifestURL.path
         self.io = io
         self.fileManager = fileManager
     }
@@ -39,7 +45,7 @@ public final class ComputerUsePrototypeLoop {
         guard configuration.enabled else {
             throw AshexError.model("Computer use is disabled. Set `computer_use.enabled` to true in ashex.config.json.")
         }
-        guard fileManager.fileExists(atPath: manifestURL.path) else {
+        guard !requiresBackendManifest || fileManager.fileExists(atPath: manifestURL.path) else {
             throw AshexError.model("Computer-use backend manifest is missing at \(manifestURL.path).")
         }
 
@@ -47,8 +53,8 @@ public final class ComputerUsePrototypeLoop {
         let permissions = await provider.permissionStatus()
         io.writeLine("Computer Use Prototype")
         io.writeLine("Enabled: \(configuration.enabled)")
-        io.writeLine("Backend manifest: \(manifestURL.path)")
-        io.writeLine("Backend: \(status.state.rawValue)\(status.detail.map { " (\($0))" } ?? "")")
+        io.writeLine("Backend: \(backendDescription)")
+        io.writeLine("Backend status: \(status.state.rawValue)\(status.detail.map { " (\($0))" } ?? "")")
         io.writeLine("Safety: \(configuration.safety.rawValue)")
         io.writeLine("Accessibility: \(permissions.accessibility.rawValue)")
         io.writeLine("Screen Recording: \(permissions.screenRecording.rawValue)")
