@@ -6,22 +6,110 @@ public enum ToolIdempotencyHint: String, Codable, Sendable, Equatable {
     case sideEffecting
 }
 
+public enum ToolSideEffectLevel: String, Codable, Sendable, Equatable, CaseIterable {
+    case readOnly
+    case localWrite
+    case network
+    case shellCommand
+    case destructive
+    case credentialSensitive
+
+    public static func infer(
+        category: String? = nil,
+        tags: [String] = [],
+        isReadOnly: Bool,
+        requiresNetwork: Bool,
+        requiresApproval: Bool = false,
+        risk: ApprovalRisk? = nil
+    ) -> ToolSideEffectLevel {
+        let safetySignals = ([category].compactMap { $0 } + tags).map { $0.lowercased() }
+        if safetySignals.contains(where: { signal in
+            signal.contains("credential")
+                || signal.contains("secret")
+                || signal.contains("token")
+                || signal.contains("keychain")
+        }) {
+            return .credentialSensitive
+        }
+
+        if risk == .high && (!isReadOnly || requiresApproval) {
+            return .destructive
+        }
+
+        if safetySignals.contains("shell") || safetySignals.contains("terminal") {
+            return .shellCommand
+        }
+
+        if requiresNetwork {
+            return .network
+        }
+
+        return isReadOnly ? .readOnly : .localWrite
+    }
+
+    public static func strongest(_ levels: [ToolSideEffectLevel]) -> ToolSideEffectLevel {
+        levels.max { $0.sortRank < $1.sortRank } ?? .readOnly
+    }
+
+    private var sortRank: Int {
+        switch self {
+        case .readOnly: return 0
+        case .localWrite: return 1
+        case .network: return 2
+        case .shellCommand: return 3
+        case .destructive: return 4
+        case .credentialSensitive: return 5
+        }
+    }
+}
+
 public struct ToolSafetyMetadata: Codable, Sendable, Equatable {
     public let requiresApproval: Bool
     public let isReadOnly: Bool
     public let requiresNetwork: Bool
     public let risk: ApprovalRisk?
+    public let sideEffectLevel: ToolSideEffectLevel
 
     public init(
         requiresApproval: Bool,
         isReadOnly: Bool,
         requiresNetwork: Bool,
-        risk: ApprovalRisk?
+        risk: ApprovalRisk?,
+        sideEffectLevel: ToolSideEffectLevel? = nil
     ) {
         self.requiresApproval = requiresApproval
         self.isReadOnly = isReadOnly
         self.requiresNetwork = requiresNetwork
         self.risk = risk
+        self.sideEffectLevel = sideEffectLevel ?? ToolSideEffectLevel.infer(
+            isReadOnly: isReadOnly,
+            requiresNetwork: requiresNetwork,
+            requiresApproval: requiresApproval,
+            risk: risk
+        )
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case requiresApproval
+        case isReadOnly
+        case requiresNetwork
+        case risk
+        case sideEffectLevel
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        requiresApproval = try container.decode(Bool.self, forKey: .requiresApproval)
+        isReadOnly = try container.decode(Bool.self, forKey: .isReadOnly)
+        requiresNetwork = try container.decode(Bool.self, forKey: .requiresNetwork)
+        risk = try container.decodeIfPresent(ApprovalRisk.self, forKey: .risk)
+        sideEffectLevel = try container.decodeIfPresent(ToolSideEffectLevel.self, forKey: .sideEffectLevel)
+            ?? ToolSideEffectLevel.infer(
+                isReadOnly: isReadOnly,
+                requiresNetwork: requiresNetwork,
+                requiresApproval: requiresApproval,
+                risk: risk
+            )
     }
 }
 
@@ -146,6 +234,12 @@ private struct GenericToolSchemaAdapter: ProviderToolSchemaAdapter {
                 "description": .string(tool.description),
                 "input_schema": tool.inputSchema,
                 "output_schema": tool.outputSchema ?? .null,
+                "safety": .object([
+                    "requires_approval": .bool(tool.safety.requiresApproval),
+                    "is_read_only": .bool(tool.safety.isReadOnly),
+                    "requires_network": .bool(tool.safety.requiresNetwork),
+                    "side_effect_level": .string(tool.safety.sideEffectLevel.rawValue),
+                ]),
                 "tags": .array(tool.tags.map(JSONValue.string)),
             ])
         )
@@ -340,6 +434,7 @@ extension ToolArgumentContract {
 extension ToolOperationContract {
     func toSpec(tags: [String]) -> ToolOperationSpec {
         let requiresApproval = approval != nil
+        let sideEffectLevel = effectiveSideEffectLevel(toolTags: tags)
         return ToolOperationSpec(
             name: name,
             description: description,
@@ -352,7 +447,8 @@ extension ToolOperationContract {
                 requiresApproval: requiresApproval,
                 isReadOnly: !mutatesWorkspace,
                 requiresNetwork: requiresNetwork,
-                risk: approval?.risk
+                risk: approval?.risk,
+                sideEffectLevel: sideEffectLevel
             ),
             timeoutMs: nil,
             idempotency: mutatesWorkspace ? .sideEffecting : .readOnly,
@@ -410,6 +506,7 @@ extension ToolSchema {
                     description: $0.description,
                     mutatesWorkspace: !$0.safety.isReadOnly,
                     requiresNetwork: $0.safety.requiresNetwork,
+                    sideEffectLevel: $0.safety.sideEffectLevel,
                     progressSummary: nil,
                     approval: $0.safety.requiresApproval && $0.safety.risk != nil
                         ? .init(risk: $0.safety.risk ?? .medium, summary: $0.description)
@@ -417,6 +514,7 @@ extension ToolSchema {
                     arguments: []
                 )
             },
+            sideEffectLevel: spec.safety.sideEffectLevel,
             tags: spec.tags
         )
     }

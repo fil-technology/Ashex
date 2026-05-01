@@ -140,6 +140,60 @@ import Testing
     }
 }
 
+@Test func shellExecutionPolicyClassifiesDestructiveAndCredentialSensitiveCommands() {
+    #expect(ShellExecutionPolicy.isDestructiveShellCommand("git reset --hard HEAD"))
+    #expect(ShellExecutionPolicy.isDestructiveShellCommand("rm -rf build"))
+    #expect(ShellExecutionPolicy.isDestructiveShellCommand("sudo make install"))
+    #expect(!ShellExecutionPolicy.isDestructiveShellCommand("rm README.md"))
+
+    #expect(ShellExecutionPolicy.isCredentialSensitiveCommand("export OPENAI_API_KEY=sk-test"))
+    #expect(ShellExecutionPolicy.isCredentialSensitiveCommand("cat ~/.ssh/id_ed25519"))
+    #expect(ShellExecutionPolicy.isCredentialSensitiveCommand("printenv GITHUB_TOKEN"))
+    #expect(!ShellExecutionPolicy.isCredentialSensitiveCommand("rg APIClient Sources"))
+}
+
+@Test func shellExecutionPolicyRequiresApprovalForDestructiveAndCredentialSensitiveCommands() {
+    let policy = ShellExecutionPolicy(
+        sandbox: .default,
+        network: .default,
+        shell: ShellCommandPolicy(config: .default)
+    )
+
+    switch policy.assess(command: "git reset --hard HEAD") {
+    case .requireApproval(let message):
+        #expect(message.contains("destructive"))
+    default:
+        Issue.record("Expected destructive command to require approval")
+    }
+
+    switch policy.assess(command: "export OPENAI_API_KEY=sk-test") {
+    case .requireApproval(let message):
+        #expect(message.contains("credentials"))
+    default:
+        Issue.record("Expected credential-sensitive command to require approval")
+    }
+}
+
+@Test func shellExecutionPolicyKeepsExplicitDenyRulesStrongerThanDestructiveApproval() {
+    let policy = ShellExecutionPolicy(
+        sandbox: .default,
+        network: .default,
+        shell: ShellCommandPolicy(config: .init(
+            allowList: [],
+            denyList: [],
+            requireApprovalForUnknownCommands: false,
+            rules: [.init(prefix: "git reset --hard", action: .deny, reason: "Hard reset is forbidden.")]
+        ))
+    )
+
+    switch policy.assess(command: "git reset --hard HEAD") {
+    case .deny(let message):
+        #expect(message.contains("forbidden"))
+    default:
+        Issue.record("Expected explicit deny rule to override approval prompt")
+    }
+}
+
 @Test func connectorApprovalPolicyHonorsTrustedFullAccessMode() async {
     let request = ApprovalRequest(
         runID: UUID(),

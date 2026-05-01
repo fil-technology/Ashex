@@ -91,6 +91,7 @@ public struct ToolOperationContract: Codable, Sendable {
     public let description: String
     public let mutatesWorkspace: Bool
     public let requiresNetwork: Bool
+    public let sideEffectLevel: ToolSideEffectLevel?
     public let validationArtifacts: [String]
     public let inspectedPathArguments: [String]
     public let changedPathArguments: [String]
@@ -103,6 +104,7 @@ public struct ToolOperationContract: Codable, Sendable {
         description: String,
         mutatesWorkspace: Bool,
         requiresNetwork: Bool = false,
+        sideEffectLevel: ToolSideEffectLevel? = nil,
         validationArtifacts: [String] = [],
         inspectedPathArguments: [String] = [],
         changedPathArguments: [String] = [],
@@ -114,6 +116,7 @@ public struct ToolOperationContract: Codable, Sendable {
         self.description = description
         self.mutatesWorkspace = mutatesWorkspace
         self.requiresNetwork = requiresNetwork
+        self.sideEffectLevel = sideEffectLevel
         self.validationArtifacts = validationArtifacts
         self.inspectedPathArguments = inspectedPathArguments
         self.changedPathArguments = changedPathArguments
@@ -227,6 +230,18 @@ public extension ToolContract {
         let hasMutatingOperation = operations.contains { $0.mutatesWorkspace }
         let requiresNetwork = operations.contains { $0.requiresNetwork }
         let strongestRisk = operations.compactMap(\.approval?.risk).max(by: { $0.sortRank < $1.sortRank })
+        let sideEffectLevel = ToolSideEffectLevel.strongest(
+            operationSpecs.map(\.safety.sideEffectLevel) + [
+                ToolSideEffectLevel.infer(
+                    category: category,
+                    tags: tags,
+                    isReadOnly: !hasMutatingOperation,
+                    requiresNetwork: requiresNetwork,
+                    requiresApproval: requiresApproval,
+                    risk: strongestRisk
+                )
+            ]
+        )
 
         return ToolSpec(
             name: name,
@@ -242,7 +257,8 @@ public extension ToolContract {
                 requiresApproval: requiresApproval,
                 isReadOnly: !hasMutatingOperation,
                 requiresNetwork: requiresNetwork,
-                risk: strongestRisk
+                risk: strongestRisk,
+                sideEffectLevel: sideEffectLevel
             ),
             timeoutMs: nil,
             idempotency: hasMutatingOperation ? .sideEffecting : .readOnly,
@@ -276,6 +292,19 @@ public extension ToolContract {
         }
 
         return merged
+    }
+}
+
+public extension ToolOperationContract {
+    func effectiveSideEffectLevel(toolCategory: String? = nil, toolTags: [String] = []) -> ToolSideEffectLevel {
+        sideEffectLevel ?? ToolSideEffectLevel.infer(
+            category: toolCategory,
+            tags: toolTags,
+            isReadOnly: !mutatesWorkspace,
+            requiresNetwork: requiresNetwork,
+            requiresApproval: approval != nil,
+            risk: approval?.risk
+        )
     }
 }
 

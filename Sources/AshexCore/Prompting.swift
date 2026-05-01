@@ -356,10 +356,16 @@ public enum PromptBuilder {
         let prepared = ContextManager.prepare(context: context, provider: provider, model: model)
         let toolBlock = prepared.base.availableTools
             .map { tool in
-                let operationNames = tool.operations.map(\.name)
+                let operationNames = tool.operations.map { operation in
+                    let sideEffect = operation.effectiveSideEffectLevel(
+                        toolCategory: tool.category,
+                        toolTags: tool.tags
+                    ).rawValue
+                    return "\(operation.name):\(sideEffect)"
+                }
                 let operationSuffix = operationNames.isEmpty ? "" : " [ops: \(operationNames.joined(separator: ", "))]"
                 let kindSuffix = tool.kind == .installable ? " (installable \(tool.category))" : " (\(tool.category))"
-                return "- \(tool.name)\(kindSuffix): \(tool.description)\(operationSuffix)"
+                return "- \(tool.name)\(kindSuffix) [safety: \(tool.sideEffectLevel.rawValue)]: \(tool.description)\(operationSuffix)"
             }
             .joined(separator: "\n")
 
@@ -406,6 +412,7 @@ public enum PromptBuilder {
             - For coding or editing requests, prefer this workflow: explore relevant files first, plan briefly, then mutate, then validate, then summarize.
             - During exploration, bias toward `find_files`, `search_text`, `list_directory`, `file_info`, `read_text_file`, and read-only git inspection before changing anything.
             - During validation, prefer checking changed files, `git diff`, focused reads, and relevant test/build commands before concluding.
+            - Treat tool safety labels as routing hints: prefer `readOnly` operations for inspection, reserve `localWrite`, `network`, `shellCommand`, `destructive`, and `credentialSensitive` operations for user-relevant work that requires them.
             - When a patch plan is present in working memory, prefer staying within that planned file set unless new evidence justifies expanding it.
             - If a tool result already contains the needed information, prefer answering directly.
             - After `audio.generate_speech` succeeds, include the `Generated audio file: ...` line from the tool result in the final answer so connectors can attach the file.

@@ -20,6 +20,14 @@ public struct ShellExecutionPolicy: Sendable {
 
         var approvalReasons: [String] = []
 
+        if Self.isDestructiveShellCommand(trimmed) {
+            approvalReasons.append("Command '\(trimmed)' appears destructive or privilege-elevated and requires explicit approval.")
+        }
+
+        if Self.isCredentialSensitiveCommand(trimmed) {
+            approvalReasons.append("Command '\(trimmed)' may read, print, or export credentials and requires explicit approval.")
+        }
+
         switch assessNetwork(command: trimmed) {
         case .allow:
             break
@@ -88,14 +96,27 @@ public struct ShellExecutionPolicy: Sendable {
 
     public static func isMutatingShellCommand(_ command: String) -> Bool {
         let lowered = command.lowercased()
-        let prefixes = ["rm ", "mv ", "cp ", "mkdir ", "touch ", "sed -i", "perl -pi", "python ", "python3 ", "node ", "tee ", "echo "]
+        if isDestructiveShellCommand(lowered) {
+            return true
+        }
+
+        let prefixes = [
+            "rm ", "mv ", "cp ", "mkdir ", "touch ", "sed -i", "perl -pi",
+            "python ", "python3 ", "node ", "tee ", "echo ",
+            "chmod ", "chown ", "git reset", "git clean", "git checkout --", "git restore ",
+            "swift build", "swift test", "swift package",
+            "xcodebuild", "npm run build", "pnpm run build", "yarn build"
+        ]
         if prefixes.contains(where: { lowered.hasPrefix($0) }) {
             return true
         }
-        return lowered.contains(" > ") || lowered.contains(">>")
+        return lowered.contains(" >")
+            || lowered.contains("> ")
+            || lowered.contains(">>")
     }
 
     public static func isNetworkCommand(_ command: String) -> Bool {
+        let command = command.lowercased()
         let prefixes = [
             "curl ", "wget ", "http ", "https ", "ssh ", "scp ", "sftp ",
             "git clone", "git fetch", "git pull", "git push",
@@ -112,5 +133,89 @@ public struct ShellExecutionPolicy: Sendable {
         }
 
         return command.contains("http://") || command.contains("https://")
+    }
+
+    public static func isDestructiveShellCommand(_ command: String) -> Bool {
+        let lowered = command.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !lowered.isEmpty else { return false }
+
+        if lowered.hasPrefix("sudo ") {
+            return true
+        }
+
+        if lowered.hasPrefix("rm ") {
+            let destructiveFlags = ["-rf", "-fr", "-r ", "-r/", "-r\t", "--recursive"]
+            if destructiveFlags.contains(where: lowered.contains) {
+                return true
+            }
+        }
+
+        if lowered.hasPrefix("git reset --hard")
+            || lowered.hasPrefix("git clean ") && lowered.contains("-f")
+            || lowered.hasPrefix("chmod -r")
+            || lowered.hasPrefix("chown -r")
+            || lowered.hasPrefix("kill -9")
+            || lowered.hasPrefix("killall ")
+            || lowered.hasPrefix("mkfs")
+            || lowered.hasPrefix("diskutil erase")
+            || lowered.hasPrefix("diskutil partition")
+            || lowered.hasPrefix("dd ") && lowered.contains(" of=") {
+            return true
+        }
+
+        return lowered.contains("| xargs rm")
+            || lowered.contains("|xargs rm")
+            || lowered.contains(" xargs rm ")
+    }
+
+    public static func isCredentialSensitiveCommand(_ command: String) -> Bool {
+        let lowered = command.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !lowered.isEmpty else { return false }
+
+        if lowered.hasPrefix("security find-generic-password")
+            || lowered.hasPrefix("security find-internet-password")
+            || lowered.hasPrefix("op read ")
+            || lowered.hasPrefix("op item get ")
+            || lowered.hasPrefix("pass show ") {
+            return true
+        }
+
+        if lowered.hasPrefix("cat ") || lowered.hasPrefix("less ") || lowered.hasPrefix("more ") {
+            let credentialPaths = [
+                ".env", "~/.ssh", "/.ssh/", "id_rsa", "id_ed25519", ".netrc",
+                "~/.aws/credentials", ".aws/credentials", "credentials.json"
+            ]
+            if credentialPaths.contains(where: lowered.contains) {
+                return true
+            }
+        }
+
+        if lowered.hasPrefix("export ")
+            || lowered.hasPrefix("printenv")
+            || lowered == "env"
+            || lowered.hasPrefix("env ")
+            || lowered.hasPrefix("env |") {
+            return containsCredentialIdentifier(lowered)
+        }
+
+        if lowered.contains("$") && containsCredentialIdentifier(lowered) {
+            return true
+        }
+
+        if (lowered.hasPrefix("grep ") || lowered.hasPrefix("rg "))
+            && lowered.contains(".env")
+            && containsCredentialIdentifier(lowered) {
+            return true
+        }
+
+        return false
+    }
+
+    private static func containsCredentialIdentifier(_ command: String) -> Bool {
+        let identifiers = [
+            "api_key", "apikey", "access_key", "secret", "token", "password",
+            "passwd", "credential", "private_key", "client_secret", "session_key"
+        ]
+        return identifiers.contains(where: command.contains)
     }
 }

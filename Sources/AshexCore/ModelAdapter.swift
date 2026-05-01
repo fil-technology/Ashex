@@ -8,6 +8,7 @@ public struct ToolSchema: Sendable {
     public let operationArgumentKey: String?
     public let defaultOperationName: String?
     public let operations: [ToolOperationContract]
+    public let sideEffectLevel: ToolSideEffectLevel
     public let tags: [String]
 
     public init(
@@ -18,6 +19,7 @@ public struct ToolSchema: Sendable {
         operationArgumentKey: String? = "operation",
         defaultOperationName: String? = nil,
         operations: [ToolOperationContract] = [],
+        sideEffectLevel: ToolSideEffectLevel? = nil,
         tags: [String] = []
     ) {
         self.name = name
@@ -27,7 +29,27 @@ public struct ToolSchema: Sendable {
         self.operationArgumentKey = operationArgumentKey
         self.defaultOperationName = defaultOperationName
         self.operations = operations
+        self.sideEffectLevel = sideEffectLevel ?? ToolSideEffectLevel.strongest(
+            operations.map { $0.effectiveSideEffectLevel(toolCategory: category, toolTags: tags) } + [
+                ToolSideEffectLevel.infer(
+                    category: category,
+                    tags: tags,
+                    isReadOnly: !operations.contains { $0.mutatesWorkspace },
+                    requiresNetwork: operations.contains { $0.requiresNetwork },
+                    requiresApproval: operations.contains { $0.approval != nil },
+                    risk: operations.compactMap(\.approval?.risk).max(by: { riskRank($0) < riskRank($1) })
+                )
+            ]
+        )
         self.tags = tags
+    }
+}
+
+private func riskRank(_ risk: ApprovalRisk) -> Int {
+    switch risk {
+    case .low: return 0
+    case .medium: return 1
+    case .high: return 2
     }
 }
 
@@ -1086,7 +1108,7 @@ public struct OllamaChatModelAdapter: ModelAdapter {
                     return OllamaChatRequest.Tool(
                         function: OllamaChatRequest.Tool.Function(
                             name: nativeFunctionName(toolName: tool.name, operationName: operation.name),
-                            description: "\(tool.description). Operation: \(operation.name). \(operation.description)",
+                            description: "\(tool.description). Operation: \(operation.name). Safety: \(operation.effectiveSideEffectLevel(toolCategory: tool.category, toolTags: tool.tags).rawValue). \(operation.description)",
                             parameters: [
                                 "type": .string("object"),
                                 "properties": .object(properties),
