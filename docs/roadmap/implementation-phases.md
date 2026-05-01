@@ -356,3 +356,185 @@ The next roadmap is refinement-oriented rather than foundation-oriented. It focu
 - more advanced multi-agent orchestration
 
 See [`production-refinement-roadmap.md`](production-refinement-roadmap.md) for the current next-stage plan.
+
+## Active Handoff Phases
+
+These phases capture the non-completed work from the latest handoff plus the Graphify-native knowledge-layer request. Each phase should be validated, committed, and pushed before moving to the next one.
+
+### Handoff Phase A: Preserve Current Diagnostics Baseline
+
+Goal: stabilize and preserve the browser/computer/subagent diagnostics work already present in the worktree.
+
+- Validate `ashex tools list/doctor`.
+- Validate `ashex browser doctor/backends`.
+- Validate `ashex computer doctor`.
+- Validate `ashex subagents list/doctor`.
+- Keep the reserved `validate agent-capabilities` namespace from falling through into the TUI.
+- Commit the validated baseline before layering more behavior on top.
+
+Exit criteria:
+
+- `swift build` passes.
+- Focused diagnostics tests pass.
+- CLI diagnostic smoke commands pass.
+
+### Handoff Phase B: Browser Local Validation
+
+Goal: complete browser backend validation with deterministic local fixtures.
+
+- Keep `ashex browser test-local` offline and fixture-backed.
+- Allow localhost navigation only for the explicit local test flow.
+- Support managed Chrome/CDP startup when configured or discoverable.
+- Confirm fetch/eval/screenshot paths work against local fixtures.
+- Cover browser process cleanup with focused tests.
+
+Exit criteria:
+
+- Browser CLI tests pass.
+- `ashex browser test-local --json` passes when a supported backend is available or fails with clear backend guidance.
+
+### Handoff Phase C: Direct Computer-Use CLI
+
+Goal: expose explicit CLI commands for safe computer-use validation.
+
+- Add `ashex computer screenshot --output <path>`.
+- Add `list-windows`, `focus-app`, `click`, `type`, `hotkey`, `scroll`, and `test-local`.
+- Use a deterministic mock backend for offline validation.
+- Keep real macOS backend failures permission-oriented and actionable.
+
+Exit criteria:
+
+- Computer-use unit tests pass.
+- Mock CLI smoke tests pass without requiring GUI permissions.
+
+### Handoff Phase D: Agent Tool Registry And Subagent Commands
+
+Goal: make browser/computer/subagent capability surfaces first-class and testable.
+
+- Keep browser tools registered and passing `tools doctor`.
+- Keep the aggregate `computer_use` tool and document any per-action compatibility choice.
+- Add `ashex subagents run` and `ashex subagents test-local`.
+- Enforce built-in subagent tool allowlists, max steps, and timeouts.
+- Return structured run/test results.
+
+Exit criteria:
+
+- Tool registry diagnostics pass.
+- Subagent registry and CLI tests pass.
+
+### Handoff Phase E: End-To-End Agent Capability Validation
+
+Goal: replace the placeholder validator with a deterministic offline capability check.
+
+- Implement `ashex validate agent-capabilities [--json]`.
+- Add filters for `--browser`, `--computer`, `--subagents`, and `--integration`.
+- Check config parsing, tool registry, browser local capability, computer mock capability, subagent mock delegation, safety config, and trace availability.
+- Keep integration checks opt-in.
+
+Exit criteria:
+
+- `ashex validate agent-capabilities --json` passes offline.
+- Focused validation tests pass.
+
+### Handoff Phase F: Documentation And Final Hardening
+
+Goal: align docs with the implemented commands and finish broad validation.
+
+- Update browser, computer-use, subagent, safety, and validation docs.
+- Update the validation audit with completed phases and commands run.
+- Remove debug output and check for orphan process risks.
+- Run formatter/linter if present.
+- Run `swift build` and `swift test`.
+
+Exit criteria:
+
+- Full SwiftPM test suite passes or any environment-specific skips are documented.
+- Audit and docs match the shipped CLI.
+
+## Graphify-Native Knowledge Phases
+
+The Graphify prompt adds a new knowledge-layer track. ASHEX should treat Graphify as a first-pass project understanding subsystem while preserving exact file inspection, terminal execution, and validation as the source of truth for edits.
+
+### Graphify Phase 0: Research And Integration Plan
+
+Goal: document Graphify accurately before implementing wrappers.
+
+- Research the official Graphify repo and package behavior.
+- Record supported inputs, dependencies, outputs, query/update commands, install guidance, and integration risks in `docs/GRAPHIFY_RESEARCH.md`.
+- Note that current upstream full initial graph building is assistant-skill-driven (`/graphify <path>`), while the terminal CLI covers query/path/explain/update/watch/cluster/hook/serve-style support.
+
+Exit criteria:
+
+- `docs/GRAPHIFY_RESEARCH.md` exists.
+- This roadmap contains the Graphify phases.
+
+### Graphify Phase 1: Swift Service And CLI Foundation
+
+Goal: add a safe first-class ASHEX wrapper around installed Graphify capabilities.
+
+- Add a dedicated Swift service layer, such as `GraphifyService`, `GraphifyCommandRunner`, `KnowledgeGraphProvider`, and `ProjectGraphContext`.
+- Detect the `graphify` executable, Python import availability, version, `graphify-out/graph.json`, `GRAPH_REPORT.md`, and state metadata.
+- Add `ashex graphify status [--json]`.
+- Add `ashex graphify query`, `path`, `explain`, and `report`.
+- Keep missing Graphify and missing graph cases non-fatal with clear next actions.
+
+Exit criteria:
+
+- Graphify service tests cover installed/missing detection, command construction, query/report behavior, and graph metadata parsing.
+- CLI help and smoke commands work.
+
+### Graphify Phase 2: Metadata, Rebuild, And Cache Management
+
+Goal: manage graph state without pretending unsupported upstream build operations exist.
+
+- Store ASHEX graph state under `.ashex/graphify/state.json`.
+- Add `ashex graphify rebuild` using upstream `graphify update <project>` when a graph exists.
+- Add `ashex graphify cluster-only` if useful for report regeneration.
+- Add `ashex graphify clean` as an explicit guarded operation.
+- For initial `build`, run only safe preparation/status steps and print verified upstream instructions when the full assistant-driven build is required.
+
+Exit criteria:
+
+- State read/write tests pass.
+- Rebuild/clean command construction and guardrails are tested.
+
+### Graphify Phase 3: Planner Context Integration
+
+Goal: make ASHEX Graphify-aware for repo-level reasoning.
+
+- Classify architecture, dependency, module behavior, onboarding, and large-refactor prompts as Graphify candidates.
+- Query graph context first when `graphify-out/graph.json` exists.
+- Normalize results into compact `<project_graph_context>` blocks.
+- Feed related files back into exact inspection and validation flows.
+- Avoid Graphify for tiny known-file edits.
+
+Exit criteria:
+
+- Planner tests prove Graphify is chosen for architecture questions and skipped for trivial edits.
+- Context blocks stay bounded and include related files, relationships, and confidence.
+
+### Graphify Phase 4: Tool And Terminal Reliability Tie-In
+
+Goal: align Graphify with safer tool and terminal execution.
+
+- Ensure tool metadata exposes side effects, network needs, approvals, timeouts, and working-directory behavior.
+- Normalize terminal/tool results with success, output/error, exit code, artifacts, and summary.
+- Improve command classification for Graphify, build/test/lint, package-manager, network, destructive, and credential-sensitive commands.
+- Preserve logs for long terminal output and redact likely secrets.
+
+Exit criteria:
+
+- Terminal classification, timeout, truncation, redaction, failed-command recovery, and working-directory tests pass.
+
+### Graphify Phase 5: Documentation And Flow Tests
+
+Goal: make the Graphify-native workflow observable and maintainable.
+
+- Document Graphify commands, installation guidance, graph state, and planner behavior.
+- Add flow tests for architecture question, refactor request, and build failure examples.
+- Update release/roadmap docs with completed Graphify scope and known upstream limitations.
+
+Exit criteria:
+
+- Focused Graphify tests pass.
+- `swift build` and relevant CLI smoke commands pass.
