@@ -36,9 +36,13 @@ public struct ComputerUseSafetyPolicy: Sendable {
         switch action {
         case .refreshState, .captureScreenshot, .quit:
             return .allow()
-        case .scroll:
+        case .scroll, .moveMouse, .wait:
             return .allow()
-        case .click:
+        case .openURL:
+            return .allow(requiresConfirmation: mode == .strict, reason: "Opening URLs can navigate to external sites.")
+        case .openApp:
+            return .allow(requiresConfirmation: mode == .strict, reason: "Opening apps can change the desktop state.")
+        case .click, .clickAt, .doubleClick, .rightClick, .drag:
             return .allow(requiresConfirmation: mode != .dev, reason: "Clicks can change app state.")
         case .typeText:
             return .allow(requiresConfirmation: mode != .dev, reason: "Typing can submit or overwrite data.")

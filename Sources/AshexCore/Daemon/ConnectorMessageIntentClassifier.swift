@@ -30,6 +30,16 @@ public enum ConnectorMessageIntentClassifier {
             return .workspaceTask
         }
 
+        let computerUseSignals = [
+            "open chrome", "open safari", "open browser", "open app", "focus app",
+            "move the mouse", "move mouse", "click", "double click", "right click",
+            "drag ", "scroll", "type into", "press cmd", "press command", "new tab",
+            "computer use", "use the gui", "control the screen"
+        ]
+        if computerUseSignals.contains(where: lowered.contains) {
+            return .workspaceTask
+        }
+
         let explicitToolSignals = [
             "shell:", "run shell", "use curl", "run curl", "curl ", "wget ", "git ", "swift test",
             "xcodebuild", "npm ", "pnpm ", "yarn ", "python ", "ruby ", "node ", "make ",

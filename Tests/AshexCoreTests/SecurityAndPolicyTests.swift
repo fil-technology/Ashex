@@ -623,6 +623,52 @@ import Testing
     #expect(resolution.mode == .raw)
 }
 
+@Test func localGuardrailPolicySkipsOllamaMemoryCheckWhenEshBridgeIsActive() {
+    let config = AshexUserConfig(
+        optimization: .init(
+            enabled: true,
+            backend: .esh,
+            mode: .automatic,
+            intent: .agentRun,
+            esh: .init(executablePath: "/tmp/esh")
+        )
+    )
+
+    let resolution = LocalModelGuardrailPolicy.resolve(
+        provider: "ollama",
+        userConfig: config,
+        environment: [:],
+        fileExists: { $0 == "/tmp/esh" },
+        currentExecutablePath: nil
+    )
+
+    #expect(resolution.shouldRunLocalMemoryGuardrail == false)
+    #expect(resolution.eshBridgeExecutablePath == "/tmp/esh")
+}
+
+@Test func localGuardrailPolicyKeepsOllamaMemoryCheckWhenEshBridgeIsDisabled() {
+    let config = AshexUserConfig(
+        optimization: .init(
+            enabled: false,
+            backend: .disabled,
+            mode: .automatic,
+            intent: .agentRun,
+            esh: .init(executablePath: "/tmp/esh")
+        )
+    )
+
+    let resolution = LocalModelGuardrailPolicy.resolve(
+        provider: "ollama",
+        userConfig: config,
+        environment: [:],
+        fileExists: { $0 == "/tmp/esh" },
+        currentExecutablePath: nil
+    )
+
+    #expect(resolution.shouldRunLocalMemoryGuardrail)
+    #expect(resolution.eshBridgeExecutablePath == nil)
+}
+
 @Test func eshOptimizationInspectorComputesTriattentionCalibrationPath() {
     let inspector = EshOptimizationInspector(
         environment: ["PATH": "/opt/homebrew/bin:/usr/bin"],

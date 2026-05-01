@@ -83,7 +83,7 @@ struct DeepSeekChatCompletionsModelAdapterTests {
 }
 
 private func makeDeepSeekStubbedSession(responses: [(Int, String)]) async -> URLSession {
-    await DeepSeekStubURLProtocol.state.setResponses(responses)
+    DeepSeekStubURLProtocol.state.setResponses(responses)
     let configuration = URLSessionConfiguration.ephemeral
     configuration.protocolClasses = [DeepSeekStubURLProtocol.self]
     return URLSession(configuration: configuration)
@@ -101,33 +101,36 @@ private final class DeepSeekStubURLProtocol: URLProtocol, @unchecked Sendable {
     }
 
     override func startLoading() {
-        Task {
-            let response = await Self.state.next()
-            let httpResponse = HTTPURLResponse(
-                url: request.url ?? URL(string: "https://api.deepseek.com/chat/completions")!,
-                statusCode: response.statusCode,
-                httpVersion: nil,
-                headerFields: ["Content-Type": "application/json"]
-            )!
-            client?.urlProtocol(self, didReceive: httpResponse, cacheStoragePolicy: .notAllowed)
-            client?.urlProtocol(self, didLoad: Data(response.body.utf8))
-            client?.urlProtocolDidFinishLoading(self)
-        }
+        let response = Self.state.next()
+        let httpResponse = HTTPURLResponse(
+            url: request.url ?? URL(string: "https://api.deepseek.com/chat/completions")!,
+            statusCode: response.statusCode,
+            httpVersion: nil,
+            headerFields: ["Content-Type": "application/json"]
+        )!
+        client?.urlProtocol(self, didReceive: httpResponse, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(response.body.utf8))
+        client?.urlProtocolDidFinishLoading(self)
     }
 
     override func stopLoading() {}
 }
 
-private actor DeepSeekStubState {
+private final class DeepSeekStubState: @unchecked Sendable {
+    private let lock = NSLock()
     private var responses: [(statusCode: Int, body: String)] = [(200, "")]
     private var requestCount = 0
 
     func setResponses(_ responses: [(Int, String)]) {
+        lock.lock()
+        defer { lock.unlock() }
         requestCount = 0
         self.responses = responses.map { (statusCode: $0.0, body: $0.1) }
     }
 
     func next() -> (statusCode: Int, body: String) {
+        lock.lock()
+        defer { lock.unlock() }
         let index = min(requestCount, max(responses.count - 1, 0))
         defer { requestCount += 1 }
         return responses[index]

@@ -267,20 +267,32 @@ enum ExecCLI {
             network: userConfig.network,
             shell: ShellCommandPolicy(config: userConfig.shell)
         )
-        let tools = try RuntimeToolFactory.makeTools(
+        let tools = try configuration.makeRuntimeTools(
             workspaceURL: execConfig.cwd,
+            storageRoot: configuration.storageRoot,
             persistence: persistence,
             userConfig: userConfig,
-            sandbox: userConfig.sandbox,
             shellExecutionPolicy: shellPolicy
         )
+        let modelAdapter = try configuration.makeModelAdapter(
+            provider: configuration.provider,
+            model: execConfig.effectiveExecutorModel(configuration: configuration),
+            userConfig: userConfig
+        )
         return try AgentRuntime(
-            modelAdapter: configuration.makeModelAdapter(provider: configuration.provider, model: execConfig.effectiveExecutorModel(configuration: configuration)),
+            modelAdapter: modelAdapter,
             toolRegistry: ToolRegistry(tools: tools),
             persistence: persistence,
             approvalPolicy: approvalPolicy(for: execConfig.approval, json: execConfig.json),
             shellExecutionPolicy: shellPolicy,
             workspaceSnapshot: WorkspaceSnapshotBuilder.capture(workspaceRoot: execConfig.cwd),
+            modelRouter: try configuration.makeRuntimeModelRouter(primary: modelAdapter, userConfig: userConfig),
+            skillRouting: configuration.makeRuntimeSkillRoutingConfig(
+                workspaceURL: execConfig.cwd,
+                storageRoot: configuration.storageRoot,
+                tools: tools
+            ),
+            subagentWorkspaceManager: SubagentWorkspaceManager(storageRoot: configuration.storageRoot, workspaceRoot: execConfig.cwd),
             reasoningSummaryDebugEnabled: userConfig.debug.reasoningSummaries
         )
     }

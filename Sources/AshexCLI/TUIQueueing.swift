@@ -104,6 +104,22 @@ enum PromptFailureRouting {
     }
 }
 
+enum RuntimeResourceFailureRecoveryDecision: Equatable {
+    case retryWithRecoveredModel
+    case unlockPromptEntry
+    case waitForModelChange
+
+    static func memoryPressure(provider: String, recoveredModel: String?) -> Self {
+        if recoveredModel != nil {
+            return .retryWithRecoveredModel
+        }
+        if provider == "esh" {
+            return .unlockPromptEntry
+        }
+        return .waitForModelChange
+    }
+}
+
 enum ProviderFailureRouting {
     static func isOllamaModelResourceFailure(message: String) -> Bool {
         let normalized = message.lowercased()

@@ -153,6 +153,130 @@ struct EshBridgeModelAdapterTests {
         #expect(action == expected)
     }
 
+    @Test func cacheBuildMemoryPressureFallsBackToRawDirectInfer() async throws {
+        let homeURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: homeURL, withIntermediateDirectories: true)
+
+        let runner = CacheBuildMemoryPressureRunner(reply: "direct path worked")
+        let adapter = EshBackedModelAdapter(
+            configuration: .init(
+                executablePath: "/opt/homebrew/bin/esh",
+                homePath: homeURL.path,
+                repoRootPath: FileManager.default.temporaryDirectory.path,
+                model: "mlx-code-model",
+                providerID: "esh",
+                optimization: .init(enabled: true, backend: .esh, mode: .turbo, intent: .code)
+            ),
+            fallback: RecordingFallbackAdapter(),
+            runner: runner,
+            createDirectory: { url in try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true) },
+            removeItem: { _ in }
+        )
+
+        let envelope = try await adapter.directReplyEnvelope(
+            history: [
+                .init(id: UUID(), threadID: UUID(), runID: nil, role: .user, content: "Create a small website project", createdAt: Date())
+            ],
+            systemPrompt: "Answer naturally.",
+            attachments: []
+        )
+
+        #expect(envelope.text == "direct path worked")
+        #expect(await runner.sawCacheBuild())
+        let request = try #require(await runner.lastInferRequest())
+        #expect(request.cacheArtifactID == nil)
+        #expect(request.cacheMode == "raw")
+        #expect(request.model == "mlx-code-model")
+    }
+
+    @Test func cacheBuildAndRawInferMemoryPressureRetriesWithMemorySafeModel() async throws {
+        let homeURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: homeURL, withIntermediateDirectories: true)
+
+        let runner = CacheBuildAndRawInferMemoryPressureRunner(reply: "memory safe direct worked")
+        let adapter = EshBackedModelAdapter(
+            configuration: .init(
+                executablePath: "/opt/homebrew/bin/esh",
+                homePath: homeURL.path,
+                repoRootPath: FileManager.default.temporaryDirectory.path,
+                model: "big-32b-model",
+                providerID: "esh",
+                optimization: .init(enabled: true, backend: .esh, mode: .turbo, intent: .code)
+            ),
+            fallback: RecordingFallbackAdapter(),
+            runner: runner,
+            createDirectory: { url in try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true) },
+            removeItem: { _ in }
+        )
+
+        let thread = ThreadRecord(id: UUID(), createdAt: Date())
+        let envelope = try await adapter.directReplyEnvelope(
+            history: [
+                .init(id: UUID(), threadID: thread.id, runID: nil, role: .user, content: "Earlier question", createdAt: Date()),
+                .init(id: UUID(), threadID: thread.id, runID: nil, role: .assistant, content: String(repeating: "large history ", count: 200), createdAt: Date()),
+                .init(id: UUID(), threadID: thread.id, runID: nil, role: .user, content: "Hello now", createdAt: Date()),
+            ],
+            systemPrompt: "Answer naturally.",
+            attachments: []
+        )
+
+        #expect(envelope.text == "memory safe direct worked")
+        #expect(await runner.sawCacheBuild())
+        let requests = await runner.recordedRequests()
+        #expect(requests.count == 2)
+        guard requests.count == 2 else { return }
+        #expect(requests[0].model == "big-32b-model")
+        #expect(requests[0].cacheMode == "raw")
+        #expect(requests[1].model == "small-1b-model")
+        #expect(requests[1].cacheMode == "raw")
+        #expect(requests[1].messages.map(\.role) == ["system", "user"])
+        #expect(requests[1].messages.last?.text == "Hello now")
+        #expect(requests[1].generation.maxTokens == 256)
+    }
+
+    @Test func inferMemoryPressureRetriesWithMinimalContextAndSmallerModel() async throws {
+        let homeURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: homeURL, withIntermediateDirectories: true)
+
+        let runner = InferMemoryPressureRunner(reply: "small model worked")
+        let adapter = EshBackedModelAdapter(
+            configuration: .init(
+                executablePath: "/opt/homebrew/bin/esh",
+                homePath: homeURL.path,
+                repoRootPath: FileManager.default.temporaryDirectory.path,
+                model: "big-32b-model",
+                providerID: "esh",
+                optimization: .init(enabled: false, backend: .disabled, mode: .automatic, intent: .chat)
+            ),
+            fallback: RecordingFallbackAdapter(),
+            runner: runner,
+            createDirectory: { url in try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true) },
+            removeItem: { _ in }
+        )
+
+        let thread = ThreadRecord(id: UUID(), createdAt: Date())
+        let envelope = try await adapter.directReplyEnvelope(
+            history: [
+                .init(id: UUID(), threadID: thread.id, runID: nil, role: .user, content: "Earlier question", createdAt: Date()),
+                .init(id: UUID(), threadID: thread.id, runID: nil, role: .assistant, content: String(repeating: "large history ", count: 200), createdAt: Date()),
+                .init(id: UUID(), threadID: thread.id, runID: nil, role: .user, content: "Hello now", createdAt: Date()),
+            ],
+            systemPrompt: "Answer naturally.",
+            attachments: []
+        )
+
+        #expect(envelope.text == "small model worked")
+        let requests = await runner.recordedRequests()
+        #expect(requests.count == 2)
+        guard requests.count == 2 else { return }
+        #expect(requests[0].model == "big-32b-model")
+        #expect(requests[1].model == "small-1b-model")
+        #expect(requests[1].cacheMode == "raw")
+        #expect(requests[1].messages.map(\.role) == ["system", "user"])
+        #expect(requests[1].messages.last?.text == "Hello now")
+        #expect(requests[1].generation.maxTokens == 256)
+    }
+
     @Test func directReplyPassesAudioAttachmentsToEshInfer() async throws {
         let homeURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         let audioURL = homeURL.appendingPathComponent("voice.ogg")
@@ -328,6 +452,233 @@ struct EshBridgeModelAdapterTests {
 private struct FailingRunner: EshCommandRunning {
     func run(command: String, workspaceURL: URL, timeout: TimeInterval) async throws -> ShellExecutionResult {
         ShellExecutionResult(stdout: "", stderr: "esh unavailable", exitCode: 1, timedOut: false)
+    }
+}
+
+private actor CacheBuildMemoryPressureRunner: EshCommandRunning {
+    private let reply: String
+    private var didSeeCacheBuild = false
+    private var request: EshInferRequest?
+
+    init(reply: String) {
+        self.reply = reply
+    }
+
+    func run(command: String, workspaceURL: URL, timeout: TimeInterval) async throws -> ShellExecutionResult {
+        if command.contains(" capabilities") {
+            return ShellExecutionResult(stdout: """
+            {
+              "schemaVersion": "esh.capabilities.v1",
+              "tool": "esh",
+              "toolVersion": "0.2.0",
+              "commands": [
+                {
+                  "name": "infer",
+                  "inputSchema": "esh.infer.request.v1",
+                  "outputSchema": "esh.infer.response.v1",
+                  "transport": "json"
+                }
+              ],
+              "backends": [],
+              "installedModels": [
+                {
+                  "id": "mlx-code-model",
+                  "displayName": "MLX Code Model",
+                  "backend": "mlx",
+                  "source": "mlx-code-model",
+                  "variant": null,
+                  "runtimeVersion": null,
+                  "supportsDirectInference": true,
+                  "supportsCacheBuild": true,
+                  "supportsCacheLoad": true
+                }
+              ]
+            }
+            """, stderr: "", exitCode: 0, timedOut: false)
+        }
+
+        if command.contains(" cache ") && command.contains(" build ") {
+            didSeeCacheBuild = true
+            return ShellExecutionResult(stdout: "", stderr: "cache build failed under memory pressure", exitCode: 1, timedOut: false)
+        }
+
+        if let inputPath = command.inputPathArgument {
+            let data = try Data(contentsOf: URL(fileURLWithPath: inputPath))
+            request = try JSONDecoder().decode(EshInferRequest.self, from: data)
+        }
+
+        return ShellExecutionResult(
+            stdout: try inferResponseJSON(outputText: reply),
+            stderr: "",
+            exitCode: 0,
+            timedOut: false
+        )
+    }
+
+    func sawCacheBuild() -> Bool {
+        didSeeCacheBuild
+    }
+
+    func lastInferRequest() -> EshInferRequest? {
+        request
+    }
+}
+
+private actor CacheBuildAndRawInferMemoryPressureRunner: EshCommandRunning {
+    private let reply: String
+    private var didSeeCacheBuild = false
+    private var requests: [EshInferRequest] = []
+
+    init(reply: String) {
+        self.reply = reply
+    }
+
+    func run(command: String, workspaceURL: URL, timeout: TimeInterval) async throws -> ShellExecutionResult {
+        if command.contains(" capabilities") {
+            return ShellExecutionResult(stdout: """
+            {
+              "schemaVersion": "esh.capabilities.v1",
+              "tool": "esh",
+              "toolVersion": "0.2.0",
+              "commands": [
+                {
+                  "name": "infer",
+                  "inputSchema": "esh.infer.request.v1",
+                  "outputSchema": "esh.infer.response.v1",
+                  "transport": "json"
+                }
+              ],
+              "backends": [],
+              "installedModels": [
+                {
+                  "id": "big-32b-model",
+                  "displayName": "Big 32B Model",
+                  "backend": "mlx",
+                  "source": "big-32b-model",
+                  "variant": null,
+                  "runtimeVersion": null,
+                  "supportsDirectInference": true,
+                  "supportsCacheBuild": true,
+                  "supportsCacheLoad": true
+                },
+                {
+                  "id": "small-1b-model",
+                  "displayName": "Small 1B Model",
+                  "backend": "mlx",
+                  "source": "small-1b-model",
+                  "variant": null,
+                  "runtimeVersion": null,
+                  "supportsDirectInference": true,
+                  "supportsCacheBuild": false,
+                  "supportsCacheLoad": false
+                }
+              ]
+            }
+            """, stderr: "", exitCode: 0, timedOut: false)
+        }
+
+        if command.contains(" cache ") && command.contains(" build ") {
+            didSeeCacheBuild = true
+            return ShellExecutionResult(stdout: "", stderr: "cache build ran out of memory", exitCode: 1, timedOut: false)
+        }
+
+        if let inputPath = command.inputPathArgument {
+            let data = try Data(contentsOf: URL(fileURLWithPath: inputPath))
+            requests.append(try JSONDecoder().decode(EshInferRequest.self, from: data))
+        }
+
+        if requests.count == 1 {
+            return ShellExecutionResult(stdout: "", stderr: "out of memory", exitCode: 1, timedOut: false)
+        }
+
+        return ShellExecutionResult(
+            stdout: try inferResponseJSON(outputText: reply),
+            stderr: "",
+            exitCode: 0,
+            timedOut: false
+        )
+    }
+
+    func sawCacheBuild() -> Bool {
+        didSeeCacheBuild
+    }
+
+    func recordedRequests() -> [EshInferRequest] {
+        requests
+    }
+}
+
+private actor InferMemoryPressureRunner: EshCommandRunning {
+    private let reply: String
+    private var requests: [EshInferRequest] = []
+
+    init(reply: String) {
+        self.reply = reply
+    }
+
+    func run(command: String, workspaceURL: URL, timeout: TimeInterval) async throws -> ShellExecutionResult {
+        if command.contains(" capabilities") {
+            return ShellExecutionResult(stdout: """
+            {
+              "schemaVersion": "esh.capabilities.v1",
+              "tool": "esh",
+              "toolVersion": "0.2.0",
+              "commands": [
+                {
+                  "name": "infer",
+                  "inputSchema": "esh.infer.request.v1",
+                  "outputSchema": "esh.infer.response.v1",
+                  "transport": "json"
+                }
+              ],
+              "backends": [],
+              "installedModels": [
+                {
+                  "id": "big-32b-model",
+                  "displayName": "Big 32B Model",
+                  "backend": "mlx",
+                  "source": "big-32b-model",
+                  "variant": null,
+                  "runtimeVersion": null,
+                  "supportsDirectInference": true,
+                  "supportsCacheBuild": false,
+                  "supportsCacheLoad": false
+                },
+                {
+                  "id": "small-1b-model",
+                  "displayName": "Small 1B Model",
+                  "backend": "mlx",
+                  "source": "small-1b-model",
+                  "variant": null,
+                  "runtimeVersion": null,
+                  "supportsDirectInference": true,
+                  "supportsCacheBuild": false,
+                  "supportsCacheLoad": false
+                }
+              ]
+            }
+            """, stderr: "", exitCode: 0, timedOut: false)
+        }
+
+        if let inputPath = command.inputPathArgument {
+            let data = try Data(contentsOf: URL(fileURLWithPath: inputPath))
+            requests.append(try JSONDecoder().decode(EshInferRequest.self, from: data))
+        }
+
+        if requests.count == 1 {
+            return ShellExecutionResult(stdout: "", stderr: "out of memory", exitCode: 1, timedOut: false)
+        }
+
+        return ShellExecutionResult(
+            stdout: try inferResponseJSON(outputText: reply),
+            stderr: "",
+            exitCode: 0,
+            timedOut: false
+        )
+    }
+
+    func recordedRequests() -> [EshInferRequest] {
+        requests
     }
 }
 

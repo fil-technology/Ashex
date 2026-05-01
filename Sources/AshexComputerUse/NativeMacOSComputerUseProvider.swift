@@ -2,6 +2,7 @@ import AshexCore
 import AppKit
 import ApplicationServices
 import CoreGraphics
+import Darwin
 import Foundation
 
 public final class NativeMacOSComputerUseProvider: ComputerUseProvider, @unchecked Sendable {
@@ -52,7 +53,7 @@ public final class NativeMacOSComputerUseProvider: ComputerUseProvider, @uncheck
         guard let point = target.frame?.center else {
             throw AshexError.model("Element \(elementId) could not be pressed and has no usable screen frame for fallback clicking.")
         }
-        postMouseClick(at: point)
+        postMouseClick(at: point, button: .left, clickCount: 1)
     }
 
     public func typeText(_ text: String, windowId _: String) async throws {
@@ -96,6 +97,77 @@ public final class NativeMacOSComputerUseProvider: ComputerUseProvider, @uncheck
         event.post(tap: .cghidEventTap)
     }
 
+    public func focusApp(name: String?, windowId: String?) async throws {
+        try ensureAccessibility()
+        let targetApp: NSRunningApplication?
+        if let windowId, !windowId.isEmpty {
+            targetApp = NSRunningApplication(processIdentifier: try findWindow(windowId: windowId).pid)
+        } else if let name, !name.isEmpty {
+            let lowered = name.lowercased()
+            targetApp = NSWorkspace.shared.runningApplications.first {
+                ($0.localizedName ?? "").lowercased().contains(lowered)
+            }
+        } else {
+            targetApp = nil
+        }
+        guard let targetApp else {
+            throw AshexError.model("Could not find a running app to focus. Provide `app_name` or `window_id`.")
+        }
+        targetApp.activate(options: [.activateIgnoringOtherApps, .activateAllWindows])
+    }
+
+    public func moveMouse(x: Double, y: Double) async throws {
+        try ensureAccessibility()
+        postMouseMove(to: CGPoint(x: x, y: y))
+    }
+
+    public func click(x: Double, y: Double, button: ComputerUseMouseButton, clickCount: Int) async throws {
+        try ensureAccessibility()
+        postMouseClick(at: CGPoint(x: x, y: y), button: button, clickCount: clickCount)
+    }
+
+    public func drag(fromX: Double, fromY: Double, toX: Double, toY: Double) async throws {
+        try ensureAccessibility()
+        let start = CGPoint(x: fromX, y: fromY)
+        let end = CGPoint(x: toX, y: toY)
+        postMouseMove(to: start)
+        guard let down = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: start, mouseButton: .left),
+              let up = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: end, mouseButton: .left) else {
+            throw AshexError.model("Unable to create drag events.")
+        }
+        down.post(tap: .cghidEventTap)
+        let steps = 12
+        for index in 1...steps {
+            let progress = Double(index) / Double(steps)
+            let point = CGPoint(
+                x: start.x + (end.x - start.x) * progress,
+                y: start.y + (end.y - start.y) * progress
+            )
+            if let drag = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDragged, mouseCursorPosition: point, mouseButton: .left) {
+                drag.post(tap: .cghidEventTap)
+            }
+            try await Task.sleep(for: .milliseconds(15))
+        }
+        up.post(tap: .cghidEventTap)
+    }
+
+    public func openApp(named name: String) async throws {
+        try ensureAccessibility()
+        try runOpen(arguments: ["-a", name])
+    }
+
+    public func openURL(_ url: String) async throws {
+        try ensureAccessibility()
+        guard URL(string: url) != nil else {
+            throw AshexError.model("Invalid URL `\(url)`.")
+        }
+        try runOpen(arguments: [url])
+    }
+
+    public func wait(seconds: Double) async throws {
+        try await Task.sleep(for: .milliseconds(Int64(max(0, seconds) * 1000)))
+    }
+
     private func ensureReady() throws {
         let permissions = ComputerUsePermissionChecker.current()
         guard permissions.isReadyForComputerUse else {
@@ -129,13 +201,28 @@ public final class NativeMacOSComputerUseProvider: ComputerUseProvider, @uncheck
         return element
     }
 
-    private func postMouseClick(at point: CGPoint) {
-        guard let down = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: point, mouseButton: .left),
-              let up = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: point, mouseButton: .left) else {
+    private func postMouseMove(to point: CGPoint) {
+        guard let event = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left) else {
             return
         }
-        down.post(tap: .cghidEventTap)
-        up.post(tap: .cghidEventTap)
+        event.post(tap: .cghidEventTap)
+    }
+
+    private func postMouseClick(at point: CGPoint, button: ComputerUseMouseButton, clickCount: Int) {
+        postMouseMove(to: point)
+        usleep(40_000)
+        let cgButton: CGMouseButton = button == .right ? .right : .left
+        let downType: CGEventType = button == .right ? .rightMouseDown : .leftMouseDown
+        let upType: CGEventType = button == .right ? .rightMouseUp : .leftMouseUp
+        for _ in 0..<max(1, clickCount) {
+            guard let down = CGEvent(mouseEventSource: nil, mouseType: downType, mouseCursorPosition: point, mouseButton: cgButton),
+                  let up = CGEvent(mouseEventSource: nil, mouseType: upType, mouseCursorPosition: point, mouseButton: cgButton) else {
+                return
+            }
+            down.post(tap: .cghidEventTap)
+            up.post(tap: .cghidEventTap)
+            usleep(60_000)
+        }
     }
 
     private func postKey(_ keyCode: CGKeyCode, flags: CGEventFlags) {
@@ -147,6 +234,21 @@ public final class NativeMacOSComputerUseProvider: ComputerUseProvider, @uncheck
         up.flags = flags
         down.post(tap: .cghidEventTap)
         up.post(tap: .cghidEventTap)
+    }
+
+    private func runOpen(arguments: [String]) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        process.arguments = arguments
+        let stderr = Pipe()
+        process.standardError = stderr
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            let message = String(decoding: stderr.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            throw AshexError.model(message.isEmpty ? "`open` failed." : message)
+        }
     }
 }
 

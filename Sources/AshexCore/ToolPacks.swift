@@ -569,6 +569,7 @@ public struct ToolPackScaffoldTool: Tool {
 public enum RuntimeToolFactory {
     public static func makeTools(
         workspaceURL: URL,
+        storageRoot: URL? = nil,
         persistence: PersistenceStore,
         userConfig: AshexUserConfig,
         sandbox: SandboxPolicyConfig,
@@ -577,6 +578,10 @@ public enum RuntimeToolFactory {
         let executionRuntime = ProcessExecutionRuntime()
         let workspaceGuard = WorkspaceGuard(rootURL: workspaceURL, sandbox: sandbox)
         let browserManager = BrowserManager(configSection: userConfig.browser)
+        let agentHome = AgentHome(
+            storageRoot: storageRoot ?? workspaceURL.appendingPathComponent(".ashex", isDirectory: true),
+            workspaceRoot: workspaceURL
+        )
 
         var tools: [any Tool] = [
             FileSystemTool(workspaceGuard: workspaceGuard),
@@ -589,6 +594,8 @@ public enum RuntimeToolFactory {
             BrowserExtractTool(manager: browserManager),
             BrowserEvalTool(manager: browserManager),
             BrowserScreenshotTool(manager: browserManager),
+            AgentKnowledgeTool(home: agentHome),
+            AgentMCPBridgeTool(home: agentHome),
             ToolPackScaffoldTool(workspaceGuard: workspaceGuard),
         ]
 

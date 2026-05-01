@@ -29,6 +29,20 @@ import Testing
     #expect(backend.description.contains("native macOS"))
 }
 
+@Test func cliRuntimeToolsIncludeComputerUseWhenEnabled() throws {
+    let workspace = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+    let config = AshexUserConfig(computerUse: .init(enabled: true, safety: .normal))
+    try UserConfigStore.write(config, to: workspace.appendingPathComponent(UserConfigStore.fileName))
+
+    let configuration = try CLIConfiguration(arguments: ["ashex", "--workspace", workspace.path, "--provider", "mock"])
+    let store = try configuration.makePersistenceStore()
+    let tools = try configuration.makeRuntimeTools(persistence: store, userConfig: configuration.userConfig)
+    let names = Set(tools.map(\.name))
+
+    #expect(names.contains("computer_use"))
+}
+
 @Test func parsesCommonDeamonMisspellingAsDaemonCommands() {
     #expect(DaemonCLICommand.parse(arguments: ["ashex", "deamon", "run"]) == .daemonRun([]))
     #expect(DaemonCLICommand.parse(arguments: ["ashex", "deamon", "start"]) == .daemonStart([]))
@@ -161,6 +175,24 @@ import Testing
 
     #expect(configuration.provider == "esh")
     #expect(adapter.name.hasPrefix("esh-bridge:esh:local-test-model"))
+}
+
+@Test func standaloneEshProviderHonorsDisabledOptimizationConfig() {
+    let config = AshexUserConfig(
+        optimization: .init(
+            enabled: false,
+            backend: .disabled,
+            mode: .automatic,
+            intent: .agentRun,
+            esh: .init(executablePath: "/bin/echo")
+        )
+    )
+
+    let optimization = CLIConfiguration.standaloneEshOptimization(userConfig: config)
+
+    #expect(!optimization.enabled)
+    #expect(optimization.backend == .disabled)
+    #expect(optimization.mode == .automatic)
 }
 
 @Test func standaloneEshCapabilityDecodeExplainsLegacyBinaryMismatch() {

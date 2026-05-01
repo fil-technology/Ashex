@@ -1,3 +1,4 @@
+import AshexComputerUse
 import AshexCore
 import Darwin
 import Foundation
@@ -33,10 +34,22 @@ struct AshexCLI {
             if try await BrowserCLI.handle(arguments: CommandLine.arguments) {
                 return
             }
+            if try await ToolsCLI.handle(arguments: CommandLine.arguments) {
+                return
+            }
             if try OptimizationCLI.handle(arguments: CommandLine.arguments) {
                 return
             }
             if try await ComputerUseCLI.handle(arguments: CommandLine.arguments) {
+                return
+            }
+            if try await SubagentsCLI.handle(arguments: CommandLine.arguments) {
+                return
+            }
+            if try ValidateCLI.handle(arguments: CommandLine.arguments) {
+                return
+            }
+            if try await AgentOpsCLI.handle(arguments: CommandLine.arguments) {
                 return
             }
 
@@ -219,10 +232,27 @@ struct AshexCLI {
       ashex model <list|search|install> [options]
       ashex audio models [options]
       ashex benchmark <list|run|compare> [options]
-      ashex browser <doctor|backends|fetch|eval|screenshot|serve|benchmark> [options]
-      ashex computer-use prototype [options]
+      ashex browser <doctor|backends|fetch|eval|screenshot|serve|benchmark|test-local> [options]
+      ashex tools <list|doctor> [options]
+      ashex computer <doctor> [options]
+      ashex computer-use <doctor|prototype> [options]
+      ashex subagents <doctor|list> [options]
+      ashex validate agent-capabilities [options]
       ashex telegram test [options]
       ashex cron <list|add|remove> [options]
+      ashex context <list|init|doctor> [options]
+      ashex soul <show|edit> [options]
+      ashex memory <list|show|add|replace|remove|search> [options]
+      ashex skills <list|search|show|install|audit|validate|route|enable|quarantine|create|export|remove|update> [options]
+      ashex mcp <list|add|remove|reload|tools|resources|prompts|call|serve> [options]
+      ashex kb <init|add|query|chat|watch|lint|list|status|save-exploration> [options]
+      ashex sessions <search|summary|transcript> [options]
+      ashex tasks <new|list|claim|done|fail|retry|logs|heartbeat|requeue-stale> [options]
+      ashex processes <register|list|poll|wait|kill|log|writes|write> [options]
+      ashex learnings <init|list|add> [options]
+      ashex routes show [options]
+      ashex rpc <list-tools|call|serve> [options]
+      ashex doctor [options]
 
     Options:
       --workspace PATH          Workspace root to use
@@ -586,22 +616,59 @@ struct CLIConfiguration {
         let workspaceURL = workspaceRoot.standardizedFileURL
         let workspaceSnapshot = WorkspaceSnapshotBuilder.capture(workspaceRoot: workspaceURL)
         let shellExecutionPolicy = makeShellExecutionPolicy()
-        let tools = try RuntimeToolFactory.makeTools(
+        let tools = try makeRuntimeTools(
             workspaceURL: workspaceURL,
+            storageRoot: storageRoot,
             persistence: persistence,
             userConfig: userConfig,
-            sandbox: userConfig.sandbox,
             shellExecutionPolicy: shellExecutionPolicy
         )
+        let primaryAdapter = try makeModelAdapter(provider: provider, model: model, userConfig: userConfig)
         return try AgentRuntime(
-            modelAdapter: makeModelAdapter(provider: provider, model: model, userConfig: userConfig),
+            modelAdapter: primaryAdapter,
             toolRegistry: ToolRegistry(tools: tools),
             persistence: persistence,
             approvalPolicy: approvalPolicy,
             shellExecutionPolicy: shellExecutionPolicy,
             workspaceSnapshot: workspaceSnapshot,
+            modelRouter: try makeRuntimeModelRouter(primary: primaryAdapter, userConfig: userConfig),
+            skillRouting: makeRuntimeSkillRoutingConfig(workspaceURL: workspaceURL, storageRoot: storageRoot, tools: tools),
+            subagentWorkspaceManager: SubagentWorkspaceManager(storageRoot: storageRoot, workspaceRoot: workspaceURL),
             reasoningSummaryDebugEnabled: userConfig.debug.reasoningSummaries
         )
+    }
+
+    func makeRuntimeTools(
+        workspaceURL overrideWorkspaceURL: URL? = nil,
+        storageRoot overrideStorageRoot: URL? = nil,
+        persistence: PersistenceStore,
+        userConfig: AshexUserConfig,
+        shellExecutionPolicy overrideShellExecutionPolicy: ShellExecutionPolicy? = nil
+    ) throws -> [any Tool] {
+        let workspaceURL = (overrideWorkspaceURL ?? workspaceRoot).standardizedFileURL
+        let runtimeStorageRoot = overrideStorageRoot ?? storageRoot
+        let shellExecutionPolicy = overrideShellExecutionPolicy ?? ShellExecutionPolicy(
+            sandbox: userConfig.sandbox,
+            network: userConfig.network,
+            shell: ShellCommandPolicy(config: userConfig.shell)
+        )
+        var tools = try RuntimeToolFactory.makeTools(
+            workspaceURL: workspaceURL,
+            storageRoot: runtimeStorageRoot,
+            persistence: persistence,
+            userConfig: userConfig,
+            sandbox: userConfig.sandbox,
+            shellExecutionPolicy: shellExecutionPolicy
+        )
+        if userConfig.computerUse.enabled {
+            let manifestURL = ComputerUseCLI.resolvedManifestURL(workspaceRoot: workspaceURL, config: userConfig.computerUse)
+            let backend = ComputerUseCLI.backendProvider(manifestURL: manifestURL)
+            tools.append(ComputerUseTool(
+                provider: backend.provider,
+                safetyPolicy: .init(mode: userConfig.computerUse.safety)
+            ))
+        }
+        return tools
     }
 
     func makeShellExecutionPolicy() -> ShellExecutionPolicy {
@@ -611,6 +678,39 @@ struct CLIConfiguration {
             network: userConfig.network,
             shell: shellPolicy
         )
+    }
+
+    func makeRuntimeModelRouter(primary: any ModelAdapter, userConfig: AshexUserConfig) throws -> RuntimeModelRouter {
+        var adapters: [ModelTaskPurpose: any ModelAdapter] = [:]
+        for purpose in ModelTaskPurpose.allCases {
+            let stem = "ASHEX_\(purpose.rawValue.uppercased())"
+            let routeProvider = ProcessInfo.processInfo.environment["\(stem)_PROVIDER"]
+            let routeModel = ProcessInfo.processInfo.environment["\(stem)_MODEL"]
+            guard routeProvider != nil || routeModel != nil else { continue }
+            let resolvedProvider = routeProvider ?? provider
+            let resolvedModel = routeModel ?? model
+            if resolvedProvider == primary.providerID && resolvedModel == primary.modelID {
+                continue
+            }
+            adapters[purpose] = try makeModelAdapter(provider: resolvedProvider, model: resolvedModel, userConfig: userConfig)
+        }
+        return RuntimeModelRouter(primary: primary, purposeAdapters: adapters)
+    }
+
+    func makeRuntimeSkillRoutingConfig(
+        workspaceURL: URL,
+        storageRoot: URL,
+        tools: [any Tool]
+    ) -> RuntimeSkillRoutingConfig? {
+        let home = AgentHome(storageRoot: storageRoot, workspaceRoot: workspaceURL)
+        let skills = (try? AgentSkillStore(home: home).routeMetadata()) ?? []
+        guard !skills.isEmpty else { return nil }
+        let capabilities = Set(
+            tools.flatMap { tool in
+                [tool.name, tool.contract.category] + tool.contract.tags
+            }
+        )
+        return RuntimeSkillRoutingConfig(skills: skills, availableCapabilities: capabilities)
     }
 
     func makeApprovalPolicy() -> any ApprovalPolicy {
@@ -637,7 +737,7 @@ struct CLIConfiguration {
     func validateModelGuardrails() async throws {
         guard provider == "ollama" else { return }
         if ProcessInfo.processInfo.environment["ASHEX_ALLOW_LARGE_MODELS"] == "1" { return }
-        if shouldUseEshBridge(provider: provider) { return }
+        if !guardrailPolicyResolution(for: provider).shouldRunLocalMemoryGuardrail { return }
 
         let catalog = try await OllamaCatalogClient().fetchModels(baseURL: Self.ollamaBaseURL())
         let assessment = LocalModelGuardrails.assessOllamaModel(model: model, installedModels: catalog)
@@ -737,20 +837,15 @@ struct CLIConfiguration {
     }
 
     private func shouldUseEshBridge(provider: String) -> Bool {
-        resolvedEshExecutablePathIfEnabled(for: provider) != nil
+        guardrailPolicyResolution(for: provider).eshBridgeExecutablePath != nil
     }
 
     private func resolvedEshExecutablePathIfEnabled(for provider: String) -> String? {
-        guard provider == "ollama" else { return nil }
-        let optimization = userConfig.optimization
-        guard optimization.enabled, optimization.backend == .esh else { return nil }
+        guardrailPolicyResolution(for: provider).eshBridgeExecutablePath
+    }
 
-        let inspector = EshOptimizationInspector()
-        guard let executablePath = inspector.resolveExecutablePath(config: optimization.esh),
-              FileManager.default.fileExists(atPath: executablePath) else {
-            return nil
-        }
-        return executablePath
+    private func guardrailPolicyResolution(for provider: String) -> LocalModelGuardrailPolicyResolution {
+        LocalModelGuardrailPolicy.resolve(provider: provider, userConfig: userConfig)
     }
 
     private func makeStandaloneEshAdapter(model: String, userConfig: AshexUserConfig) throws -> any ModelAdapter {
@@ -776,17 +871,31 @@ struct CLIConfiguration {
                 repoRootPath: repoRootPath,
                 model: resolvedModel,
                 providerID: "esh",
-                optimization: .init(
-                    enabled: true,
-                    backend: .esh,
-                    mode: optimization.mode,
-                    intent: optimization.intent,
-                    esh: optimization.esh
-                ),
+                optimization: Self.standaloneEshOptimization(userConfig: userConfig),
                 requestTimeoutSeconds: Self.ollamaRequestTimeoutSeconds(config: userConfig.ollama),
                 generation: userConfig.generation
             ),
             fallback: EshUnavailableModelAdapter(message: "The selected `esh` runtime could not complete the request.")
+        )
+    }
+
+    static func standaloneEshOptimization(userConfig: AshexUserConfig) -> OptimizationConfig {
+        let optimization = userConfig.optimization
+        guard optimization.enabled else {
+            return .init(
+                enabled: false,
+                backend: .disabled,
+                mode: optimization.mode,
+                intent: optimization.intent,
+                esh: optimization.esh
+            )
+        }
+        return .init(
+            enabled: true,
+            backend: .esh,
+            mode: optimization.mode,
+            intent: optimization.intent,
+            esh: optimization.esh
         )
     }
 

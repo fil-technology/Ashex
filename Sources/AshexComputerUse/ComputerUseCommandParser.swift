@@ -19,6 +19,55 @@ public struct ComputerUseCommandParser: Sendable {
             return .quit
         }
 
+        if trimmed.hasPrefix("open url ") {
+            let url = String(trimmed.dropFirst("open url ".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !url.isEmpty else {
+                throw ComputerUseCommandError.invalid("`open url` requires a URL.")
+            }
+            return .openURL(url)
+        }
+
+        if trimmed.hasPrefix("open app ") {
+            let name = String(trimmed.dropFirst("open app ".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty else {
+                throw ComputerUseCommandError.invalid("`open app` requires an app name.")
+            }
+            return .openApp(name)
+        }
+
+        if trimmed.hasPrefix("move ") {
+            let point = try parsePoint(String(trimmed.dropFirst("move ".count)), command: "move")
+            return .moveMouse(x: point.x, y: point.y)
+        }
+
+        if trimmed.hasPrefix("double click ") {
+            let point = try parsePoint(String(trimmed.dropFirst("double click ".count)), command: "double click")
+            return .doubleClick(x: point.x, y: point.y)
+        }
+
+        if trimmed.hasPrefix("right click ") {
+            let point = try parsePoint(String(trimmed.dropFirst("right click ".count)), command: "right click")
+            return .rightClick(x: point.x, y: point.y)
+        }
+
+        if trimmed.hasPrefix("click at ") {
+            let point = try parsePoint(String(trimmed.dropFirst("click at ".count)), command: "click at")
+            return .clickAt(x: point.x, y: point.y, button: .left, clickCount: 1)
+        }
+
+        if trimmed.hasPrefix("drag ") {
+            let values = try parseNumbers(String(trimmed.dropFirst("drag ".count)), expected: 4, command: "drag")
+            return .drag(fromX: values[0], fromY: values[1], toX: values[2], toY: values[3])
+        }
+
+        if trimmed.hasPrefix("wait ") {
+            let rawSeconds = String(trimmed.dropFirst("wait ".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let seconds = Double(rawSeconds), seconds >= 0 else {
+                throw ComputerUseCommandError.invalid("`wait` requires non-negative seconds.")
+            }
+            return .wait(seconds: seconds)
+        }
+
         if trimmed.hasPrefix("click ") {
             let id = String(trimmed.dropFirst("click ".count)).trimmingCharacters(in: .whitespacesAndNewlines)
             guard !id.isEmpty else {
@@ -54,7 +103,26 @@ public struct ComputerUseCommandParser: Sendable {
             return try parsePress(String(trimmed.dropFirst("press ".count)))
         }
 
-        throw ComputerUseCommandError.unsupported("Unsupported command `\(trimmed)`. Supported commands: click, type, press, scroll, screenshot, state, quit.")
+        throw ComputerUseCommandError.unsupported("Unsupported command `\(trimmed)`. Supported commands: open app, open url, move, click, double click, right click, drag, type, press, scroll, screenshot, state, wait, quit.")
+    }
+
+    private func parsePoint(_ rawValue: String, command: String) throws -> (x: Double, y: Double) {
+        let values = try parseNumbers(rawValue, expected: 2, command: command)
+        return (values[0], values[1])
+    }
+
+    private func parseNumbers(_ rawValue: String, expected: Int, command: String) throws -> [Double] {
+        let values = rawValue
+            .split(whereSeparator: \.isWhitespace)
+            .map(String.init)
+        guard values.count == expected else {
+            throw ComputerUseCommandError.invalid("`\(command)` expects \(expected) numeric value(s).")
+        }
+        let parsed = values.compactMap(Double.init)
+        guard parsed.count == expected else {
+            throw ComputerUseCommandError.invalid("`\(command)` values must be numbers.")
+        }
+        return parsed
     }
 
     private func parsePress(_ rawValue: String) throws -> ComputerUseAction {

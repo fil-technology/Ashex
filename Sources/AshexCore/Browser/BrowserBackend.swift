@@ -116,6 +116,7 @@ final class BrowserSessionState: @unchecked Sendable {
     let client: CDPClient
     let process: BrowserManagedProcess?
     let executablePath: String?
+    let temporaryUserDataDirectory: URL?
     let startupStartedAt: Date
     let readyAt: Date
 
@@ -125,6 +126,7 @@ final class BrowserSessionState: @unchecked Sendable {
         client: CDPClient,
         process: BrowserManagedProcess?,
         executablePath: String?,
+        temporaryUserDataDirectory: URL? = nil,
         startupStartedAt: Date,
         readyAt: Date
     ) {
@@ -133,6 +135,7 @@ final class BrowserSessionState: @unchecked Sendable {
         self.client = client
         self.process = process
         self.executablePath = executablePath
+        self.temporaryUserDataDirectory = temporaryUserDataDirectory
         self.startupStartedAt = startupStartedAt
         self.readyAt = readyAt
     }
@@ -151,7 +154,7 @@ public protocol BrowserBackend: Sendable {
     func extractHTML(session: BrowserSession) async throws -> String
 }
 
-public struct BrowserBackendAvailability: Sendable, Equatable {
+public struct BrowserBackendAvailability: Codable, Sendable, Equatable {
     public let id: BrowserBackendID
     public let available: Bool
     public let detail: String

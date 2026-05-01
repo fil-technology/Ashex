@@ -36,7 +36,8 @@ public struct ComputerUsePermissionStatus: Codable, Sendable, Equatable {
         return """
         Missing macOS permission(s): \(missing.joined(separator: ", ")).
         macOS does not let command-line tools grant these permissions programmatically.
-        Open System Settings > Privacy & Security, grant Accessibility and Screen Recording to the app or terminal running ashex (currently: \(processName)), then fully quit and restart that app.
+        Open System Settings > Privacy & Security, grant Accessibility and Screen Recording to the host app running ashex: Terminal/iTerm/VS Code/Codex, depending where you launched it (current process: \(processName)).
+        Fully quit and restart that host app after granting permission.
         Direct pane: x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility
         """
     }

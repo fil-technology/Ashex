@@ -11,6 +11,7 @@ public enum BrowserExecutableDiscovery {
     public static func resolveExecutable(
         configuredPath: String?,
         defaultName: String,
+        additionalPaths: [String] = [],
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> String? {
         if let configuredPath = configuredPath?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -19,11 +20,41 @@ public enum BrowserExecutableDiscovery {
             return configuredPath
         }
 
+        for path in additionalPaths where FileManager.default.isExecutableFile(atPath: path) {
+            return path
+        }
+
         let pathVariable = environment["PATH"] ?? "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
         for entry in pathVariable.split(separator: ":") {
             let candidate = URL(fileURLWithPath: String(entry)).appendingPathComponent(defaultName).path
             if FileManager.default.isExecutableFile(atPath: candidate) {
                 return candidate
+            }
+        }
+        return nil
+    }
+
+    public static func resolveChromeExecutable(
+        configuredPath: String?,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> String? {
+        let macOSApplicationPaths = [
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Chromium.app/Contents/MacOS/Chromium",
+            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+            "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+            "\(NSHomeDirectory())/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "\(NSHomeDirectory())/Applications/Chromium.app/Contents/MacOS/Chromium",
+        ]
+
+        for binaryName in ["google-chrome", "chrome", "chromium", "chromium-browser"] {
+            if let executable = resolveExecutable(
+                configuredPath: configuredPath,
+                defaultName: binaryName,
+                additionalPaths: macOSApplicationPaths,
+                environment: environment
+            ) {
+                return executable
             }
         }
         return nil

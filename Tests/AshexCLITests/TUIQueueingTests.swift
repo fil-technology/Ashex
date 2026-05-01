@@ -28,6 +28,12 @@ import Testing
     #expect(!PromptFailureRouting.shouldRetry(message: "Prompt violated policy"))
 }
 
+@Test func runtimeResourceFailurePolicyUnlocksEshWhenNoSmallerModelExists() {
+    #expect(RuntimeResourceFailureRecoveryDecision.memoryPressure(provider: "esh", recoveredModel: nil) == .unlockPromptEntry)
+    #expect(RuntimeResourceFailureRecoveryDecision.memoryPressure(provider: "esh", recoveredModel: "qwen3:0.6b") == .retryWithRecoveredModel)
+    #expect(RuntimeResourceFailureRecoveryDecision.memoryPressure(provider: "ollama", recoveredModel: nil) == .waitForModelChange)
+}
+
 @Test func providerFailureRoutingIdentifiesOllamaResourceFailures() {
     let message = "Ollama request for model 'gemma4:latest' failed with HTTP 500: out of memory"
 
@@ -184,6 +190,20 @@ import Testing
             "functiongemma:latest • gguf"
         ],
         excluding: "bartowski--llama-3.2-3b-instruct-gguf"
+    )
+
+    #expect(selected == "qwen3:0.6b")
+}
+
+@MainActor
+@Test func tuiEshMemoryRecoverySkipsFailedSelectedModel() {
+    let selected = TUIApp.eshMemoryRecoveryModel(
+        from: [
+            "ibm-granite--granite-4.0-1b • mlx",
+            "qwen3:0.6b • mlx",
+            "functiongemma:latest • gguf",
+        ],
+        failingModel: "ibm-granite--granite-4.0-1b"
     )
 
     #expect(selected == "qwen3:0.6b")

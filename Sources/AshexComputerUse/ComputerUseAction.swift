@@ -6,11 +6,24 @@ public enum ScrollDirection: String, Codable, Sendable, Equatable {
     case down
 }
 
+public enum ComputerUseMouseButton: String, Codable, Sendable, Equatable {
+    case left
+    case right
+}
+
 public enum ComputerUseAction: Sendable, Equatable {
     case click(elementId: String)
+    case moveMouse(x: Double, y: Double)
+    case clickAt(x: Double, y: Double, button: ComputerUseMouseButton, clickCount: Int)
+    case doubleClick(x: Double, y: Double)
+    case rightClick(x: Double, y: Double)
+    case drag(fromX: Double, fromY: Double, toX: Double, toY: Double)
     case typeText(String)
     case pressKey(key: String, modifiers: [String])
     case scroll(direction: ScrollDirection, amount: Int)
+    case openApp(String)
+    case openURL(String)
+    case wait(seconds: Double)
     case captureScreenshot
     case refreshState
     case quit

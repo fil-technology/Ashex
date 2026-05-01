@@ -9,6 +9,7 @@ public struct EshBridgeConfiguration: Sendable, Equatable {
     public let optimization: OptimizationConfig
     public let requestTimeoutSeconds: Int
     public let generation: ModelGenerationConfig
+    public let memorySafeMode: Bool
 
     public init(
         executablePath: String,
@@ -18,7 +19,8 @@ public struct EshBridgeConfiguration: Sendable, Equatable {
         providerID: String,
         optimization: OptimizationConfig,
         requestTimeoutSeconds: Int = 180,
-        generation: ModelGenerationConfig = .default
+        generation: ModelGenerationConfig = .default,
+        memorySafeMode: Bool = true
     ) {
         self.executablePath = executablePath
         self.homePath = homePath
@@ -28,6 +30,7 @@ public struct EshBridgeConfiguration: Sendable, Equatable {
         self.optimization = optimization
         self.requestTimeoutSeconds = requestTimeoutSeconds
         self.generation = generation
+        self.memorySafeMode = memorySafeMode
     }
 }
 
@@ -202,6 +205,9 @@ private extension EshBackedModelAdapter {
                 attachments: attachments
             )
         } catch {
+            if configuration.memorySafeMode, Self.isCacheMemoryPressureFailure(error.localizedDescription) {
+                throw error
+            }
             return try await runLegacyEsh(
                 systemPrompt: systemPrompt,
                 history: history,
@@ -257,7 +263,21 @@ private extension EshBackedModelAdapter {
                 timeout: TimeInterval(configuration.requestTimeoutSeconds)
             )
             guard buildResult.exitCode == 0, !buildResult.timedOut else {
-                throw AshexError.model("esh cache build failed: \(buildResult.stderr.trimmingCharacters(in: .whitespacesAndNewlines))")
+                let failureMessage = buildResult.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+                if Self.isCacheMemoryPressureFailure(failureMessage) {
+                    return try await runRawDirectInferWithMemorySafeFallback(
+                        id: requestID,
+                        capabilities: capabilities,
+                        systemPrompt: systemPrompt,
+                        history: history,
+                        message: message,
+                        taskKind: taskKind,
+                        taskPrompt: taskPrompt,
+                        attachments: attachments,
+                        originalError: AshexError.model("esh cache build failed: \(failureMessage)")
+                    )
+                }
+                throw AshexError.model("esh cache build failed: \(failureMessage)")
             }
 
             let buildMetadata = try EshBridgeOutputParser.parseMetadataBlock(from: buildResult.stdout)
@@ -276,10 +296,145 @@ private extension EshBackedModelAdapter {
                 attachments: attachments,
                 cacheArtifactID: artifact
             )
-            return try await runInfer(requestURL: requestWithArtifactURL)
+            do {
+                return try await runInfer(requestURL: requestWithArtifactURL)
+            } catch {
+                if Self.isCacheMemoryPressureFailure(error.localizedDescription) {
+                    return try await runRawDirectInferWithMemorySafeFallback(
+                        id: requestID,
+                        capabilities: capabilities,
+                        systemPrompt: systemPrompt,
+                        history: history,
+                        message: message,
+                        taskKind: taskKind,
+                        taskPrompt: taskPrompt,
+                        attachments: attachments,
+                        originalError: error
+                    )
+                }
+                throw error
+            }
         }
 
-        return try await runInfer(requestURL: requestURL)
+        do {
+            return try await runInfer(requestURL: requestURL)
+        } catch {
+            guard configuration.memorySafeMode, Self.isCacheMemoryPressureFailure(error.localizedDescription) else {
+                throw error
+            }
+            return try await runMemorySafeInferFallback(
+                id: requestID,
+                capabilities: capabilities,
+                systemPrompt: systemPrompt,
+                latestUserMessage: message,
+                taskKind: taskKind,
+                taskPrompt: taskPrompt,
+                attachments: attachments,
+                originalError: error
+            )
+        }
+    }
+
+    func runRawDirectInfer(
+        id: UUID,
+        systemPrompt: String,
+        history: [MessageRecord],
+        message: String,
+        taskKind: TaskKind,
+        taskPrompt: String,
+        attachments: [InputAttachment]
+    ) async throws -> String {
+        let rawRequestURL = try writeInferRequest(
+            id: id,
+            systemPrompt: systemPrompt,
+            history: history,
+            message: message,
+            taskKind: taskKind,
+            taskPrompt: taskPrompt,
+            attachments: attachments,
+            cacheModeOverride: .raw
+        )
+        return try await runInfer(requestURL: rawRequestURL)
+    }
+
+    func runRawDirectInferWithMemorySafeFallback(
+        id: UUID,
+        capabilities: EshCapabilitiesResponse?,
+        systemPrompt: String,
+        history: [MessageRecord],
+        message: String,
+        taskKind: TaskKind,
+        taskPrompt: String,
+        attachments: [InputAttachment],
+        originalError: Error
+    ) async throws -> String {
+        do {
+            return try await runRawDirectInfer(
+                id: id,
+                systemPrompt: systemPrompt,
+                history: history,
+                message: message,
+                taskKind: taskKind,
+                taskPrompt: taskPrompt,
+                attachments: attachments
+            )
+        } catch {
+            guard configuration.memorySafeMode, Self.isCacheMemoryPressureFailure(error.localizedDescription) else {
+                throw error
+            }
+            return try await runMemorySafeInferFallback(
+                id: id,
+                capabilities: capabilities,
+                systemPrompt: systemPrompt,
+                latestUserMessage: message,
+                taskKind: taskKind,
+                taskPrompt: taskPrompt,
+                attachments: attachments,
+                originalError: originalError
+            )
+        }
+    }
+
+    func runMemorySafeInferFallback(
+        id: UUID,
+        capabilities: EshCapabilitiesResponse?,
+        systemPrompt: String,
+        latestUserMessage: String,
+        taskKind: TaskKind,
+        taskPrompt: String,
+        attachments: [InputAttachment],
+        originalError: Error
+    ) async throws -> String {
+        let fallbackModel = Self.memorySafeFallbackModel(
+            currentModel: configuration.model,
+            capabilities: capabilities
+        ) ?? configuration.model
+        let fallbackRequestURL = try writeInferRequest(
+            id: id,
+            systemPrompt: systemPrompt,
+            history: [],
+            message: latestUserMessage,
+            taskKind: taskKind,
+            taskPrompt: taskPrompt,
+            attachments: attachments,
+            modelOverride: fallbackModel,
+            cacheModeOverride: .raw,
+            generationOverride: .memorySafe
+        )
+
+        do {
+            return try await runInfer(requestURL: fallbackRequestURL)
+        } catch {
+            guard Self.isCacheMemoryPressureFailure(error.localizedDescription) else {
+                throw error
+            }
+            throw AshexError.model(Self.memorySafeFailureMessage(
+                model: configuration.model,
+                fallbackModel: fallbackModel == configuration.model ? nil : fallbackModel,
+                originalError: originalError.localizedDescription,
+                retryError: error.localizedDescription
+            ))
+        }
     }
 
     func runLegacyEsh(
@@ -509,7 +664,10 @@ private extension EshBackedModelAdapter {
         taskKind: TaskKind,
         taskPrompt: String,
         attachments: [InputAttachment] = [],
-        cacheArtifactID: String? = nil
+        cacheArtifactID: String? = nil,
+        modelOverride: String? = nil,
+        cacheModeOverride: ContextOptimizationMode? = nil,
+        generationOverride: EshGenerationConfig? = nil
     ) throws -> URL {
         let requestsDirectory = URL(fileURLWithPath: configuration.homePath, isDirectory: true)
             .appendingPathComponent("external", isDirectory: true)
@@ -518,13 +676,13 @@ private extension EshBackedModelAdapter {
         let requestURL = requestsDirectory.appendingPathComponent("\(id.uuidString).json")
         let artifactUUID = cacheArtifactID.flatMap(UUID.init(uuidString:))
         let request = EshInferRequest(
-            model: configuration.model,
+            model: modelOverride ?? configuration.model,
             cacheArtifactID: artifactUUID,
             sessionName: "Ashex \(taskKind.rawValue)",
-            cacheMode: resolveOptimization(taskKind: taskKind, prompt: taskPrompt).mode.rawValue,
+            cacheMode: (cacheModeOverride ?? resolveOptimization(taskKind: taskKind, prompt: taskPrompt).mode).rawValue,
             intent: resolvedIntent(taskKind: taskKind, prompt: taskPrompt).rawValue,
             messages: buildInferMessages(systemPrompt: systemPrompt, history: history, message: message, attachments: attachments),
-            generation: .init(config: configuration.generation)
+            generation: generationOverride ?? .init(config: configuration.generation)
         )
 
         let encoder = JSONEncoder()
@@ -635,6 +793,89 @@ private extension EshBackedModelAdapter {
             .filter { !$0.isEmpty }
             .joined(separator: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    static func isCacheMemoryPressureFailure(_ message: String) -> Bool {
+        let lowered = message.lowercased()
+        let markers = [
+            "out of memory",
+            "memory pressure",
+            "cannot allocate memory",
+            "allocation failed",
+            "killed: 9",
+            "signal 9",
+            "jetsam",
+            "resource exhausted",
+        ]
+        return markers.contains { lowered.contains($0) }
+    }
+
+    static func memorySafeFallbackModel(
+        currentModel: String,
+        capabilities: EshCapabilitiesResponse?
+    ) -> String? {
+        guard let capabilities else { return nil }
+        let currentCapability = capabilities.resolveModelCapability(for: currentModel)
+        let currentScore: Double = estimatedModelScaleScore(currentModel)
+            ?? currentCapability.flatMap { estimatedModelScaleScore($0.displayName) }
+            ?? currentCapability.flatMap { estimatedModelScaleScore($0.source) }
+            ?? Double.greatestFiniteMagnitude
+        let currentLowered = currentModel.lowercased()
+
+        return capabilities.installedModels
+            .filter { capability in
+                capability.supportsDirectInference &&
+                    capability.id.lowercased() != currentLowered &&
+                    capability.displayName.lowercased() != currentLowered &&
+                    capability.source.lowercased() != currentLowered
+            }
+            .map { capability -> (EshInstalledModelCapability, Double) in
+                let idScore = estimatedModelScaleScore(capability.id)
+                let displayScore = estimatedModelScaleScore(capability.displayName)
+                let sourceScore = estimatedModelScaleScore(capability.source)
+                let scores = [idScore, displayScore, sourceScore].compactMap { $0 }
+                return (capability, scores.min() ?? Double.greatestFiniteMagnitude)
+            }
+            .filter { _, score in score <= currentScore }
+            .sorted { lhs, rhs in
+                if lhs.1 == rhs.1 { return lhs.0.id < rhs.0.id }
+                return lhs.1 < rhs.1
+            }
+            .first?
+            .0
+            .id
+    }
+
+    static func estimatedModelScaleScore(_ value: String) -> Double? {
+        let pattern = #"(?i)(\d+(?:\.\d+)?)\s*([bmk])\b"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let range = NSRange(value.startIndex..<value.endIndex, in: value)
+        guard let match = regex.firstMatch(in: value, range: range),
+              match.numberOfRanges >= 3,
+              let numberRange = Range(match.range(at: 1), in: value),
+              let unitRange = Range(match.range(at: 2), in: value),
+              let number = Double(value[numberRange]) else {
+            return nil
+        }
+        switch value[unitRange].lowercased() {
+        case "b": return number * 1_000_000_000
+        case "m": return number * 1_000_000
+        case "k": return number * 1_000
+        default: return nil
+        }
+    }
+
+    static func memorySafeFailureMessage(
+        model: String,
+        fallbackModel: String?,
+        originalError: String,
+        retryError: String,
+        resources: HostResources = .current()
+    ) -> String {
+        let usable = LocalModelGuardrails.formatBytes(resources.usableLocalModelMemoryBytes)
+        let physical = LocalModelGuardrails.formatBytes(resources.physicalMemoryBytes)
+        let fallbackText = fallbackModel.map { " Retried memory-safe mode with smaller model `\($0)`." } ?? " No smaller installed `esh` model was available."
+        return "The selected `esh` model `\(model)` still ran out of memory after reducing context and output budget.\(fallbackText) Usable local-model memory: \(usable) of \(physical). Original error: \(originalError). Retry error: \(retryError). Install/select a smaller `esh` model or close other memory-heavy apps."
     }
 }
 
@@ -991,6 +1232,8 @@ struct EshGenerationConfig: Codable {
         self.seed = config.seed
         self.options = config.options.isEmpty ? nil : config.options
     }
+
+    static let memorySafe = EshGenerationConfig(maxTokens: 256, temperature: 0.7)
 }
 
 struct EshInferResponse: Codable {

@@ -182,9 +182,19 @@ public extension Tool {
 
 public final class ToolRegistry: Sendable {
     private let tools: [String: any Tool]
+    public let duplicateToolNames: [String]
 
     public init(tools: [any Tool]) {
-        self.tools = Dictionary(uniqueKeysWithValues: tools.map { ($0.name, $0) })
+        var byName: [String: any Tool] = [:]
+        var duplicates: Set<String> = []
+        for tool in tools {
+            if byName[tool.name] != nil {
+                duplicates.insert(tool.name)
+            }
+            byName[tool.name] = tool
+        }
+        self.tools = byName
+        self.duplicateToolNames = duplicates.sorted()
     }
 
     public func schema() -> [ToolSchema] {

@@ -20,6 +20,8 @@ enum BrowserCLI {
             try await serve(arguments: arguments)
         case "benchmark":
             try await benchmark(arguments: arguments)
+        case "test-local":
+            try await testLocal(arguments: arguments)
         case "help", "--help", "-h":
             print(helpText)
         default:
@@ -31,10 +33,17 @@ enum BrowserCLI {
     private static func doctor(arguments: [String]) async throws {
         let configuration = try CLIConfiguration(arguments: passthroughConfigurationArguments(arguments))
         let report = await BrowserManager(configSection: configuration.userConfig.browser).doctor()
+        if arguments.contains("--json") {
+            try CLIJSONOutput.print(report)
+            return
+        }
         print("Configured backend: \(report.configuredBackend)")
         print("Obscura path: \(report.obscuraPath ?? "<not found>")")
         print("Obscura available: \(report.obscuraAvailable ? "yes" : "no")")
         print("Obscura detail: \(report.obscuraDetail)")
+        print("Chrome executable: \(report.chromeExecutablePath ?? "<not found>")")
+        print("Chrome backend available: \(report.chromeAvailable ? "yes" : "no")")
+        print("Chrome detail: \(report.chromeDetail)")
         print("CDP endpoint: \(report.cdpEndpoint)")
         print("CDP reachable: \(report.cdpReachable ? "yes" : "no")")
         print("CDP detail: \(report.cdpDetail)")
@@ -48,6 +57,10 @@ enum BrowserCLI {
         let configuration = try CLIConfiguration(arguments: passthroughConfigurationArguments(arguments))
         let manager = BrowserManager(configSection: configuration.userConfig.browser)
         let statuses = await manager.availableBackends()
+        if arguments.contains("--json") {
+            try CLIJSONOutput.print(statuses)
+            return
+        }
         for status in statuses {
             print("\(status.id.rawValue): \(status.available ? "available" : "unavailable") - \(status.detail)")
         }
@@ -168,6 +181,60 @@ enum BrowserCLI {
         }
     }
 
+    private static func testLocal(arguments: [String]) async throws {
+        let options = try TestLocalOptions(arguments: arguments)
+        let configuration = try CLIConfiguration(arguments: options.configurationArguments)
+        let server = try await BrowserLocalTestServer.start()
+        defer { server.stop() }
+
+        var browserConfig = configuration.userConfig.browser
+        browserConfig.security.allowLocalhostNavigation = true
+        let manager = BrowserManager(configSection: browserConfig)
+        let url = server.baseURL.appendingPathComponent("index.html")
+        try BrowserURLValidator(security: browserConfig.security).validate(url)
+
+        let (backend, session) = try await manager.startSession(backend: options.backend, timeoutSeconds: options.timeoutSeconds)
+        do {
+            let page = try await backend.navigate(
+                session: session,
+                url: url,
+                options: .init(timeoutSeconds: options.timeoutSeconds ?? browserConfig.navigationTimeoutSeconds)
+            )
+            let title = try await backend.evaluate(session: session, expression: "document.title")
+            let text = try await backend.extractText(session: session)
+            let markdown = try await backend.extractMarkdown(session: session)
+            let html = try await backend.extractHTML(session: session)
+            let screenshot = try await backend.screenshot(session: session, options: .init())
+            try await backend.stop(session: session)
+
+            let report = BrowserLocalTestReport(
+                status: "pass",
+                backend: backend.id.rawValue,
+                url: page.url,
+                title: title.description,
+                textContainsDynamicContent: text.contains("JavaScript content is visible."),
+                markdownLength: markdown.count,
+                htmlLength: html.count,
+                screenshotBytes: screenshot.count
+            )
+            if options.json {
+                try CLIJSONOutput.print(report)
+            } else {
+                print("Browser local test: pass")
+                print("Backend: \(report.backend)")
+                print("URL: \(report.url)")
+                print("Title: \(report.title)")
+                print("Text extraction: \(report.textContainsDynamicContent ? "pass" : "missing dynamic content")")
+                print("Markdown bytes: \(report.markdownLength)")
+                print("HTML bytes: \(report.htmlLength)")
+                print("Screenshot bytes: \(report.screenshotBytes)")
+            }
+        } catch {
+            try? await backend.stop(session: session)
+            throw error
+        }
+    }
+
     private static func passthroughConfigurationArguments(_ arguments: [String]) -> [String] {
         var result = [arguments.first ?? "ashex"]
         var iterator = arguments.dropFirst().dropFirst().dropFirst().makeIterator()
@@ -190,13 +257,14 @@ enum BrowserCLI {
 
     static let helpText = """
     Usage:
-      ashex browser doctor [options]
-      ashex browser backends [options]
+      ashex browser doctor [--json] [options]
+      ashex browser backends [--json] [options]
       ashex browser fetch <url> [--backend auto|obscura|chrome-cdp] [--markdown|--text|--html] [--json] [options]
       ashex browser eval <url> <javascript> [--backend auto|obscura|chrome-cdp] [--json] [options]
       ashex browser screenshot <url> [--output path] [--backend auto|obscura|chrome-cdp] [options]
       ashex browser serve [--backend obscura|chrome-cdp|auto] [options]
       ashex browser benchmark <url> [--backend auto|obscura|chrome-cdp] [--json] [options]
+      ashex browser test-local [--backend auto|obscura|chrome-cdp] [--json] [options]
 
     Options:
       --workspace PATH
@@ -453,4 +521,56 @@ private struct BenchmarkOptions {
         self.timeoutSeconds = timeoutSeconds
         self.configurationArguments = configurationArguments
     }
+}
+
+private struct TestLocalOptions {
+    let backend: BrowserBackendID?
+    let json: Bool
+    let timeoutSeconds: Int?
+    let configurationArguments: [String]
+
+    init(arguments: [String]) throws {
+        var backend: BrowserBackendID?
+        var json = false
+        var timeoutSeconds: Int?
+        var configurationArguments = [arguments.first ?? "ashex"]
+        var iterator = arguments.dropFirst().dropFirst().dropFirst().makeIterator()
+        while let argument = iterator.next() {
+            switch argument {
+            case "--backend":
+                guard let value = iterator.next(), let parsed = BrowserBackendID(rawValue: value) else {
+                    throw AshexError.model("Invalid value for --backend")
+                }
+                backend = parsed
+            case "--json":
+                json = true
+            case "--timeout", "--timeout-seconds":
+                guard let value = iterator.next(), let parsed = Int(value), parsed > 0 else {
+                    throw AshexError.model("Invalid value for \(argument)")
+                }
+                timeoutSeconds = parsed
+            case "--workspace", "--storage", "--provider", "--model", "--max-iterations", "--approval-mode":
+                guard let value = iterator.next() else { throw AshexError.model("Missing value for \(argument)") }
+                configurationArguments.append(argument)
+                configurationArguments.append(value)
+            default:
+                throw AshexError.model("Unknown browser test-local argument '\(argument)'")
+            }
+        }
+        self.backend = backend
+        self.json = json
+        self.timeoutSeconds = timeoutSeconds
+        self.configurationArguments = configurationArguments
+    }
+}
+
+private struct BrowserLocalTestReport: Codable {
+    let status: String
+    let backend: String
+    let url: String
+    let title: String
+    let textContainsDynamicContent: Bool
+    let markdownLength: Int
+    let htmlLength: Int
+    let screenshotBytes: Int
 }

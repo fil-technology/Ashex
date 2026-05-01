@@ -39,6 +39,7 @@ final class TUIApp {
         case compose
         case audio
         case commands
+        case agentOps
         case computerUse
         case terminal
         case workspaces
@@ -53,6 +54,7 @@ final class TUIApp {
         case workspaces
         case history
         case settings
+        case agentOps
         case transcript
         case terminal
         case input
@@ -216,6 +218,7 @@ final class TUIApp {
     private var inputMode: InputMode = .prompt
     private var showHelp = false
     private var showCommands = false
+    private var showAgentOps = false
     private var showWorkspaces = false
     private var showHistory = false
     private var showSettings = false
@@ -397,6 +400,21 @@ final class TUIApp {
         ModelCatalogDisplay.selectableModelName(from: displayName)
     }
 
+    static func eshMemoryRecoveryModel(from displayModels: [String], failingModel: String) -> String? {
+        let trimmed = failingModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let safest = OllamaModelDisplayOrdering.safestInstalledModelName(
+            from: displayModels,
+            excluding: trimmed
+        ) {
+            return safest
+        }
+        return displayModels
+            .compactMap(selectableModelName)
+            .first { candidate in
+                candidate.localizedCaseInsensitiveCompare(trimmed) != .orderedSame
+            }
+    }
+
     private func refreshComputerUseStatus() async {
         let manifestURL = ComputerUseCLI.resolvedManifestURL(workspaceRoot: sessionWorkspaceRoot, config: sessionUserConfig.computerUse)
         let backend = ComputerUseCLI.backendProvider(manifestURL: manifestURL)
@@ -534,6 +552,8 @@ final class TUIApp {
                 focus = .settings
             case .history:
                 focus = .settings
+            case .agentOps:
+                focus = .settings
             case .settings:
                 focus = .transcript
             case .transcript:
@@ -563,6 +583,8 @@ final class TUIApp {
                 focus = .input
             case .settings:
                 focus = .input
+            case .agentOps:
+                focus = .input
             case .input:
                 focus = .launcher
             case .approval:
@@ -579,6 +601,8 @@ final class TUIApp {
             case .workspaces:
                 focus = .transcript
             case .history:
+                focus = .transcript
+            case .agentOps:
                 focus = .transcript
             case .settings:
                 focus = .transcript
@@ -607,6 +631,8 @@ final class TUIApp {
         case .history:
             focus = .input
         case .settings:
+            focus = .input
+        case .agentOps:
             focus = .input
         case .input:
             focus = .launcher
@@ -637,6 +663,8 @@ final class TUIApp {
             } else {
                 settingsSelection = max(settingsSelection - 1, 0)
             }
+        case .agentOps:
+            scrollTranscript(by: 1)
         case .transcript:
             scrollTranscript(by: 1)
         case .terminal:
@@ -667,6 +695,8 @@ final class TUIApp {
             } else {
                 settingsSelection = min(settingsSelection + 1, SettingsAction.allCases.count - 1)
             }
+        case .agentOps:
+            scrollTranscript(by: -1)
         case .transcript:
             scrollTranscript(by: -1)
         case .terminal:
@@ -678,7 +708,7 @@ final class TUIApp {
 
     private func handlePageUp() {
         switch focus {
-        case .transcript:
+        case .transcript, .agentOps:
             scrollTranscriptPage(direction: .older)
         case .terminal:
             scrollTerminalPage(direction: .older)
@@ -689,7 +719,7 @@ final class TUIApp {
 
     private func handlePageDown() {
         switch focus {
-        case .transcript:
+        case .transcript, .agentOps:
             scrollTranscriptPage(direction: .newer)
         case .terminal:
             scrollTerminalPage(direction: .newer)
@@ -700,7 +730,7 @@ final class TUIApp {
 
     private func handleHome() {
         switch focus {
-        case .transcript:
+        case .transcript, .agentOps:
             jumpTranscriptToTop()
         case .terminal:
             jumpTerminalToTop()
@@ -711,7 +741,7 @@ final class TUIApp {
 
     private func handleEnd() {
         switch focus {
-        case .transcript:
+        case .transcript, .agentOps:
             jumpTranscriptToBottom()
         case .terminal:
             jumpTerminalToBottom()
@@ -1019,6 +1049,13 @@ final class TUIApp {
             return
         }
 
+        if showAgentOps {
+            showAgentOps = false
+            focus = .launcher
+            statusLine = "Back to launcher"
+            return
+        }
+
         if showHistory {
             showHistory = false
             focus = .launcher
@@ -1123,6 +1160,7 @@ final class TUIApp {
             showHelp = false
             showSettings = false
             showCommands = false
+            showAgentOps = false
         }
     }
 
@@ -1177,6 +1215,7 @@ final class TUIApp {
             showWorkspaces = false
             showSettings = false
             showCommands = false
+            showAgentOps = false
             focus = .input
             showHelp = false
             statusLine = activeThreadID == nil ? "Start a new chat below" : "Continue the active chat below"
@@ -1187,6 +1226,7 @@ final class TUIApp {
             showWorkspaces = false
             showSettings = false
             showCommands = false
+            showAgentOps = false
             focus = .input
             showHelp = false
             statusLine = "Type text to speak. Optional flags: --voice --format --speed --instructions --output"
@@ -1195,10 +1235,21 @@ final class TUIApp {
             showHistory = false
             showWorkspaces = false
             showSettings = false
+            showAgentOps = false
             showHelp = false
             transcriptScrollOffset = 0
             focus = .transcript
             statusLine = "Commands"
+        case .agentOps:
+            showAgentOps = true
+            showCommands = false
+            showHistory = false
+            showWorkspaces = false
+            showSettings = false
+            showHelp = false
+            transcriptScrollOffset = 0
+            focus = .agentOps
+            statusLine = "Agent Ops"
         case .computerUse:
             if !sessionUserConfig.computerUse.enabled {
                 sessionUserConfig.computerUse.enabled = true
@@ -1213,6 +1264,7 @@ final class TUIApp {
             showHistory = false
             showSettings = false
             showCommands = false
+            showAgentOps = false
             showHelp = false
             loadRecentWorkspaces()
             focus = .workspaces
@@ -1222,6 +1274,7 @@ final class TUIApp {
             showWorkspaces = false
             showSettings = false
             showCommands = false
+            showAgentOps = false
             showHelp = false
             focus = .history
             loadHistory()
@@ -1231,6 +1284,7 @@ final class TUIApp {
             showHistory = false
             showWorkspaces = false
             showCommands = false
+            showAgentOps = false
             showHelp = false
             focus = .settings
             settingsScrollOffset = 0
@@ -1242,6 +1296,7 @@ final class TUIApp {
             showWorkspaces = false
             showSettings = false
             showCommands = false
+            showAgentOps = false
             focus = .launcher
             statusLine = "Help"
         case .quit:
@@ -1275,6 +1330,7 @@ final class TUIApp {
             .init(title: "Chat", subtitle: "Talk to Ashex in the active thread or start a new one", action: .compose),
             .init(title: "Audio", subtitle: "Generate speech from text with the selected audio model", action: .audio),
             .init(title: "Commands", subtitle: "See available tools, operations, and config policy", action: .commands),
+            .init(title: "Agent Ops", subtitle: "Inspect queues, processes, routes, skills, MCP, KB, and subagent workspaces", action: .agentOps),
             .init(
                 title: "Computer Use / GUI Automation",
                 subtitle: "Backend: \(computerUseBackendSummary) • Enabled: \(sessionUserConfig.computerUse.enabled ? "true" : "false") • Safety: \(sessionUserConfig.computerUse.safety.rawValue)",
@@ -2609,6 +2665,7 @@ final class TUIApp {
         showHistory = false
         showWorkspaces = false
         showCommands = false
+        showAgentOps = false
         showHelp = false
         showModelPicker = false
         modelPickerTarget = .chat
@@ -3431,6 +3488,7 @@ final class TUIApp {
         showHelp = false
         showHistory = false
         showCommands = false
+        showAgentOps = false
         focus = .transcript
         statusLine = status
     }
@@ -3597,6 +3655,9 @@ final class TUIApp {
 
     private func startRun(prompt: String) {
         refreshSessionRuntime()
+        if resolveEshMemoryPressureBeforeBlocking(prompt: prompt) {
+            return
+        }
         if let providerStartupIssue,
            providerStartupIssue.provider == sessionProvider,
            providerStartupIssue.model == sessionModel,
@@ -3607,16 +3668,7 @@ final class TUIApp {
         if let providerStartupIssue,
            providerStartupIssue.provider == sessionProvider,
            providerStartupIssue.model == sessionModel {
-            runLines = [
-                "Prompt: \(prompt)",
-                "",
-                "[error] \(Self.providerAttentionMessage(startupIssue: providerStartupIssue, snapshot: providerStatus, provider: sessionProvider))",
-                Self.recoveryHint(for: providerStartupIssue, provider: sessionProvider)
-            ]
-            runFinished = true
-            runStartedAt = nil
-            statusLine = "Run blocked"
-            render()
+            renderProviderStartupBlock(prompt: prompt, startupIssue: providerStartupIssue)
             return
         } else if providerStartupIssue != nil {
             providerStartupIssue = nil
@@ -3719,6 +3771,115 @@ final class TUIApp {
         }
     }
 
+    private func resolveEshMemoryPressureBeforeBlocking(prompt: String) -> Bool {
+        guard let startupIssue = providerStartupIssue,
+              startupIssue.provider == sessionProvider,
+              startupIssue.model == sessionModel,
+              sessionProvider == "esh",
+              ProviderFailureRouting.isOllamaModelResourceFailure(message: startupIssue.message) else {
+            return false
+        }
+
+        if switchEshModelAfterMemoryPressure(from: providerStatus) != nil {
+            startRun(prompt: prompt)
+            return true
+        }
+
+        guard providerStatus.availableModels.isEmpty else { return false }
+
+        runLines = [
+            "Prompt: \(prompt)",
+            "",
+            "[provider] Refreshing `esh` models before blocking this prompt...",
+        ]
+        runFinished = true
+        runStartedAt = nil
+        statusLine = "Refreshing esh models"
+        render()
+
+        Task { [weak self] in
+            guard let self else { return }
+            await self.refreshProviderStatus()
+            await MainActor.run {
+                if self.providerStartupIssue == nil ||
+                    self.providerStartupIssue?.provider != self.sessionProvider ||
+                    self.providerStartupIssue?.model != self.sessionModel {
+                    self.startRun(prompt: prompt)
+                    return
+                }
+
+                if self.switchEshModelAfterMemoryPressure(from: self.providerStatus) != nil {
+                    self.startRun(prompt: prompt)
+                    return
+                }
+
+                guard let providerStartupIssue = self.providerStartupIssue else { return }
+                self.renderProviderStartupBlock(prompt: prompt, startupIssue: providerStartupIssue)
+            }
+        }
+        return true
+    }
+
+    @discardableResult
+    private func switchEshModelAfterMemoryPressure(from snapshot: ProviderStatusSnapshot) -> String? {
+        guard sessionProvider == "esh",
+              let startupIssue = providerStartupIssue,
+              startupIssue.provider == sessionProvider,
+              startupIssue.model == sessionModel,
+              ProviderFailureRouting.isOllamaModelResourceFailure(message: startupIssue.message),
+              let fallbackModel = Self.eshMemoryRecoveryModel(
+                from: snapshot.availableModels,
+                failingModel: sessionModel
+              ) else {
+            return nil
+        }
+
+        sessionModel = fallbackModel
+        showModelPicker = false
+        modelPickerTarget = .chat
+        providerStartupIssue = nil
+        refreshSessionRuntime()
+        clearProviderAttentionTranscriptIfPresent()
+        persistSessionSettings()
+        statusLine = "Switched esh to \(fallbackModel) after memory pressure"
+        if showOnboarding, onboardingStep == .model {
+            onboardingStatus = "Selected installed esh model \(fallbackModel)"
+        }
+        return fallbackModel
+    }
+
+    private func switchEshModelAfterMemoryPressureUsingInstalledModels() -> String? {
+        let displayModels = eshInstalledDisplayModels()
+        guard !displayModels.isEmpty else { return nil }
+        let snapshot = ProviderStatusSnapshot(
+            headline: providerStatus.headline,
+            details: providerStatus.details,
+            availableModels: displayModels,
+            guardrailAssessment: providerStatus.guardrailAssessment
+        )
+        return switchEshModelAfterMemoryPressure(from: snapshot)
+    }
+
+    private func eshInstalledDisplayModels() -> [String] {
+        ((try? EshCommandClient.listInstalledModels(configuration: configuration)) ?? [])
+            .map { "\($0) • esh" }
+    }
+
+    private func renderProviderStartupBlock(prompt: String, startupIssue: ProviderStartupIssue) {
+        runLines = [
+            "Prompt: \(prompt)",
+            "",
+            "[error] \(Self.providerAttentionMessage(startupIssue: startupIssue, snapshot: providerStatus, provider: sessionProvider))",
+            Self.recoveryHint(for: startupIssue, provider: sessionProvider)
+        ]
+        runFinished = true
+        runStartedAt = nil
+        inputMode = .prompt
+        focus = .input
+        statusLine = "Run blocked"
+        render()
+    }
+
     private func append(event: RuntimeEvent) {
         let shouldFollowTail = isTranscriptNearBottom()
         updateLiveRunState(from: event.payload)
@@ -3751,11 +3912,65 @@ final class TUIApp {
             guardrailAssessment: providerStatus.guardrailAssessment
         )
 
+        if recoverEshMemoryPressureAfterRuntimeFailure(message: message, failedPrompt: activeQueuedPrompt) {
+            return
+        }
+
         if let queuedPrompt = activeQueuedPrompt {
             promptQueue.requeueAtFront(queuedPrompt.incrementingAttemptCount())
             activeQueuedPrompt = nil
         }
         statusLine = "Prompt queue waiting for model change"
+    }
+
+    private func recoverEshMemoryPressureAfterRuntimeFailure(message: String, failedPrompt: QueuedPrompt?) -> Bool {
+        guard sessionProvider == "esh",
+              ProviderFailureRouting.isOllamaModelResourceFailure(message: message) else {
+            return false
+        }
+
+        let failingModel = sessionModel
+        let recoveredModel = switchEshModelAfterMemoryPressure(from: providerStatus) ??
+            switchEshModelAfterMemoryPressureUsingInstalledModels()
+
+        switch RuntimeResourceFailureRecoveryDecision.memoryPressure(provider: sessionProvider, recoveredModel: recoveredModel) {
+        case .retryWithRecoveredModel:
+            if let failedPrompt {
+                promptQueue.requeueAtFront(failedPrompt.incrementingAttemptCount())
+            }
+            activeQueuedPrompt = nil
+            if let recoveredModel {
+                runLines.append("[provider] `esh` ran out of memory with \(failingModel); switched to \(recoveredModel) and will retry the prompt.")
+                statusLine = "Retrying with \(recoveredModel)"
+            }
+            return true
+        case .unlockPromptEntry:
+            activeQueuedPrompt = nil
+            providerStartupIssue = nil
+            queueRetryTask?.cancel()
+            queueRetryTask = nil
+            let installedModels = eshInstalledDisplayModels()
+            let availableModels = providerStatus.availableModels.isEmpty ? installedModels : providerStatus.availableModels
+            providerStatus = .init(
+                headline: "`esh` model ran out of memory",
+                details: [
+                    "The selected `esh` model \(failingModel) could not fit in memory.",
+                    installedModels.count <= 1
+                        ? "No smaller installed `esh` model was reported."
+                        : "Choose a smaller installed `esh` model from Assistant Setup.",
+                    "The failed prompt was not kept at the front of the queue, so the chat input stays usable."
+                ],
+                availableModels: availableModels,
+                guardrailAssessment: nil
+            )
+            runLines.append("[provider] `esh` ran out of memory with \(failingModel). No smaller installed model was available, so the failed prompt was released and the chat input is unlocked.")
+            inputMode = .prompt
+            focus = .input
+            statusLine = "Type your next prompt"
+            return true
+        case .waitForModelChange:
+            return false
+        }
     }
 
     private func refreshActiveChatMessagesIfNeeded(for payload: RuntimeEventPayload) {
@@ -3789,7 +4004,7 @@ final class TUIApp {
     private func restorePromptEntryIfIdle() {
         guard runFinished, runTask == nil, activeQueuedPrompt == nil, pendingApproval == nil, promptQueue.isEmpty else { return }
         guard !showOnboarding else { return }
-        guard !showSettings, !showHelp, !showHistory, !showCommands, !showWorkspaces else { return }
+        guard !showSettings, !showHelp, !showHistory, !showCommands, !showAgentOps, !showWorkspaces else { return }
         inputMode = .prompt
         focus = .input
         if promptText.isEmpty {
@@ -4347,6 +4562,14 @@ final class TUIApp {
                 maxBodyHeight: bodyHeight,
                 emptyState: "No command catalog entries."
             )
+        } else if showAgentOps {
+            rightTitle = "Agent Ops"
+            rightLines = renderScrollableStaticLines(
+                renderAgentOpsLines(width: rightWidth - 4),
+                width: rightWidth - 4,
+                maxBodyHeight: bodyHeight,
+                emptyState: "No agent operation state found."
+            )
         } else if showHelp {
             rightTitle = "Controls"
             rightLines = renderScrollableStaticLines(
@@ -4766,6 +4989,104 @@ final class TUIApp {
 
         lines.append("")
         lines.append("\(TerminalUIStyle.faint)Ashex creates this config file on first run if it does not exist.\(TerminalUIStyle.reset)")
+        return lines
+    }
+
+    private func renderAgentOpsLines(width: Int) -> [String] {
+        var lines: [String] = [
+            "\(TerminalUIStyle.ink)Runtime Operations\(TerminalUIStyle.reset)",
+            "\(TerminalUIStyle.slate)Workspace: \(TerminalUIStyle.truncateVisible(sessionWorkspaceRoot.path, limit: max(width - 11, 10)))\(TerminalUIStyle.reset)",
+            "\(TerminalUIStyle.slate)Storage: \(TerminalUIStyle.truncateVisible(sessionStorageRoot.path, limit: max(width - 9, 10)))\(TerminalUIStyle.reset)",
+            ""
+        ]
+
+        do {
+            let tasks = try AgentTaskQueue(storageRoot: sessionStorageRoot).list()
+            let grouped = Dictionary(grouping: tasks, by: \.status)
+            lines.append("\(TerminalUIStyle.ink)Task Queue\(TerminalUIStyle.reset)")
+            lines.append("\(TerminalUIStyle.slate)total \(tasks.count) • queued \(grouped[.queued]?.count ?? 0) • running \(grouped[.running]?.count ?? 0) • failed \(grouped[.failed]?.count ?? 0)\(TerminalUIStyle.reset)")
+            let staleActions = try AgentHeartbeatStore(storageRoot: sessionStorageRoot).actions(for: tasks)
+            if !staleActions.isEmpty {
+                lines.append("\(TerminalUIStyle.amber)stale running tasks \(staleActions.count)\(TerminalUIStyle.reset)")
+            }
+            for task in tasks.suffix(5) {
+                let owner = task.claimedBy.map { " @ \($0)" } ?? ""
+                lines.append("\(TerminalUIStyle.slate)\(task.id) \(task.status.rawValue)\(owner): \(TerminalUIStyle.truncateVisible(task.prompt, limit: max(width - 16, 10)))\(TerminalUIStyle.reset)")
+            }
+        } catch {
+            lines.append("\(TerminalUIStyle.red)Task queue unavailable: \(error.localizedDescription)\(TerminalUIStyle.reset)")
+        }
+
+        lines.append("")
+        do {
+            let processes = try AgentProcessManager(storageRoot: sessionStorageRoot).list()
+            let grouped = Dictionary(grouping: processes, by: \.status)
+            lines.append("\(TerminalUIStyle.ink)Processes\(TerminalUIStyle.reset)")
+            lines.append("\(TerminalUIStyle.slate)total \(processes.count) • running \(grouped[.running]?.count ?? 0) • exited \(grouped[.exited]?.count ?? 0) • failed \(grouped[.failed]?.count ?? 0)\(TerminalUIStyle.reset)")
+            for process in processes.suffix(5) {
+                let command = process.command.joined(separator: " ")
+                lines.append("\(TerminalUIStyle.slate)\(process.id) \(process.status.rawValue): \(TerminalUIStyle.truncateVisible(command, limit: max(width - 16, 10)))\(TerminalUIStyle.reset)")
+            }
+        } catch {
+            lines.append("\(TerminalUIStyle.red)Process state unavailable: \(error.localizedDescription)\(TerminalUIStyle.reset)")
+        }
+
+        lines.append("")
+        do {
+            let leases = try SubagentWorkspaceManager(storageRoot: sessionStorageRoot, workspaceRoot: sessionWorkspaceRoot).listLeases()
+            lines.append("\(TerminalUIStyle.ink)Subagent Workspaces\(TerminalUIStyle.reset)")
+            lines.append("\(TerminalUIStyle.slate)leases \(leases.count) • default shared_read_only\(TerminalUIStyle.reset)")
+            for lease in leases.suffix(5) {
+                lines.append("\(TerminalUIStyle.slate)\(lease.id) \(lease.mode.rawValue): \(TerminalUIStyle.truncateVisible(lease.workspacePath, limit: max(width - 16, 10)))\(TerminalUIStyle.reset)")
+            }
+        } catch {
+            lines.append("\(TerminalUIStyle.red)Subagent workspace state unavailable: \(error.localizedDescription)\(TerminalUIStyle.reset)")
+        }
+
+        lines.append("")
+        do {
+            let skills = try AgentSkillStore(home: AgentHome(storageRoot: sessionStorageRoot, workspaceRoot: sessionWorkspaceRoot)).list()
+            let grouped = Dictionary(grouping: skills, by: \.state)
+            lines.append("\(TerminalUIStyle.ink)Skills\(TerminalUIStyle.reset)")
+            lines.append("\(TerminalUIStyle.slate)installed \(grouped[.installed]?.count ?? 0) • quarantined \(grouped[.quarantined]?.count ?? 0) • generated \(grouped[.generated]?.count ?? 0)\(TerminalUIStyle.reset)")
+            for skill in skills.prefix(5) {
+                lines.append("\(TerminalUIStyle.slate)\(skill.name) [\(skill.state.rawValue)] \(TerminalUIStyle.truncateVisible(skill.metadata.description, limit: max(width - 20, 10)))\(TerminalUIStyle.reset)")
+            }
+        } catch {
+            lines.append("\(TerminalUIStyle.red)Skills unavailable: \(error.localizedDescription)\(TerminalUIStyle.reset)")
+        }
+
+        lines.append("")
+        do {
+            let home = AgentHome(storageRoot: sessionStorageRoot, workspaceRoot: sessionWorkspaceRoot)
+            let mcpServers = try AgentMCPRegistry(home: home).list()
+            let enabled = mcpServers.filter(\.enabled)
+            lines.append("\(TerminalUIStyle.ink)MCP\(TerminalUIStyle.reset)")
+            lines.append("\(TerminalUIStyle.slate)servers \(mcpServers.count) • enabled \(enabled.count) • runtime tool mcp available\(TerminalUIStyle.reset)")
+            for server in mcpServers.prefix(5) {
+                lines.append("\(TerminalUIStyle.slate)\(server.name) [\(server.transport.rawValue)] \(server.enabled ? "enabled" : "disabled")\(TerminalUIStyle.reset)")
+            }
+        } catch {
+            lines.append("\(TerminalUIStyle.red)MCP unavailable: \(error.localizedDescription)\(TerminalUIStyle.reset)")
+        }
+
+        lines.append("")
+        let routing = TUIModelRoutingSummary.current(provider: sessionProvider, model: sessionModel, userConfig: sessionUserConfig)
+        lines.append("\(TerminalUIStyle.ink)Model Routes\(TerminalUIStyle.reset)")
+        for purpose in ModelTaskPurpose.allCases {
+            let route = routing.route(for: purpose)
+            lines.append("\(TerminalUIStyle.slate)\(purpose.rawValue): \(routing.slot(for: purpose).rawValue) -> \(route.provider)/\(route.model)\(TerminalUIStyle.reset)")
+        }
+
+        lines.append("")
+        do {
+            let report = try AgentKnowledgeBase(home: AgentHome(storageRoot: sessionStorageRoot, workspaceRoot: sessionWorkspaceRoot)).lint()
+            lines.append("\(TerminalUIStyle.ink)Knowledge Base\(TerminalUIStyle.reset)")
+            lines.append("\(TerminalUIStyle.slate)missing sources \(report.missingSourcePages.count) • orphan pages \(report.orphanPages.count)\(TerminalUIStyle.reset)")
+        } catch {
+            lines.append("\(TerminalUIStyle.red)KB unavailable: \(error.localizedDescription)\(TerminalUIStyle.reset)")
+        }
+
         return lines
     }
 
@@ -5404,7 +5725,7 @@ final class TUIApp {
 
     private var isRightPanelFocused: Bool {
         switch focus {
-        case .transcript, .settings, .history, .workspaces, .approval:
+        case .transcript, .settings, .agentOps, .history, .workspaces, .approval:
             return true
         case .launcher, .terminal, .input:
             return false
@@ -5531,6 +5852,7 @@ final class TUIApp {
         if showHistory { return "threads" }
         if showSettings { return "settings" }
         if showCommands { return "commands" }
+        if showAgentOps { return "agent ops" }
         if showHelp { return "help" }
         return runFinished ? "chat" : "live run"
     }
@@ -5541,6 +5863,7 @@ final class TUIApp {
         case .workspaces: return "workspaces"
         case .history: return "threads"
         case .settings: return "settings"
+        case .agentOps: return "agent ops"
         case .transcript: return "transcript"
         case .terminal: return "terminal"
         case .input: return "input"
@@ -5935,7 +6258,7 @@ final class TUIApp {
 
     private var isComposeTranscriptVisible: Bool {
         guard pendingApproval == nil else { return false }
-        guard !showWorkspaces, !showHistory, !showSettings, !showCommands, !showHelp else { return false }
+        guard !showWorkspaces, !showHistory, !showSettings, !showCommands, !showAgentOps, !showHelp else { return false }
         guard runFinished, runLines.isEmpty, inputMode == .prompt else { return false }
         if composeMode == .audio {
             return true
@@ -5950,7 +6273,7 @@ final class TUIApp {
 
     private var isChatConversationVisible: Bool {
         guard pendingApproval == nil else { return false }
-        guard !showWorkspaces, !showHistory, !showSettings, !showCommands, !showHelp else { return false }
+        guard !showWorkspaces, !showHistory, !showSettings, !showCommands, !showAgentOps, !showHelp else { return false }
         guard composeMode == .chat else { return false }
         guard inputMode == .prompt, activeThreadID != nil else { return false }
         return !activeChatMessages.isEmpty || !runFinished || activeRunMode != nil
@@ -7079,6 +7402,7 @@ final class TUIApp {
         showHelp = false
         showHistory = false
         showCommands = false
+        showAgentOps = false
         focus = .input
 
         let queuePosition = promptQueue.count
@@ -7186,19 +7510,27 @@ final class TUIApp {
             network: sessionUserConfig.network,
             shell: shellPolicy
         )
+        let tools = try configuration.makeRuntimeTools(
+            workspaceURL: sessionWorkspaceRoot,
+            storageRoot: sessionStorageRoot,
+            persistence: persistence,
+            userConfig: sessionUserConfig,
+            shellExecutionPolicy: shellExecutionPolicy
+        )
         return try AgentRuntime(
             modelAdapter: modelAdapter,
-            toolRegistry: ToolRegistry(tools: try RuntimeToolFactory.makeTools(
-                workspaceURL: sessionWorkspaceRoot,
-                persistence: persistence,
-                userConfig: sessionUserConfig,
-                sandbox: sessionUserConfig.sandbox,
-                shellExecutionPolicy: shellExecutionPolicy
-            )),
+            toolRegistry: ToolRegistry(tools: tools),
             persistence: persistence,
             approvalPolicy: approvalPolicy,
             shellExecutionPolicy: shellExecutionPolicy,
             workspaceSnapshot: WorkspaceSnapshotBuilder.capture(workspaceRoot: sessionWorkspaceRoot),
+            modelRouter: try configuration.makeRuntimeModelRouter(primary: modelAdapter, userConfig: sessionUserConfig),
+            skillRouting: configuration.makeRuntimeSkillRoutingConfig(
+                workspaceURL: sessionWorkspaceRoot,
+                storageRoot: sessionStorageRoot,
+                tools: tools
+            ),
+            subagentWorkspaceManager: SubagentWorkspaceManager(storageRoot: sessionStorageRoot, workspaceRoot: sessionWorkspaceRoot),
             reasoningSummaryDebugEnabled: sessionUserConfig.debug.reasoningSummaries
         )
     }
@@ -7448,21 +7780,7 @@ final class TUIApp {
            startupIssue.provider == sessionProvider,
            startupIssue.model == sessionModel,
            ProviderFailureRouting.isOllamaModelResourceFailure(message: startupIssue.message),
-           let fallbackModel = OllamaModelDisplayOrdering.safestInstalledModelName(
-                from: snapshot.availableModels,
-                excluding: trimmed
-            ) {
-            sessionModel = fallbackModel
-            showModelPicker = false
-            modelPickerTarget = .chat
-            providerStartupIssue = nil
-            refreshSessionRuntime()
-            clearProviderAttentionTranscriptIfPresent()
-            persistSessionSettings()
-            statusLine = "Switched esh to \(fallbackModel) after memory pressure"
-            if showOnboarding, onboardingStep == .model {
-                onboardingStatus = "Selected installed esh model \(fallbackModel)"
-            }
+           let fallbackModel = switchEshModelAfterMemoryPressure(from: snapshot) {
             return fallbackModel
         }
 
@@ -7559,6 +7877,16 @@ final class TUIApp {
     private func validateRunGuardrails() async throws {
         guard sessionProvider == "ollama" else { return }
         if ProcessInfo.processInfo.environment["ASHEX_ALLOW_LARGE_MODELS"] == "1" { return }
+        let guardrailPolicy = LocalModelGuardrailPolicy.resolve(provider: sessionProvider, userConfig: sessionUserConfig)
+        guard guardrailPolicy.shouldRunLocalMemoryGuardrail else {
+            providerStatus = await ProviderInspector.inspect(
+                provider: sessionProvider,
+                model: sessionModel,
+                dflashConfig: sessionUserConfig.dflash,
+                userConfig: sessionUserConfig
+            )
+            return
+        }
 
         let snapshot = await ProviderInspector.inspect(
             provider: sessionProvider,
@@ -8022,6 +8350,15 @@ private enum ProviderInspector {
                 )
             }
         case "ollama":
+            let guardrailPolicy = LocalModelGuardrailPolicy.resolve(provider: provider, userConfig: userConfig)
+            if let executablePath = guardrailPolicy.eshBridgeExecutablePath {
+                return inspectOllamaEshBridge(
+                    model: model,
+                    userConfig: userConfig,
+                    executablePath: executablePath
+                )
+            }
+
             do {
                 let baseURL = CLIConfiguration.ollamaBaseURL()
                 let models = try await fetchOllamaModelsWithStartupRetry(baseURL: baseURL)
@@ -8144,6 +8481,55 @@ private enum ProviderInspector {
             return .init(
                 headline: "Unknown provider",
                 details: ["Ashex does not know how to inspect \(provider)."],
+                availableModels: [],
+                guardrailAssessment: nil
+            )
+        }
+    }
+
+    private static func inspectOllamaEshBridge(
+        model: String,
+        userConfig: AshexUserConfig,
+        executablePath: String
+    ) -> TUIApp.ProviderStatusSnapshot {
+        do {
+            let inspector = EshOptimizationInspector()
+            let homePath = inspector.resolveHomePath(config: userConfig.optimization.esh)
+            let capabilities = try CLIConfiguration.inspectEshCapabilities(
+                executablePath: executablePath,
+                homePath: homePath
+            )
+            let installedModels = capabilities.installedModels
+            let selectedAvailable = installedModels.contains {
+                $0.id.localizedCaseInsensitiveCompare(model) == .orderedSame ||
+                    $0.displayName.localizedCaseInsensitiveCompare(model) == .orderedSame ||
+                    $0.source.localizedCaseInsensitiveCompare(model) == .orderedSame
+            }
+            let availableModels = installedModels.map { installedModel in
+                "\(installedModel.id) • \(installedModel.backend)"
+            }
+            return .init(
+                headline: selectedAvailable ? "Ollama is routed through esh" : "Ollama uses the esh bridge",
+                details: [
+                    "Using `esh` at \(executablePath).",
+                    "The local Ollama memory guardrail is skipped because model execution is handled by esh.",
+                    installedModels.isEmpty
+                        ? "No installed models were reported by `esh`."
+                        : selectedAvailable
+                            ? "The selected model is \(model)."
+                            : "The current model \(model) was not reported by `esh capabilities`."
+                ],
+                availableModels: availableModels,
+                guardrailAssessment: nil
+            )
+        } catch {
+            return .init(
+                headline: "Ollama is routed through esh",
+                details: [
+                    "Using `esh` at \(executablePath).",
+                    "The local Ollama memory guardrail is skipped because model execution is handled by esh.",
+                    "esh capability inspection failed: \(error.localizedDescription)"
+                ],
                 availableModels: [],
                 guardrailAssessment: nil
             )
@@ -8490,6 +8876,24 @@ private enum AnthropicModelsClient {
         models
             .filter { $0.lowercased().contains("claude") }
             .sorted()
+    }
+}
+
+private enum TUIModelRoutingSummary {
+    static func current(provider: String, model: String, userConfig: AshexUserConfig) -> ModelRoutingConfig {
+        let audio = userConfig.audio.resolvedModel(chatProvider: provider, chatModel: model)
+        return ModelRoutingConfig(
+            fast: .init(provider: provider, model: model),
+            reasoning: .init(provider: provider, model: model),
+            local: .init(provider: "ollama", model: CLIConfiguration.defaultModel(for: "ollama")),
+            vision: .init(provider: provider, model: model),
+            audio: .init(provider: audio.provider, model: audio.model),
+            purposeRoutes: [
+                .skillAmendment: .local,
+                .audioTranscription: .audio,
+                .visionUnderstanding: .vision,
+            ]
+        )
     }
 }
 

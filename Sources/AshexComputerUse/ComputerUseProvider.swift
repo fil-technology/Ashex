@@ -12,6 +12,13 @@ public protocol ComputerUseProvider: Sendable {
     func typeText(_ text: String, windowId: String) async throws
     func pressKey(_ key: String, modifiers: [String], windowId: String) async throws
     func scroll(direction: ScrollDirection, amount: Int, windowId: String) async throws
+    func focusApp(name: String?, windowId: String?) async throws
+    func moveMouse(x: Double, y: Double) async throws
+    func click(x: Double, y: Double, button: ComputerUseMouseButton, clickCount: Int) async throws
+    func drag(fromX: Double, fromY: Double, toX: Double, toY: Double) async throws
+    func openApp(named name: String) async throws
+    func openURL(_ url: String) async throws
+    func wait(seconds: Double) async throws
 }
 
 public extension ComputerUseProvider {
@@ -21,6 +28,34 @@ public extension ComputerUseProvider {
 
     func captureScreenshot(windowId _: String) async throws -> ComputerUseScreenshot {
         try ComputerUseScreenshotCapture.captureMainDisplay()
+    }
+
+    func focusApp(name _: String?, windowId _: String?) async throws {
+        throw AshexError.model("Computer-use backend does not support focusing apps.")
+    }
+
+    func moveMouse(x _: Double, y _: Double) async throws {
+        throw AshexError.model("Computer-use backend does not support pointer movement.")
+    }
+
+    func click(x _: Double, y _: Double, button _: ComputerUseMouseButton, clickCount _: Int) async throws {
+        throw AshexError.model("Computer-use backend does not support coordinate clicks.")
+    }
+
+    func drag(fromX _: Double, fromY _: Double, toX _: Double, toY _: Double) async throws {
+        throw AshexError.model("Computer-use backend does not support dragging.")
+    }
+
+    func openApp(named _: String) async throws {
+        throw AshexError.model("Computer-use backend does not support opening apps.")
+    }
+
+    func openURL(_: String) async throws {
+        throw AshexError.model("Computer-use backend does not support opening URLs.")
+    }
+
+    func wait(seconds: Double) async throws {
+        try await Task.sleep(for: .milliseconds(Int64(max(0, seconds) * 1000)))
     }
 }
 
@@ -113,6 +148,49 @@ public final class ManifestBackedComputerUseProvider: ComputerUseProvider {
             "--direction", direction.rawValue,
             "--amount", String(max(1, amount)),
         ])
+    }
+
+    public func focusApp(name: String?, windowId: String?) async throws {
+        var arguments = ["focus"]
+        if let name, !name.isEmpty {
+            arguments += ["--app", name]
+        }
+        if let windowId, !windowId.isEmpty {
+            arguments += ["--window-id", windowId]
+        }
+        _ = try runBackend(arguments: arguments)
+    }
+
+    public func moveMouse(x: Double, y: Double) async throws {
+        _ = try runBackend(arguments: ["move-mouse", "--x", String(x), "--y", String(y)])
+    }
+
+    public func click(x: Double, y: Double, button: ComputerUseMouseButton, clickCount: Int) async throws {
+        _ = try runBackend(arguments: [
+            "click-at",
+            "--x", String(x),
+            "--y", String(y),
+            "--button", button.rawValue,
+            "--count", String(max(1, clickCount)),
+        ])
+    }
+
+    public func drag(fromX: Double, fromY: Double, toX: Double, toY: Double) async throws {
+        _ = try runBackend(arguments: [
+            "drag",
+            "--from-x", String(fromX),
+            "--from-y", String(fromY),
+            "--to-x", String(toX),
+            "--to-y", String(toY),
+        ])
+    }
+
+    public func openApp(named name: String) async throws {
+        _ = try runBackend(arguments: ["open-app", "--name", name])
+    }
+
+    public func openURL(_ url: String) async throws {
+        _ = try runBackend(arguments: ["open-url", "--url", url])
     }
 
     private func loadManifest() throws -> ComputerUseBackendManifest {

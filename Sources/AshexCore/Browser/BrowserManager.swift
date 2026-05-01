@@ -6,11 +6,14 @@ public enum BrowserContentFormat: String, Sendable {
     case html
 }
 
-public struct BrowserDoctorReport: Sendable, Equatable {
+public struct BrowserDoctorReport: Codable, Sendable, Equatable {
     public var configuredBackend: String
     public var obscuraPath: String?
     public var obscuraAvailable: Bool
     public var obscuraDetail: String
+    public var chromeExecutablePath: String?
+    public var chromeAvailable: Bool
+    public var chromeDetail: String
     public var cdpEndpoint: String
     public var cdpReachable: Bool
     public var cdpDetail: String
@@ -57,6 +60,7 @@ public final class BrowserManager: Sendable {
         let chromeConfig = resolvedConfig(for: .chromeCDP)
         let obscuraStatus = await obscuraBackend.isAvailable(config: obscuraConfig)
         let chromeStatus = await chromeBackend.isAvailable(config: chromeConfig)
+        let chromeEndpointStatus = await chromeBackend.endpointAvailability(config: chromeConfig)
 
         return BrowserDoctorReport(
             configuredBackend: configSection.backend.rawValue,
@@ -67,9 +71,15 @@ public final class BrowserManager: Sendable {
             ),
             obscuraAvailable: obscuraStatus.available,
             obscuraDetail: obscuraStatus.detail,
+            chromeExecutablePath: BrowserExecutableDiscovery.resolveChromeExecutable(
+                configuredPath: chromeConfig.executablePath,
+                environment: chromeConfig.environment
+            ),
+            chromeAvailable: chromeStatus.available,
+            chromeDetail: chromeStatus.detail,
             cdpEndpoint: chromeConfig.cdpEndpoint ?? "http://\(chromeConfig.host):\(chromeConfig.port)",
-            cdpReachable: chromeStatus.available,
-            cdpDetail: chromeStatus.detail,
+            cdpReachable: chromeEndpointStatus.available,
+            cdpDetail: chromeEndpointStatus.detail,
             limitations: [
                 "Obscura support is experimental and may vary by installed version and supported flags.",
                 "Markdown extraction falls back to text-oriented DOM extraction when custom backend methods are unavailable.",

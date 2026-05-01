@@ -8,6 +8,11 @@ private let testShellExecutionPolicy = ShellExecutionPolicy(
     shell: ShellCommandPolicy(config: .default)
 )
 
+@Test func connectorIntentRoutesComputerUseRequestsToAgentMode() {
+    #expect(ConnectorMessageIntentClassifier.classify("Open Chrome and search for SwiftUI animations") == .workspaceTask)
+    #expect(ConnectorMessageIntentClassifier.classify("Move the mouse to 10 20 and click") == .workspaceTask)
+}
+
 private final class RecordingExecutionRuntime: ExecutionRuntime, @unchecked Sendable {
     private(set) var requests: [ShellExecutionRequest] = []
     let result: ShellExecutionResult
@@ -145,6 +150,64 @@ private final class RecordingExecutionRuntime: ExecutionRuntime, @unchecked Send
     #expect(todoSnapshots.first?.map(\.status) == [.pending, .pending, .pending])
     #expect(todoSnapshots.contains { $0.map(\.status) == [.inProgress, .pending, .pending] })
     #expect(todoSnapshots.last?.map(\.status) == [.completed, .completed, .completed])
+}
+
+@Test func runtimeUsesPurposeRoutedAdapterForExplorationSteps() async throws {
+    let fileManager = FileManager.default
+    let root = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let dbURL = root.appendingPathComponent(".ashex/test.sqlite")
+    try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+
+    let primary = PurposeProbeModelAdapter(modelID: "primary")
+    let routed = PurposeProbeModelAdapter(modelID: "tool-calling")
+    let runtime = try AgentRuntime(
+        modelAdapter: primary,
+        toolRegistry: ToolRegistry(tools: [
+            FileSystemTool(workspaceGuard: WorkspaceGuard(rootURL: root)),
+        ]),
+        persistence: SQLitePersistenceStore(databaseURL: dbURL),
+        modelRouter: RuntimeModelRouter(primary: primary, purposeAdapters: [.toolCalling: routed])
+    )
+
+    var finalAnswer = ""
+    for await event in runtime.run(RunRequest(prompt: "what is this project about?")) {
+        if case .finalAnswer(_, _, let text) = event.payload {
+            finalAnswer = text
+        }
+    }
+
+    #expect(finalAnswer == "answer from tool-calling")
+    #expect(await primary.callCount() == 0)
+    #expect(await routed.callCount() == 1)
+}
+
+@Test func runtimeInjectsSelectedSkillRoutesIntoModelContext() async throws {
+    let fileManager = FileManager.default
+    let root = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let dbURL = root.appendingPathComponent(".ashex/test.sqlite")
+    try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+
+    let adapter = ContextRecordingModelAdapter()
+    let runtime = try AgentRuntime(
+        modelAdapter: adapter,
+        toolRegistry: ToolRegistry(tools: [
+            FileSystemTool(workspaceGuard: WorkspaceGuard(rootURL: root)),
+        ]),
+        persistence: SQLitePersistenceStore(databaseURL: dbURL),
+        skillRouting: RuntimeSkillRoutingConfig(skills: [
+            SkillRouteMetadata(
+                name: "swift-testing",
+                description: "Write and run Swift package tests",
+                triggerPhrases: ["swift package"],
+                requiredTools: ["filesystem"]
+            ),
+        ])
+    )
+
+    for await _ in runtime.run(RunRequest(prompt: "what is this swift package?")) {}
+
+    let systemMessages = await adapter.lastMessages().filter { $0.role == .system }.map(\.content)
+    #expect(systemMessages.contains { $0.contains("Runtime skill routing selected") && $0.contains("swift-testing") })
 }
 
 @Test func taskPlannerUsesExplorationFallbackForShortAnalysisPrompts() {
@@ -1583,6 +1646,43 @@ private actor SequencedModelAdapter: ModelAdapter {
             throw AshexError.model("No more actions")
         }
         return actions.removeFirst()
+    }
+}
+
+private actor PurposeProbeModelAdapter: ModelAdapter {
+    let name: String
+    let providerID = "test"
+    let modelID: String
+    private var calls = 0
+
+    init(modelID: String) {
+        self.modelID = modelID
+        self.name = "purpose-probe-\(modelID)"
+    }
+
+    func nextAction(for context: ModelContext) async throws -> ModelAction {
+        calls += 1
+        return .finalAnswer("answer from \(modelID)")
+    }
+
+    func callCount() -> Int {
+        calls
+    }
+}
+
+private actor ContextRecordingModelAdapter: ModelAdapter {
+    let name = "context-recording-test"
+    let providerID = "test"
+    let modelID = "context-recording-test"
+    private var messages: [MessageRecord] = []
+
+    func nextAction(for context: ModelContext) async throws -> ModelAction {
+        messages = context.messages
+        return .finalAnswer("recorded context")
+    }
+
+    func lastMessages() -> [MessageRecord] {
+        messages
     }
 }
 

@@ -9,10 +9,10 @@ enum ComputerUseCLICommand: Equatable {
     static func parse(arguments: [String]) -> ComputerUseCLICommand? {
         for index in commandCandidateIndexes(in: arguments) {
             guard arguments.indices.contains(index + 1) else { continue }
-            if arguments[index] == "computer-use", arguments[index + 1] == "prototype" {
+            if namespaceNames.contains(arguments[index]), arguments[index + 1] == "prototype" {
                 return .prototype(commandExtraArguments(arguments: arguments, commandIndexes: [index, index + 1]))
             }
-            if arguments[index] == "computer-use", arguments[index + 1] == "doctor" {
+            if namespaceNames.contains(arguments[index]), arguments[index + 1] == "doctor" {
                 return .doctor(commandExtraArguments(arguments: arguments, commandIndexes: [index, index + 1]))
             }
         }
@@ -52,6 +52,8 @@ enum ComputerUseCLICommand: Equatable {
         "--model",
         "--approval-mode",
     ]
+
+    private static let namespaceNames: Set<String> = ["computer-use", "computer"]
 }
 
 enum ComputerUseCLI {
@@ -65,8 +67,9 @@ enum ComputerUseCLI {
             let configuration = try CLIConfiguration(arguments: [arguments.first ?? "ashex"] + extraArguments)
             try await runPrototype(workspaceRoot: configuration.workspaceRoot, userConfig: configuration.userConfig)
         case .doctor(let extraArguments):
-            let configuration = try CLIConfiguration(arguments: [arguments.first ?? "ashex"] + extraArguments)
-            try await runDoctor(workspaceRoot: configuration.workspaceRoot, userConfig: configuration.userConfig)
+            let options = try DoctorOptions(executableName: arguments.first ?? "ashex", extraArguments: extraArguments)
+            let configuration = try CLIConfiguration(arguments: options.configurationArguments)
+            try await runDoctor(workspaceRoot: configuration.workspaceRoot, userConfig: configuration.userConfig, json: options.json)
         }
         return true
     }
@@ -88,10 +91,33 @@ enum ComputerUseCLI {
         try await loop.run()
     }
 
-    static func runDoctor(workspaceRoot: URL, userConfig: AshexUserConfig) async throws {
+    static func runDoctor(workspaceRoot: URL, userConfig: AshexUserConfig, json: Bool = false) async throws {
         let manifestURL = resolvedManifestURL(workspaceRoot: workspaceRoot, config: userConfig.computerUse)
         let backend = backendProvider(manifestURL: manifestURL)
         let permissions = ComputerUsePermissionChecker.current(promptForAccessibility: true, promptForScreenRecording: true)
+        let manifestExists = FileManager.default.fileExists(atPath: manifestURL.path)
+        let status = try await backend.provider.backendStatus()
+
+        if json {
+            try CLIJSONOutput.print(ComputerUseDoctorReport(
+                enabled: userConfig.computerUse.enabled,
+                backendManifestPath: manifestURL.path,
+                backendManifestExists: manifestExists,
+                selectedBackend: backend.description,
+                accessibility: permissions.accessibility.rawValue,
+                screenRecording: permissions.screenRecording.rawValue,
+                permissionGuidance: permissions.guidance,
+                backendState: status.state.rawValue,
+                backendDetail: status.detail,
+                aggregateToolRegistered: userConfig.computerUse.enabled,
+                supportedBackends: [
+                    "native macOS Accessibility/CoreGraphics",
+                    "manifest-backed external backend"
+                ]
+            ))
+            return
+        }
+
         print("Computer Use Doctor")
         print("Enabled: \(userConfig.computerUse.enabled)")
         print("Backend manifest: \(manifestURL.path)")
@@ -100,12 +126,12 @@ enum ComputerUseCLI {
         print("Screen Recording: \(permissions.screenRecording.rawValue)")
         print(permissions.guidance)
 
-        if !FileManager.default.fileExists(atPath: manifestURL.path) {
+        if !manifestExists {
             print("Backend manifest: missing; using native macOS fallback")
         }
 
-        let status = try await backend.provider.backendStatus()
         print("Backend: \(status.state.rawValue)\(status.detail.map { " (\($0))" } ?? "")")
+        print("Registered agent tool: \(userConfig.computerUse.enabled ? "computer_use" : "disabled by config")")
     }
 
     static func resolvedManifestURL(workspaceRoot: URL, config: ComputerUseConfig) -> URL {
@@ -138,5 +164,44 @@ enum ComputerUseCLI {
             false,
             "native macOS Accessibility/CoreGraphics"
         )
+    }
+}
+
+private struct ComputerUseDoctorReport: Codable {
+    let enabled: Bool
+    let backendManifestPath: String
+    let backendManifestExists: Bool
+    let selectedBackend: String
+    let accessibility: String
+    let screenRecording: String
+    let permissionGuidance: String
+    let backendState: String
+    let backendDetail: String?
+    let aggregateToolRegistered: Bool
+    let supportedBackends: [String]
+}
+
+private struct DoctorOptions {
+    let json: Bool
+    let configurationArguments: [String]
+
+    init(executableName: String, extraArguments: [String]) throws {
+        var json = false
+        var configurationArguments = [executableName]
+        var iterator = extraArguments.makeIterator()
+        while let argument = iterator.next() {
+            switch argument {
+            case "--json":
+                json = true
+            case "--workspace", "--storage", "--provider", "--model", "--max-iterations", "--approval-mode":
+                guard let value = iterator.next() else { throw AshexError.model("Missing value for \(argument)") }
+                configurationArguments.append(argument)
+                configurationArguments.append(value)
+            default:
+                throw AshexError.model("Unknown computer doctor option '\(argument)'")
+            }
+        }
+        self.json = json
+        self.configurationArguments = configurationArguments
     }
 }

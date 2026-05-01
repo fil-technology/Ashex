@@ -31,3 +31,20 @@ import Testing
 
     #expect(resolved == bin.path)
 }
+
+@Test func browserExecutableDiscoverySearchesAdditionalPaths() {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let bin = root.appendingPathComponent("Google Chrome")
+    try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    try? "#!/bin/sh\nexit 0\n".write(to: bin, atomically: true, encoding: .utf8)
+    try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: bin.path)
+
+    let resolved = BrowserExecutableDiscovery.resolveExecutable(
+        configuredPath: nil,
+        defaultName: "google-chrome",
+        additionalPaths: [bin.path],
+        environment: ["PATH": "/usr/bin:/bin"]
+    )
+
+    #expect(resolved == bin.path)
+}

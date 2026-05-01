@@ -40,5 +40,6 @@ import Testing
     #expect(denied.guidance.contains("Screen Recording"))
     #expect(denied.guidance.contains("System Settings"))
     #expect(denied.guidance.contains("does not let command-line tools grant"))
+    #expect(denied.guidance.contains("Terminal/iTerm/VS Code/Codex"))
     #expect(denied.guidance.contains(ProcessInfo.processInfo.processName))
 }

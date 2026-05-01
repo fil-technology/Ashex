@@ -42,6 +42,10 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
     private let toolRegistry: ToolRegistry
     private let persistence: PersistenceStore
     private let approvalPolicy: any ApprovalPolicy
+    private let modelRouter: RuntimeModelRouter
+    private let skillRouting: RuntimeSkillRoutingConfig?
+    private let subagentWorkspaceManager: SubagentWorkspaceManager?
+    private let subagentWorkspaceMode: SubagentWorkspaceMode
     private let clock: @Sendable () -> Date
     private let toolExecutor: ToolExecutor
     private let workspaceSnapshot: WorkspaceSnapshot?
@@ -54,6 +58,10 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         approvalPolicy: any ApprovalPolicy = TrustedApprovalPolicy(),
         shellExecutionPolicy: ShellExecutionPolicy? = nil,
         workspaceSnapshot: WorkspaceSnapshot? = nil,
+        modelRouter: RuntimeModelRouter? = nil,
+        skillRouting: RuntimeSkillRoutingConfig? = nil,
+        subagentWorkspaceManager: SubagentWorkspaceManager? = nil,
+        subagentWorkspaceMode: SubagentWorkspaceMode = .sharedReadOnly,
         reasoningSummaryDebugEnabled: Bool = false,
         clock: @escaping @Sendable () -> Date = Date.init
     ) throws {
@@ -61,6 +69,10 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         self.toolRegistry = toolRegistry
         self.persistence = persistence
         self.approvalPolicy = approvalPolicy
+        self.modelRouter = modelRouter ?? RuntimeModelRouter(primary: modelAdapter)
+        self.skillRouting = skillRouting
+        self.subagentWorkspaceManager = subagentWorkspaceManager
+        self.subagentWorkspaceMode = subagentWorkspaceMode
         self.workspaceSnapshot = workspaceSnapshot
         self.reasoningSummaryDebugEnabled = reasoningSummaryDebugEnabled
         self.clock = clock
@@ -130,6 +142,25 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
 
             let userMessage = try persistence.appendMessage(threadID: thread.id, runID: run.id, role: .user, content: request.prompt, now: clock())
             try emitter.emit(.messageAppended(runID: run.id, messageID: userMessage.id, role: .user), runID: run.id)
+
+            let routedSkills = selectedSkillRoutes(for: request.prompt)
+            if !routedSkills.isEmpty {
+                let skillMessage = try persistence.appendMessage(
+                    threadID: thread.id,
+                    runID: run.id,
+                    role: .system,
+                    content: Self.skillRoutingContextMessage(for: routedSkills),
+                    now: clock()
+                )
+                try emitter.emit(.messageAppended(runID: run.id, messageID: skillMessage.id, role: .system), runID: run.id)
+                try emitter.emit(
+                    .status(
+                        runID: run.id,
+                        message: "Routed skills: \(routedSkills.map(\.metadata.name).joined(separator: ", "))"
+                    ),
+                    runID: run.id
+                )
+            }
 
             if !request.attachments.isEmpty {
                 let attachmentMessage = try persistence.appendMessage(
@@ -303,8 +334,10 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                 }
 
                 let outcome: StepExecutionOutcome
-                if modelAdapter.providerID != "ollama",
-                   modelAdapter.providerID != "esh",
+                let stepModelPurpose = Self.modelPurpose(for: step.phase, taskKind: taskKind)
+                let stepModelAdapter = modelAdapter(for: stepModelPurpose)
+                if stepModelAdapter.providerID != "ollama",
+                   stepModelAdapter.providerID != "esh",
                    Self.shouldDelegateStep(
                     phase: step.phase,
                     taskKind: taskKind,
@@ -322,6 +355,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                         existingChangedFiles: changedFiles,
                         maxIterations: min(max(request.maxIterations / 2, 2), 4),
                         cancellation: cancellation,
+                        modelPurpose: stepModelPurpose,
                         emitter: emitter
                     )
                 } else {
@@ -342,6 +376,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                             for: stepMessage,
                             availableToolNames: Set(toolRegistry.schema().map(\.name))
                         ),
+                        modelPurpose: stepModelPurpose,
                         emitter: emitter
                     )
                 }
@@ -430,7 +465,8 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
             return TaskPlanner.plan(for: prompt)
         }
 
-        if let planningAdapter = modelAdapter as? any TaskPlanningModelAdapter {
+        let routeAdapter = modelAdapter(for: .planning)
+        if let planningAdapter = routeAdapter as? any TaskPlanningModelAdapter {
             do {
                 if let generatedPlan = try await planningAdapter.taskPlan(for: prompt, taskKind: taskKind) {
                     return generatedPlan
@@ -443,13 +479,31 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         return TaskPlanner.plan(for: prompt)
     }
 
+    private func modelAdapter(for purpose: ModelTaskPurpose) -> any ModelAdapter {
+        modelRouter.adapter(for: purpose)
+    }
+
+    private static func modelPurpose(for phase: PlannedStepPhase, taskKind: TaskKind) -> ModelTaskPurpose {
+        switch phase {
+        case .planning:
+            return .planning
+        case .validation:
+            return .verification
+        case .mutation:
+            return taskKind == .shell ? .toolCalling : .coding
+        case .exploration:
+            return .toolCalling
+        }
+    }
+
     private func executeDirectChatRun(
         thread: ThreadRecord,
         run: RunRecord,
         request: RunRequest,
         emitter: EventEmitter
     ) async throws {
-        guard let adapter = modelAdapter as? any DirectChatModelAdapter else {
+        let routeAdapter = modelAdapter(for: .conversation)
+        guard let adapter = (routeAdapter as? any DirectChatModelAdapter) ?? (modelAdapter as? any DirectChatModelAdapter) else {
             throw AshexError.model("Selected provider does not support direct chat mode")
         }
 
@@ -463,8 +517,8 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                 workspaceSnapshot: nil,
                 workingMemory: nil
             ),
-            provider: modelAdapter.providerID,
-            model: modelAdapter.modelID
+            provider: adapter.providerID,
+            model: adapter.modelID
         )
         try emitter.emit(
             .contextPrepared(
@@ -524,6 +578,36 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         """
     }
 
+    private func selectedSkillRoutes(for prompt: String) -> [SkillRouteScore] {
+        guard let skillRouting else { return [] }
+        return skillRouting.select(
+            task: prompt,
+            availableTools: toolRegistry.schema().map(\.name)
+        )
+    }
+
+    private static func skillRoutingContextMessage(for scores: [SkillRouteScore]) -> String {
+        let lines = scores.map { score in
+            var parts = [
+                "- \(score.metadata.name): \(score.metadata.description)",
+                "score \(String(format: "%.1f", score.score))",
+            ]
+            if !score.metadata.requiredTools.isEmpty {
+                parts.append("tools \(score.metadata.requiredTools.joined(separator: ", "))")
+            }
+            if !score.reasons.isEmpty {
+                parts.append("reasons \(score.reasons.joined(separator: ", "))")
+            }
+            return parts.joined(separator: " | ")
+        }
+        return """
+        Runtime skill routing selected these portable skills as relevant context for the task.
+        Follow their procedures when they fit the task, but preserve the user's latest request and normal safety rules.
+
+        \(lines.joined(separator: "\n"))
+        """
+    }
+
     private static func shouldDelegateStep(
         phase: PlannedStepPhase,
         taskKind: TaskKind,
@@ -552,6 +636,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         existingChangedFiles: [ChangedArtifact],
         maxIterations: Int,
         cancellation: CancellationToken,
+        modelPurpose: ModelTaskPurpose,
         emitter: EventEmitter
     ) async throws -> StepExecutionOutcome {
         let parallelItems = DelegationStrategy.parallelWorkItems(
@@ -575,6 +660,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                 workItems: parallelItems,
                 maxIterations: maxIterations,
                 cancellation: cancellation,
+                modelPurpose: modelPurpose,
                 emitter: emitter
             )
         }
@@ -599,6 +685,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
             existingChangedFiles: existingChangedFiles,
             maxIterations: maxIterations,
             cancellation: cancellation,
+            modelPurpose: modelPurpose,
             emitter: emitter
         )
         let handoff = DelegationStrategy.parseHandoff(outcome.summary)
@@ -650,6 +737,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         workItems: [DelegatedWorkItem],
         maxIterations: Int,
         cancellation: CancellationToken,
+        modelPurpose: ModelTaskPurpose,
         emitter: EventEmitter
     ) async throws -> StepExecutionOutcome {
         try emitter.emit(.status(runID: run.id, message: "Launching \(workItems.count) bounded read-only subagents for \(stepPhase.rawValue)."), runID: run.id)
@@ -679,6 +767,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                         maxIterations: max(2, min(maxIterations, 3)),
                         cancellation: cancellation,
                         allowedToolNames: item.allowedToolNames,
+                        modelPurpose: modelPurpose,
                         emitter: emitter
                     )
                     return FinishedDelegatedWork(
@@ -774,6 +863,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         cancellation: CancellationToken,
         executionControl: ExecutionControl?,
         allowedToolNames: Set<String>?,
+        modelPurpose: ModelTaskPurpose,
         emitter: EventEmitter
     ) async throws -> StepExecutionOutcome {
         var repeatedToolCallSignature: String?
@@ -786,6 +876,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         var workflowState = StepWorkflowState(targetArtifacts: explorationPlan.targetPaths)
         var changedFiles: [ChangedArtifact] = existingChangedFiles
         let filteredTools = toolRegistry.schema().filter { allowedToolNames?.contains($0.name) ?? true }
+        let stepModelAdapter = modelAdapter(for: modelPurpose)
         if let prefetchURL = Self.liveWebsiteLookupURL(for: stepPrompt),
            filteredTools.contains(where: { $0.name == "browser_fetch" }) {
             try emitter.emit(.status(runID: run.id, message: "Grounding the website lookup with the browser backend before summarizing."), runID: run.id)
@@ -850,8 +941,8 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                     workspaceSnapshot: workspaceSnapshotRecord,
                     workingMemory: workingMemoryRecord
                 ),
-                provider: modelAdapter.providerID,
-                model: modelAdapter.modelID
+                provider: stepModelAdapter.providerID,
+                model: stepModelAdapter.modelID
             )
             try emitter.emit(
                 .contextPrepared(
@@ -893,7 +984,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                     )
                 }
             }
-            let action = try await modelAdapter.nextAction(for: .init(
+            let action = try await stepModelAdapter.nextAction(for: .init(
                 thread: thread,
                 run: refreshedRun,
                 messages: messages,
@@ -1158,8 +1249,14 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         maxIterations: Int,
         cancellation: CancellationToken,
         allowedToolNames: Set<String>? = nil,
+        modelPurpose: ModelTaskPurpose,
         emitter: EventEmitter
     ) async throws -> StepExecutionOutcome {
+        let workspaceLease = try subagentWorkspaceManager?.createLease(
+            runID: run.id,
+            title: stepTitle,
+            mode: subagentWorkspaceMode
+        )
         var localMessages: [MessageRecord] = [
             MessageRecord(
                 id: UUID(),
@@ -1172,6 +1269,8 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
 
                 Delegation role: \(delegationBrief.role)
                 Goal: \(delegationBrief.goal)
+                Workspace mode: \(workspaceLease?.mode.rawValue ?? "shared_runtime")
+                Workspace path: \(workspaceLease?.workspacePath ?? "shared runtime workspace")
                 Deliverables:
                 \(delegationBrief.deliverables.map { "- \($0)" }.joined(separator: "\n"))
 
@@ -1192,6 +1291,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         var automaticValidationAttempted = false
         var workflowState = StepWorkflowState(targetArtifacts: explorationPlan.targetPaths)
         var changedFiles: [ChangedArtifact] = existingChangedFiles
+        let subagentModelAdapter = modelAdapter(for: modelPurpose)
 
         for iteration in 0..<maxIterations {
             try await cancellation.checkCancellation()
@@ -1209,8 +1309,8 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                     workspaceSnapshot: workspaceSnapshotRecord,
                     workingMemory: workingMemoryRecord
                 ),
-                provider: modelAdapter.providerID,
-                model: modelAdapter.modelID
+                provider: subagentModelAdapter.providerID,
+                model: subagentModelAdapter.modelID
             )
             try emitter.emit(
                 .contextPrepared(
@@ -1224,7 +1324,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                 runID: run.id
             )
 
-            let action = try await modelAdapter.nextAction(for: .init(
+            let action = try await subagentModelAdapter.nextAction(for: .init(
                 thread: thread,
                 run: refreshedRun,
                 messages: localMessages,
