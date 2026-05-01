@@ -455,6 +455,8 @@ Exit criteria:
 
 The Graphify prompt adds a new knowledge-layer track. ASHEX should treat Graphify as a first-pass project understanding subsystem while preserving exact file inspection, terminal execution, and validation as the source of truth for edits.
 
+Implementation status on 2026-05-01: Phases 0-5 are implemented for the safe subprocess-wrapper path. Known upstream limitation remains: initial full graph generation is still the official `/graphify <path>` assistant workflow, while ASHEX wraps installed CLI status/query/path/explain/report/update/cluster/clean behavior and injects bounded graph context into planning prompts.
+
 ### Graphify Phase 0: Research And Integration Plan
 
 Goal: document Graphify accurately before implementing wrappers.

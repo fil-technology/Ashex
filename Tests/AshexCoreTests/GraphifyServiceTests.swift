@@ -190,6 +190,10 @@ import Testing
         taskKind: .refactor
     ))
     #expect(GraphifyPlanningPolicy.shouldUseGraphContext(
+        prompt: "Fix this build failure across runtime and tool modules",
+        taskKind: .bugFix
+    ))
+    #expect(GraphifyPlanningPolicy.shouldUseGraphContext(
         prompt: "Update README.md title",
         taskKind: .docs
     ) == false)
@@ -224,6 +228,87 @@ import Testing
     #expect(block.contains("<project_graph_context>"))
     #expect(block.contains("Runtime connects to tool execution."))
     #expect(block.contains("/tmp/project/Sources/AshexCore/AgentRuntime.swift"))
+}
+
+@Test func knowledgeGraphProviderUsesQueryForArchitectureFlow() async throws {
+    let root = try temporaryDirectory()
+    let output = root.appendingPathComponent("graphify-out", isDirectory: true)
+    try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+    try "{}".write(to: output.appendingPathComponent("graph.json"), atomically: true, encoding: .utf8)
+
+    let executable = root.appendingPathComponent("graphify")
+    let prompt = "How does architecture flow from runtime to tool execution?"
+    let runner = MockGraphifyRunner(result: .init(
+        stdout: "Runtime connects through Sources/AshexCore/AgentRuntime.swift and Sources/AshexCore/ToolExecutor.swift",
+        stderr: "",
+        exitCode: 0
+    ))
+    let provider = KnowledgeGraphProvider(service: GraphifyService(projectRoot: root, runner: runner, executableURL: executable))
+
+    let context = await provider.context(for: prompt, taskKind: .analysis)
+
+    #expect(context?.confidence == 0.8)
+    #expect(context?.querySummary?.contains("Runtime connects") == true)
+    #expect(context?.relatedFiles.map(\.lastPathComponent) == ["AgentRuntime.swift", "ToolExecutor.swift"])
+    #expect(await runner.calls == [
+        .init(executablePath: executable.path, arguments: [
+            "query",
+            prompt,
+            "--budget",
+            "1200",
+            "--graph",
+            output.appendingPathComponent("graph.json").path,
+        ], workingDirectory: root.path)
+    ])
+}
+
+@Test func knowledgeGraphProviderUsesQueryForRefactorFlow() async throws {
+    let root = try temporaryDirectory()
+    let output = root.appendingPathComponent("graphify-out", isDirectory: true)
+    try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+    try "{}".write(to: output.appendingPathComponent("graph.json"), atomically: true, encoding: .utf8)
+
+    let executable = root.appendingPathComponent("graphify")
+    let runner = MockGraphifyRunner(result: .init(
+        stdout: "Refactor touches Sources/AshexCore/Prompting.swift and Sources/AshexCore/GraphifyService.swift",
+        stderr: "",
+        exitCode: 0
+    ))
+    let provider = KnowledgeGraphProvider(service: GraphifyService(projectRoot: root, runner: runner, executableURL: executable))
+
+    let context = await provider.context(
+        for: "Refactor planner graph context to stay bounded before file inspection",
+        taskKind: .refactor
+    )
+
+    #expect(context?.confidence == 0.8)
+    #expect(context?.relatedFiles.map(\.lastPathComponent) == ["Prompting.swift", "GraphifyService.swift"])
+}
+
+@Test func knowledgeGraphProviderFallsBackToReportForBuildFailureFlow() async throws {
+    let root = try temporaryDirectory()
+    let output = root.appendingPathComponent("graphify-out", isDirectory: true)
+    try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+    try "{}".write(to: output.appendingPathComponent("graph.json"), atomically: true, encoding: .utf8)
+    try """
+    Build failure orientation:
+    Sources/AshexCore/ModelAdapter.swift owns native tool schema descriptions.
+    Sources/AshexCore/Prompting.swift renders tool safety hints.
+    """.write(to: output.appendingPathComponent("GRAPH_REPORT.md"), atomically: true, encoding: .utf8)
+
+    let executable = root.appendingPathComponent("graphify")
+    let runner = MockGraphifyRunner(result: .init(stdout: "", stderr: "query failed", exitCode: 2))
+    let provider = KnowledgeGraphProvider(service: GraphifyService(projectRoot: root, runner: runner, executableURL: executable))
+
+    let context = await provider.context(
+        for: "Fix this build failure across runtime and model tool schema modules",
+        taskKind: .bugFix
+    )
+
+    #expect(context?.confidence == 0.5)
+    #expect(context?.querySummary?.contains("Build failure orientation") == true)
+    #expect(context?.relatedFiles.map(\.lastPathComponent) == ["ModelAdapter.swift", "Prompting.swift"])
+    #expect(await runner.calls.count == 1)
 }
 
 private struct GraphifyRunnerCall: Equatable {

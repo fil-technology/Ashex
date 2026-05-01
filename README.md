@@ -87,6 +87,13 @@ ashex browser fetch https://example.com --markdown
 ashex browser screenshot https://example.com --output example.png
 ```
 
+Graphify project-graph orientation is available when a project has a `graphify-out/graph.json`:
+
+```bash
+ashex graphify status --workspace /path/to/repo
+ashex graphify query "How does runtime tool execution work?" --workspace /path/to/repo
+```
+
 Useful options:
 
 - `onboard`: open the setup wizard even if saved settings already exist
@@ -124,6 +131,7 @@ For CLI examples, environment variables, local Ollama/DFlash setup, and provider
 - [Provider guide](docs/usage/providers.md)
 - [Daemon and Telegram guide](docs/usage/daemon-telegram.md)
 - [Configuration and safety guide](docs/usage/configuration.md)
+- [Graphify knowledge layer](docs/usage/graphify.md)
 - [Browser backends guide](docs/browser-backends.md)
 - [Runtime and tools guide](docs/architecture/runtime-and-tools.md)
 - [Release maintenance guide](docs/release/maintenance.md)

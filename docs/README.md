@@ -9,6 +9,7 @@ For installation and first use, start with the root [README](../README.md).
 - [Provider guide](usage/providers.md): OpenAI, Anthropic, Ollama, DFlash, environment variables, and secret storage.
 - [Daemon and Telegram guide](usage/daemon-telegram.md): background daemon, Telegram setup, cron jobs, execution modes, and access control.
 - [Configuration and safety guide](usage/configuration.md): CLI options, sandbox policy, guarded mode, config files, and TUI controls.
+- [Graphify knowledge layer](usage/graphify.md): Graphify commands, graph state, planner behavior, and upstream limitations.
 
 ## Architecture
 
@@ -36,6 +37,7 @@ For installation and first use, start with the root [README](../README.md).
 - [Ash optimization adoption plan](adoption/ash-optimization-adoption-plan.md): Ash optimization adoption seam.
 - [Ash to Ashex adoption plan](adoption/ash-to-ashex-adoption-plan.md): broader Ash-to-Ashex transfer plan.
 - [oMLX evaluation](research/omlx-evaluation.md): oMLX evaluation notes.
+- [Graphify research notes](GRAPHIFY_RESEARCH.md): official Graphify behavior, output files, command mapping, and integration risks.
 
 ## Codex Entry Point
 

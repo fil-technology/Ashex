@@ -275,7 +275,8 @@ public enum GraphifyPlanningPolicy {
             "architecture", "dependency", "dependencies", "module", "modules",
             "how does", "how do", "where is", "where are", "implemented",
             "project structure", "codebase", "repo", "repository", "relationship",
-            "relationships", "flow", "large refactor", "onboard", "understand"
+            "relationships", "flow", "large refactor", "onboard", "understand",
+            "build failure", "compile failure", "test failure"
         ]
         if graphMarkers.contains(where: lowered.contains) {
             return true

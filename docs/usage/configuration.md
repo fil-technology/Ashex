@@ -97,6 +97,10 @@ Shell policy config in `ashex.config.json`:
 - `rules`: explicit per-prefix actions with `allow`, `prompt`, or `deny`.
 - `requireApprovalForUnknownCommands`: when enabled, commands outside configured allow rules or built-in recognized safe rules require approval in guarded mode.
 
+In addition to configured rules, Ashex classifies shell commands for safety. Destructive or privilege-elevated commands and credential-sensitive commands require explicit approval unless a stricter deny rule blocks them first. Build and test commands are treated as mutating for read-only sandbox purposes because they commonly write build artifacts.
+
+Tool schemas also expose side-effect labels: `readOnly`, `localWrite`, `network`, `shellCommand`, `destructive`, and `credentialSensitive`. These labels are used as model-routing hints and are visible in prompt/tool metadata.
+
 ## Guarded Mode
 
 ```bash
