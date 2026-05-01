@@ -19,6 +19,12 @@ import Testing
     #expect(ToolsCLI.helpText.contains("ashex tools doctor"))
 }
 
+@Test func graphifyCLIHelpMentionsStatusAndQuery() {
+    #expect(GraphifyCLI.helpText.contains("ashex graphify status"))
+    #expect(GraphifyCLI.helpText.contains("ashex graphify query"))
+    #expect(AshexCLI.helpText.contains("ashex graphify"))
+}
+
 @Test func subagentsCLIHelpMentionsListAndDoctor() {
     #expect(SubagentsCLI.helpText.contains("ashex subagents list"))
     #expect(SubagentsCLI.helpText.contains("ashex subagents doctor"))

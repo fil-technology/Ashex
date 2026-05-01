@@ -34,6 +34,9 @@ struct AshexCLI {
             if try await BrowserCLI.handle(arguments: CommandLine.arguments) {
                 return
             }
+            if try await GraphifyCLI.handle(arguments: CommandLine.arguments) {
+                return
+            }
             if try await ToolsCLI.handle(arguments: CommandLine.arguments) {
                 return
             }
@@ -233,6 +236,7 @@ struct AshexCLI {
       ashex audio models [options]
       ashex benchmark <list|run|compare> [options]
       ashex browser <doctor|backends|fetch|eval|screenshot|serve|benchmark|test-local> [options]
+      ashex graphify <status|query|path|explain|report> [options]
       ashex tools <list|doctor> [options]
       ashex computer <doctor> [options]
       ashex computer-use <doctor|prototype> [options]

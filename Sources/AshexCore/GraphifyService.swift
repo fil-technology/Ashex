@@ -1,0 +1,443 @@
+import Foundation
+
+public struct ProjectGraphContext: Codable, Sendable, Equatable {
+    public let projectRoot: URL
+    public let graphExists: Bool
+    public let lastBuiltAt: Date?
+    public let reportPath: URL?
+    public let querySummary: String?
+    public let relatedFiles: [URL]
+    public let confidence: Double?
+
+    public init(
+        projectRoot: URL,
+        graphExists: Bool,
+        lastBuiltAt: Date?,
+        reportPath: URL?,
+        querySummary: String? = nil,
+        relatedFiles: [URL] = [],
+        confidence: Double? = nil
+    ) {
+        self.projectRoot = projectRoot
+        self.graphExists = graphExists
+        self.lastBuiltAt = lastBuiltAt
+        self.reportPath = reportPath
+        self.querySummary = querySummary
+        self.relatedFiles = relatedFiles
+        self.confidence = confidence
+    }
+}
+
+public struct GraphifyStateMetadata: Codable, Sendable, Equatable {
+    public let projectRoot: String
+    public let lastBuildAt: Date?
+    public let graphifyVersion: String?
+    public let graphPath: String?
+    public let reportPath: String?
+    public let sourceHash: String?
+    public let status: String
+
+    public init(
+        projectRoot: String,
+        lastBuildAt: Date?,
+        graphifyVersion: String?,
+        graphPath: String?,
+        reportPath: String?,
+        sourceHash: String?,
+        status: String
+    ) {
+        self.projectRoot = projectRoot
+        self.lastBuildAt = lastBuildAt
+        self.graphifyVersion = graphifyVersion
+        self.graphPath = graphPath
+        self.reportPath = reportPath
+        self.sourceHash = sourceHash
+        self.status = status
+    }
+}
+
+public struct GraphifyStatus: Codable, Sendable, Equatable {
+    public let installed: Bool
+    public let executablePath: String?
+    public let version: String?
+    public let projectRoot: String
+    public let graphExists: Bool
+    public let graphPath: String
+    public let reportExists: Bool
+    public let reportPath: String
+    public let statePath: String
+    public let lastBuiltAt: Date?
+    public let stateStatus: String?
+    public let recommendedNextAction: String
+
+    public init(
+        installed: Bool,
+        executablePath: String?,
+        version: String?,
+        projectRoot: String,
+        graphExists: Bool,
+        graphPath: String,
+        reportExists: Bool,
+        reportPath: String,
+        statePath: String,
+        lastBuiltAt: Date?,
+        stateStatus: String?,
+        recommendedNextAction: String
+    ) {
+        self.installed = installed
+        self.executablePath = executablePath
+        self.version = version
+        self.projectRoot = projectRoot
+        self.graphExists = graphExists
+        self.graphPath = graphPath
+        self.reportExists = reportExists
+        self.reportPath = reportPath
+        self.statePath = statePath
+        self.lastBuiltAt = lastBuiltAt
+        self.stateStatus = stateStatus
+        self.recommendedNextAction = recommendedNextAction
+    }
+}
+
+public struct GraphifyCommandResult: Sendable, Equatable {
+    public let stdout: String
+    public let stderr: String
+    public let exitCode: Int32
+
+    public init(stdout: String, stderr: String, exitCode: Int32) {
+        self.stdout = stdout
+        self.stderr = stderr
+        self.exitCode = exitCode
+    }
+
+    public var success: Bool {
+        exitCode == 0
+    }
+}
+
+public struct GraphifyQueryResult: Codable, Sendable, Equatable {
+    public let operation: String
+    public let graphPath: String
+    public let stdout: String
+    public let stderr: String
+    public let exitCode: Int32
+    public let summary: String
+
+    public init(operation: String, graphPath: String, stdout: String, stderr: String, exitCode: Int32, summary: String) {
+        self.operation = operation
+        self.graphPath = graphPath
+        self.stdout = stdout
+        self.stderr = stderr
+        self.exitCode = exitCode
+        self.summary = summary
+    }
+}
+
+public struct GraphifyReport: Codable, Sendable, Equatable {
+    public let path: String
+    public let exists: Bool
+    public let content: String?
+    public let truncated: Bool
+
+    public init(path: String, exists: Bool, content: String?, truncated: Bool) {
+        self.path = path
+        self.exists = exists
+        self.content = content
+        self.truncated = truncated
+    }
+}
+
+public protocol GraphifyCommandRunning: Sendable {
+    func runGraphify(
+        executableURL: URL,
+        arguments: [String],
+        workingDirectory: URL,
+        timeout: TimeInterval
+    ) async throws -> GraphifyCommandResult
+}
+
+public struct GraphifyProcessCommandRunner: GraphifyCommandRunning {
+    public init() {}
+
+    public func runGraphify(
+        executableURL: URL,
+        arguments: [String],
+        workingDirectory: URL,
+        timeout: TimeInterval
+    ) async throws -> GraphifyCommandResult {
+        let process = Process()
+        process.executableURL = executableURL
+        process.arguments = arguments
+        process.currentDirectoryURL = workingDirectory
+
+        let stdout = Pipe()
+        let stderr = Pipe()
+        process.standardOutput = stdout
+        process.standardError = stderr
+
+        try process.run()
+        let timeoutTask = Task {
+            try await Task.sleep(for: .seconds(timeout))
+            if process.isRunning {
+                process.terminate()
+            }
+        }
+        process.waitUntilExit()
+        timeoutTask.cancel()
+
+        return GraphifyCommandResult(
+            stdout: String(decoding: stdout.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self),
+            stderr: String(decoding: stderr.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self),
+            exitCode: process.terminationStatus
+        )
+    }
+}
+
+public enum GraphifyCommandBuilder {
+    public static func queryArguments(question: String, useDFS: Bool, budget: Int?, graphPath: URL) -> [String] {
+        var arguments = ["query", question]
+        if useDFS {
+            arguments.append("--dfs")
+        }
+        if let budget {
+            arguments += ["--budget", String(budget)]
+        }
+        arguments += ["--graph", graphPath.path]
+        return arguments
+    }
+
+    public static func pathArguments(source: String, target: String, graphPath: URL) -> [String] {
+        ["path", source, target, "--graph", graphPath.path]
+    }
+
+    public static func explainArguments(node: String, graphPath: URL) -> [String] {
+        ["explain", node, "--graph", graphPath.path]
+    }
+}
+
+public struct GraphifyService {
+    public let projectRoot: URL
+    public let runner: any GraphifyCommandRunning
+    public let executableURL: URL?
+
+    private let fileManager: FileManager
+    private let environment: [String: String]
+
+    public init(
+        projectRoot: URL,
+        runner: any GraphifyCommandRunning = GraphifyProcessCommandRunner(),
+        executableURL: URL? = nil,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        fileManager: FileManager = .default
+    ) {
+        self.projectRoot = projectRoot.standardizedFileURL
+        self.runner = runner
+        self.executableURL = executableURL
+        self.environment = environment
+        self.fileManager = fileManager
+    }
+
+    public var graphOutputDirectory: URL {
+        projectRoot.appendingPathComponent("graphify-out", isDirectory: true)
+    }
+
+    public var graphPath: URL {
+        graphOutputDirectory.appendingPathComponent("graph.json")
+    }
+
+    public var reportPath: URL {
+        graphOutputDirectory.appendingPathComponent("GRAPH_REPORT.md")
+    }
+
+    public var statePath: URL {
+        projectRoot
+            .appendingPathComponent(".ashex", isDirectory: true)
+            .appendingPathComponent("graphify", isDirectory: true)
+            .appendingPathComponent("state.json")
+    }
+
+    public func status() async -> GraphifyStatus {
+        let executable = executableURL ?? locateExecutable()
+        let installed = executable != nil
+        let version = installed ? await graphifyVersion(executableURL: executable!) : nil
+        let metadata = readStateMetadata()
+        let graphExists = fileManager.fileExists(atPath: graphPath.path)
+        let reportExists = fileManager.fileExists(atPath: reportPath.path)
+        let lastBuiltAt = metadata?.lastBuildAt ?? modificationDate(for: graphPath)
+
+        return GraphifyStatus(
+            installed: installed,
+            executablePath: executable?.path,
+            version: version,
+            projectRoot: projectRoot.path,
+            graphExists: graphExists,
+            graphPath: graphPath.path,
+            reportExists: reportExists,
+            reportPath: reportPath.path,
+            statePath: statePath.path,
+            lastBuiltAt: lastBuiltAt,
+            stateStatus: metadata?.status,
+            recommendedNextAction: recommendedNextAction(installed: installed, graphExists: graphExists, reportExists: reportExists)
+        )
+    }
+
+    public func projectGraphContext() -> ProjectGraphContext {
+        let graphExists = fileManager.fileExists(atPath: graphPath.path)
+        return ProjectGraphContext(
+            projectRoot: projectRoot,
+            graphExists: graphExists,
+            lastBuiltAt: readStateMetadata()?.lastBuildAt ?? modificationDate(for: graphPath),
+            reportPath: fileManager.fileExists(atPath: reportPath.path) ? reportPath : nil
+        )
+    }
+
+    public func query(question: String, useDFS: Bool = false, budget: Int? = nil, graphPath overrideGraphPath: URL? = nil) async throws -> GraphifyQueryResult {
+        let graphPath = overrideGraphPath ?? self.graphPath
+        return try await runGraphifyCommand(
+            operation: "query",
+            arguments: GraphifyCommandBuilder.queryArguments(question: question, useDFS: useDFS, budget: budget, graphPath: graphPath),
+            graphPath: graphPath
+        )
+    }
+
+    public func path(source: String, target: String, graphPath overrideGraphPath: URL? = nil) async throws -> GraphifyQueryResult {
+        let graphPath = overrideGraphPath ?? self.graphPath
+        return try await runGraphifyCommand(
+            operation: "path",
+            arguments: GraphifyCommandBuilder.pathArguments(source: source, target: target, graphPath: graphPath),
+            graphPath: graphPath
+        )
+    }
+
+    public func explain(node: String, graphPath overrideGraphPath: URL? = nil) async throws -> GraphifyQueryResult {
+        let graphPath = overrideGraphPath ?? self.graphPath
+        return try await runGraphifyCommand(
+            operation: "explain",
+            arguments: GraphifyCommandBuilder.explainArguments(node: node, graphPath: graphPath),
+            graphPath: graphPath
+        )
+    }
+
+    public func report(maxCharacters: Int? = nil) throws -> GraphifyReport {
+        guard fileManager.fileExists(atPath: reportPath.path) else {
+            return GraphifyReport(path: reportPath.path, exists: false, content: nil, truncated: false)
+        }
+        let content = try String(contentsOf: reportPath, encoding: .utf8)
+        if let maxCharacters, content.count > maxCharacters {
+            let index = content.index(content.startIndex, offsetBy: maxCharacters)
+            return GraphifyReport(path: reportPath.path, exists: true, content: String(content[..<index]), truncated: true)
+        }
+        return GraphifyReport(path: reportPath.path, exists: true, content: content, truncated: false)
+    }
+
+    public func readStateMetadata() -> GraphifyStateMetadata? {
+        guard fileManager.fileExists(atPath: statePath.path),
+              let data = try? Data(contentsOf: statePath) else {
+            return nil
+        }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try? decoder.decode(GraphifyStateMetadata.self, from: data)
+    }
+
+    public func writeStateMetadata(_ metadata: GraphifyStateMetadata) throws {
+        try fileManager.createDirectory(at: statePath.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(metadata).write(to: statePath, options: .atomic)
+    }
+
+    private func runGraphifyCommand(operation: String, arguments: [String], graphPath: URL) async throws -> GraphifyQueryResult {
+        guard fileManager.fileExists(atPath: graphPath.path) else {
+            throw AshexError.model("No Graphify graph found at \(graphPath.path). Build it with the official `/graphify <path>` workflow first.")
+        }
+        guard let executable = executableURL ?? locateExecutable() else {
+            throw AshexError.model("Graphify is not installed. Install it from https://github.com/safishamsi/graphify, then rerun this command.")
+        }
+
+        let result = try await runner.runGraphify(
+            executableURL: executable,
+            arguments: arguments,
+            workingDirectory: projectRoot,
+            timeout: 60
+        )
+        guard result.success else {
+            let detail = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+                : result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            throw AshexError.shell("Graphify \(operation) failed with exit code \(result.exitCode)\(detail.isEmpty ? "" : "\n\(detail)")")
+        }
+        return GraphifyQueryResult(
+            operation: operation,
+            graphPath: graphPath.path,
+            stdout: result.stdout,
+            stderr: result.stderr,
+            exitCode: result.exitCode,
+            summary: Self.summary(from: result.stdout)
+        )
+    }
+
+    private func locateExecutable() -> URL? {
+        if let explicit = environment["ASHEX_GRAPHIFY_PATH"], !explicit.isEmpty {
+            let url = URL(fileURLWithPath: explicit)
+            if isExecutableFile(url) {
+                return url
+            }
+        }
+
+        for directory in (environment["PATH"] ?? "").split(separator: ":") {
+            let candidate = URL(fileURLWithPath: String(directory)).appendingPathComponent("graphify")
+            if isExecutableFile(candidate) {
+                return candidate
+            }
+        }
+        return nil
+    }
+
+    private func isExecutableFile(_ url: URL) -> Bool {
+        fileManager.isExecutableFile(atPath: url.path)
+    }
+
+    private func graphifyVersion(executableURL: URL) async -> String? {
+        guard let result = try? await runner.runGraphify(
+            executableURL: executableURL,
+            arguments: ["--version"],
+            workingDirectory: projectRoot,
+            timeout: 5
+        ), result.success else {
+            return nil
+        }
+        let text = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? nil : text
+    }
+
+    private func modificationDate(for url: URL) -> Date? {
+        guard let attributes = try? fileManager.attributesOfItem(atPath: url.path) else {
+            return nil
+        }
+        return attributes[.modificationDate] as? Date
+    }
+
+    private func recommendedNextAction(installed: Bool, graphExists: Bool, reportExists: Bool) -> String {
+        if !installed {
+            return "Install Graphify from https://github.com/safishamsi/graphify (Python package `graphifyy`), then run `ashex graphify status`."
+        }
+        if !graphExists {
+            return "Build the initial graph with the official `/graphify <path>` assistant workflow, then run `ashex graphify query \"...\"`."
+        }
+        if !reportExists {
+            return "Graph JSON exists. Regenerate the report with the official `/graphify <path> --cluster-only` flow if needed."
+        }
+        return "Graph is ready. Use `ashex graphify query \"...\"` for architecture/context questions."
+    }
+
+    public static func summary(from output: String, maxCharacters: Int = 1200) -> String {
+        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count > maxCharacters else {
+            return trimmed
+        }
+        let index = trimmed.index(trimmed.startIndex, offsetBy: maxCharacters)
+        return String(trimmed[..<index]) + "\n[truncated]"
+    }
+}
