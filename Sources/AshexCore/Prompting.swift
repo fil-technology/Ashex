@@ -367,8 +367,10 @@ public enum PromptBuilder {
             let role = message.role.rawValue.uppercased()
             return "[\(role)]\n\(message.content)"
         }.joined(separator: "\n\n")
+        let latestUserPrompt = prepared.retainedMessages.last(where: { $0.role == .user })?.content ?? ""
         let workspaceSnapshotBlock = renderWorkspaceSnapshot(prepared.base.workspaceSnapshot)
         let workingMemoryBlock = renderWorkingMemory(prepared.base.workingMemory)
+        let projectGraphBlock = renderProjectGraphContext(prepared.base.projectGraphContext, question: latestUserPrompt)
 
         let usesNativeToolCalling = provider == "ollama-native-tools"
         let actionFormatRules = usesNativeToolCalling
@@ -399,6 +401,8 @@ public enum PromptBuilder {
             - When the user asks what a website, domain, or URL is, or asks you to inspect live web content, prefer `browser_fetch`, `browser_extract`, `browser_eval`, or `browser_screenshot` before filesystem tools.
             - For website or domain questions, do not infer answers from the local repository unless the user explicitly asked about workspace references to that site.
             - When the user asks about a GitHub or other remote repository URL, prefer `github_repo` for read-only inspection before using local workspace tools.
+            - When project graph context is present, use it as first-pass orientation for architecture, dependency, module, onboarding, and large-refactor questions before targeted file inspection.
+            - Do not treat graph context as ground truth for edits; inspect exact files and validate with tools before changing or concluding.
             - For coding or editing requests, prefer this workflow: explore relevant files first, plan briefly, then mutate, then validate, then summarize.
             - During exploration, bias toward `find_files`, `search_text`, `list_directory`, `file_info`, `read_text_file`, and read-only git inspection before changing anything.
             - During validation, prefer checking changed files, `git diff`, focused reads, and relevant test/build commands before concluding.
@@ -450,6 +454,9 @@ public enum PromptBuilder {
             body: """
             Available tools:
             \(toolBlock)
+
+            Project graph context:
+            \(projectGraphBlock)
 
             Workspace snapshot:
             \(workspaceSnapshotBlock)
@@ -522,6 +529,13 @@ public enum PromptBuilder {
             lines.append("Git status summary: \(compactStatus)")
         }
         return lines.joined(separator: "\n")
+    }
+
+    private static func renderProjectGraphContext(_ context: ProjectGraphContext?, question: String) -> String {
+        guard let context else {
+            return "No Graphify project graph context is available for this turn."
+        }
+        return KnowledgeGraphProvider.renderContextBlock(context, question: question)
     }
 
     private static func renderWorkingMemory(_ memory: WorkingMemoryRecord?) -> String {

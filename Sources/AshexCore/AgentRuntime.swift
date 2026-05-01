@@ -919,6 +919,15 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                 }
             }
         }
+        let graphWorkspaceSnapshot = try? persistence.fetchWorkspaceSnapshot(runID: run.id)
+        let projectGraphContext = await makeProjectGraphContext(
+            prompt: stepPrompt,
+            taskKind: taskKind,
+            workspaceSnapshot: graphWorkspaceSnapshot
+        )
+        if projectGraphContext?.querySummary?.isEmpty == false {
+            try emitter.emit(.status(runID: run.id, message: "Using Graphify project graph context for first-pass orientation."), runID: run.id)
+        }
 
         for iteration in 0..<maxIterations {
             try await cancellation.checkCancellation()
@@ -939,7 +948,8 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                     messages: messages,
                     availableTools: filteredTools,
                     workspaceSnapshot: workspaceSnapshotRecord,
-                    workingMemory: workingMemoryRecord
+                    workingMemory: workingMemoryRecord,
+                    projectGraphContext: projectGraphContext
                 ),
                 provider: stepModelAdapter.providerID,
                 model: stepModelAdapter.modelID
@@ -990,7 +1000,8 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                 messages: messages,
                 availableTools: filteredTools,
                 workspaceSnapshot: workspaceSnapshotRecord,
-                workingMemory: workingMemoryRecord
+                workingMemory: workingMemoryRecord,
+                projectGraphContext: projectGraphContext
             ))
 
             switch action {
@@ -1292,6 +1303,12 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         var workflowState = StepWorkflowState(targetArtifacts: explorationPlan.targetPaths)
         var changedFiles: [ChangedArtifact] = existingChangedFiles
         let subagentModelAdapter = modelAdapter(for: modelPurpose)
+        let graphWorkspaceSnapshot = try? persistence.fetchWorkspaceSnapshot(runID: run.id)
+        let projectGraphContext = await makeProjectGraphContext(
+            prompt: stepPrompt,
+            taskKind: taskKind,
+            workspaceSnapshot: graphWorkspaceSnapshot
+        )
 
         for iteration in 0..<maxIterations {
             try await cancellation.checkCancellation()
@@ -1307,7 +1324,8 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                     messages: localMessages,
                     availableTools: toolRegistry.schema().filter { allowedToolNames?.contains($0.name) ?? true },
                     workspaceSnapshot: workspaceSnapshotRecord,
-                    workingMemory: workingMemoryRecord
+                    workingMemory: workingMemoryRecord,
+                    projectGraphContext: projectGraphContext
                 ),
                 provider: subagentModelAdapter.providerID,
                 model: subagentModelAdapter.modelID
@@ -1330,7 +1348,8 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
                 messages: localMessages,
                 availableTools: toolRegistry.schema().filter { allowedToolNames?.contains($0.name) ?? true },
                 workspaceSnapshot: workspaceSnapshotRecord,
-                workingMemory: workingMemoryRecord
+                workingMemory: workingMemoryRecord,
+                projectGraphContext: projectGraphContext
             ))
 
             switch action {
@@ -1643,6 +1662,19 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
     private static func orderedUniqueStrings(from values: [String]) -> [String] {
         var seen: Set<String> = []
         return values.filter { seen.insert($0).inserted }
+    }
+
+    private func makeProjectGraphContext(
+        prompt: String,
+        taskKind: TaskKind,
+        workspaceSnapshot: WorkspaceSnapshotRecord?
+    ) async -> ProjectGraphContext? {
+        guard let workspaceSnapshot else {
+            return nil
+        }
+        let workspaceRoot = URL(fileURLWithPath: workspaceSnapshot.workspaceRootPath, isDirectory: true)
+        let provider = KnowledgeGraphProvider(service: GraphifyService(projectRoot: workspaceRoot))
+        return await provider.context(for: prompt, taskKind: taskKind)
     }
 
     private func executeAutomaticValidation(

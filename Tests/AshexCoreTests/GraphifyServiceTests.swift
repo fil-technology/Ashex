@@ -180,6 +180,52 @@ import Testing
     #expect(FileManager.default.fileExists(atPath: service.statePath.path) == false)
 }
 
+@Test func graphifyPlanningPolicyChoosesGraphForArchitectureButSkipsTinyKnownFileEdits() {
+    #expect(GraphifyPlanningPolicy.shouldUseGraphContext(
+        prompt: "How does memory persistence work across modules in this repo?",
+        taskKind: .analysis
+    ))
+    #expect(GraphifyPlanningPolicy.shouldUseGraphContext(
+        prompt: "Refactor tool calling to be safer",
+        taskKind: .refactor
+    ))
+    #expect(GraphifyPlanningPolicy.shouldUseGraphContext(
+        prompt: "Update README.md title",
+        taskKind: .docs
+    ) == false)
+    #expect(GraphifyPlanningPolicy.shouldUseGraphContext(
+        prompt: "git status",
+        taskKind: .git
+    ) == false)
+}
+
+@Test func knowledgeGraphProviderExtractsRelatedFilesAndRendersContextBlock() {
+    let root = URL(fileURLWithPath: "/tmp/project", isDirectory: true)
+    let files = KnowledgeGraphProvider.extractRelatedFiles(
+        from: "Source: Sources/AshexCore/AgentRuntime.swift and docs/GRAPHIFY_RESEARCH.md",
+        projectRoot: root
+    )
+
+    #expect(files.map(\.path) == [
+        "/tmp/project/Sources/AshexCore/AgentRuntime.swift",
+        "/tmp/project/docs/GRAPHIFY_RESEARCH.md",
+    ])
+
+    let block = KnowledgeGraphProvider.renderContextBlock(.init(
+        projectRoot: root,
+        graphExists: true,
+        lastBuiltAt: nil,
+        reportPath: root.appendingPathComponent("graphify-out/GRAPH_REPORT.md"),
+        querySummary: "Runtime connects to tool execution.",
+        relatedFiles: files,
+        confidence: 0.8
+    ), question: "How does runtime work?")
+
+    #expect(block.contains("<project_graph_context>"))
+    #expect(block.contains("Runtime connects to tool execution."))
+    #expect(block.contains("/tmp/project/Sources/AshexCore/AgentRuntime.swift"))
+}
+
 private struct GraphifyRunnerCall: Equatable {
     let executablePath: String
     let arguments: [String]

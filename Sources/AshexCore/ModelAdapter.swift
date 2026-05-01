@@ -38,6 +38,7 @@ public struct ModelContext: Sendable {
     public let availableTools: [ToolSchema]
     public let workspaceSnapshot: WorkspaceSnapshotRecord?
     public let workingMemory: WorkingMemoryRecord?
+    public let projectGraphContext: ProjectGraphContext?
 
     public init(
         thread: ThreadRecord,
@@ -45,7 +46,8 @@ public struct ModelContext: Sendable {
         messages: [MessageRecord],
         availableTools: [ToolSchema],
         workspaceSnapshot: WorkspaceSnapshotRecord? = nil,
-        workingMemory: WorkingMemoryRecord? = nil
+        workingMemory: WorkingMemoryRecord? = nil,
+        projectGraphContext: ProjectGraphContext? = nil
     ) {
         self.thread = thread
         self.run = run
@@ -53,6 +55,7 @@ public struct ModelContext: Sendable {
         self.availableTools = availableTools
         self.workspaceSnapshot = workspaceSnapshot
         self.workingMemory = workingMemory
+        self.projectGraphContext = projectGraphContext
     }
 }
 

@@ -261,6 +261,146 @@ public enum GraphifyCommandBuilder {
     }
 }
 
+public enum GraphifyPlanningPolicy {
+    public static func shouldUseGraphContext(prompt: String, taskKind: TaskKind) -> Bool {
+        let lowered = prompt.lowercased()
+        if taskKind == .git || taskKind == .shell {
+            return false
+        }
+        if isTrivialKnownFileEdit(lowered) {
+            return false
+        }
+
+        let graphMarkers = [
+            "architecture", "dependency", "dependencies", "module", "modules",
+            "how does", "how do", "where is", "where are", "implemented",
+            "project structure", "codebase", "repo", "repository", "relationship",
+            "relationships", "flow", "large refactor", "onboard", "understand"
+        ]
+        if graphMarkers.contains(where: lowered.contains) {
+            return true
+        }
+
+        switch taskKind {
+        case .analysis, .refactor:
+            return true
+        case .feature, .bugFix:
+            return lowered.split(whereSeparator: \.isWhitespace).count >= 10
+        case .docs, .general, .git, .shell:
+            return false
+        }
+    }
+
+    private static func isTrivialKnownFileEdit(_ lowered: String) -> Bool {
+        let words = lowered.split(whereSeparator: \.isWhitespace)
+        guard words.count <= 12 else { return false }
+        let knownFileMarkers = [".swift", ".md", ".json", ".yml", ".yaml", ".toml", ".txt"]
+        let editMarkers = ["edit", "change", "update", "rename", "fix typo"]
+        return knownFileMarkers.contains(where: lowered.contains)
+            && editMarkers.contains(where: lowered.contains)
+    }
+}
+
+public struct KnowledgeGraphProvider {
+    public let service: GraphifyService
+
+    public init(service: GraphifyService) {
+        self.service = service
+    }
+
+    public func context(for question: String, taskKind: TaskKind) async -> ProjectGraphContext? {
+        guard GraphifyPlanningPolicy.shouldUseGraphContext(prompt: question, taskKind: taskKind) else {
+            return nil
+        }
+
+        let baseContext = service.projectGraphContext()
+        guard baseContext.graphExists else {
+            return nil
+        }
+
+        if let query = try? await service.query(question: question, budget: 1_200) {
+            return ProjectGraphContext(
+                projectRoot: baseContext.projectRoot,
+                graphExists: true,
+                lastBuiltAt: baseContext.lastBuiltAt,
+                reportPath: baseContext.reportPath,
+                querySummary: query.summary,
+                relatedFiles: Self.extractRelatedFiles(from: query.stdout, projectRoot: baseContext.projectRoot),
+                confidence: 0.8
+            )
+        }
+
+        if let report = try? service.report(maxCharacters: 1_600),
+           let content = report.content?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !content.isEmpty {
+            return ProjectGraphContext(
+                projectRoot: baseContext.projectRoot,
+                graphExists: true,
+                lastBuiltAt: baseContext.lastBuiltAt,
+                reportPath: baseContext.reportPath,
+                querySummary: content,
+                relatedFiles: Self.extractRelatedFiles(from: content, projectRoot: baseContext.projectRoot),
+                confidence: 0.5
+            )
+        }
+
+        return baseContext
+    }
+
+    public static func renderContextBlock(_ context: ProjectGraphContext, question: String) -> String {
+        var lines = [
+            "<project_graph_context>",
+            "Question: \(question)",
+            "Graph exists: \(context.graphExists ? "yes" : "no")",
+        ]
+        if let lastBuiltAt = context.lastBuiltAt {
+            lines.append("Last built: \(ISO8601DateFormatter().string(from: lastBuiltAt))")
+        }
+        if let reportPath = context.reportPath {
+            lines.append("Report: \(reportPath.path)")
+        }
+        if !context.relatedFiles.isEmpty {
+            lines.append("Relevant files:")
+            lines.append(contentsOf: context.relatedFiles.prefix(15).map { "- \($0.path)" })
+        }
+        if let summary = context.querySummary, !summary.isEmpty {
+            lines.append("Graph summary:")
+            lines.append(summary)
+        }
+        if let confidence = context.confidence {
+            lines.append("Confidence: \(String(format: "%.2f", confidence))")
+        }
+        lines.append("</project_graph_context>")
+        return lines.joined(separator: "\n")
+    }
+
+    public static func extractRelatedFiles(from text: String, projectRoot: URL) -> [URL] {
+        let pattern = #"[A-Za-z0-9_./-]+\.(swift|md|json|yml|yaml|toml|py|ts|tsx|js|jsx|go|rs|java|c|cpp|h|hpp)"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            return []
+        }
+        let nsRange = NSRange(text.startIndex..<text.endIndex, in: text)
+        var seen: Set<String> = []
+        var urls: [URL] = []
+        for match in regex.matches(in: text, range: nsRange) {
+            guard let range = Range(match.range, in: text) else { continue }
+            let rawPath = String(text[range])
+                .trimmingCharacters(in: CharacterSet(charactersIn: "`'\".,:)("))
+            guard !rawPath.isEmpty else { continue }
+            let url = rawPath.hasPrefix("/")
+                ? URL(fileURLWithPath: rawPath)
+                : projectRoot.appendingPathComponent(rawPath)
+            let standardized = url.standardizedFileURL
+            guard seen.insert(standardized.path).inserted else { continue }
+            urls.append(standardized)
+            if urls.count >= 15 {
+                break
+            }
+        }
+        return urls
+    }
+}
+
 public struct GraphifyService {
     public let projectRoot: URL
     public let runner: any GraphifyCommandRunning
