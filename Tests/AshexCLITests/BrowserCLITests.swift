@@ -20,8 +20,10 @@ import Testing
 }
 
 @Test func graphifyCLIHelpMentionsStatusAndQuery() {
+    #expect(GraphifyCLI.helpText.contains("ashex graphify build"))
     #expect(GraphifyCLI.helpText.contains("ashex graphify status"))
     #expect(GraphifyCLI.helpText.contains("ashex graphify query"))
+    #expect(GraphifyCLI.helpText.contains("ashex graphify clean --yes"))
     #expect(AshexCLI.helpText.contains("ashex graphify"))
 }
 

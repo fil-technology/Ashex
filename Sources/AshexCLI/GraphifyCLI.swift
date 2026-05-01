@@ -6,6 +6,8 @@ enum GraphifyCLI {
         guard arguments.dropFirst().first == "graphify" else { return false }
         let subcommand = arguments.dropFirst().dropFirst().first ?? "help"
         switch subcommand {
+        case "build":
+            try await build(arguments: arguments)
         case "status":
             try await status(arguments: arguments)
         case "query":
@@ -16,12 +18,38 @@ enum GraphifyCLI {
             try await explain(arguments: arguments)
         case "report":
             try report(arguments: arguments)
+        case "rebuild":
+            try await rebuild(arguments: arguments)
+        case "cluster-only":
+            try await clusterOnly(arguments: arguments)
+        case "clean":
+            try clean(arguments: arguments)
         case "help", "--help", "-h":
             print(helpText)
         default:
             throw AshexError.model("Unknown graphify command '\(subcommand)'.\n\(helpText)")
         }
         return true
+    }
+
+    private static func build(arguments: [String]) async throws {
+        let options = try GraphifyOptions(arguments: arguments, positionalMode: .none)
+        let configuration = try CLIConfiguration(arguments: options.configurationArguments)
+        let guidance = await GraphifyService(projectRoot: configuration.workspaceRoot).buildGuidance()
+        if options.json {
+            try CLIJSONOutput.print(guidance)
+            return
+        }
+
+        print("Graphify Build")
+        print("Project root: \(guidance.projectRoot)")
+        print("Installed: \(guidance.installed ? "yes" : "no")")
+        print("Graph exists: \(guidance.graphExists ? "yes" : "no")")
+        print("Recommended first-build command: \(guidance.recommendedCommand)")
+        print("Notes:")
+        for note in guidance.notes {
+            print("- \(note)")
+        }
     }
 
     private static func status(arguments: [String]) async throws {
@@ -114,6 +142,38 @@ enum GraphifyCLI {
         }
     }
 
+    private static func rebuild(arguments: [String]) async throws {
+        let options = try GraphifyOptions(arguments: arguments, positionalMode: .none)
+        let configuration = try CLIConfiguration(arguments: options.configurationArguments)
+        let result = try await GraphifyService(projectRoot: configuration.workspaceRoot).rebuild()
+        try render(maintenance: result, json: options.json)
+    }
+
+    private static func clusterOnly(arguments: [String]) async throws {
+        let options = try GraphifyOptions(arguments: arguments, positionalMode: .none)
+        let configuration = try CLIConfiguration(arguments: options.configurationArguments)
+        let result = try await GraphifyService(projectRoot: configuration.workspaceRoot).clusterOnly()
+        try render(maintenance: result, json: options.json)
+    }
+
+    private static func clean(arguments: [String]) throws {
+        let options = try GraphifyOptions(arguments: arguments, positionalMode: .none)
+        let configuration = try CLIConfiguration(arguments: options.configurationArguments)
+        let result = try GraphifyService(projectRoot: configuration.workspaceRoot).clean(confirm: options.confirm)
+        if options.json {
+            try CLIJSONOutput.print(result)
+            return
+        }
+        if result.removedPaths.isEmpty {
+            print("No Graphify output or ASHEX graph state existed.")
+        } else {
+            print("Removed:")
+            for path in result.removedPaths {
+                print("- \(path)")
+            }
+        }
+    }
+
     private static func render(result: GraphifyQueryResult, json: Bool) throws {
         if json {
             try CLIJSONOutput.print(result)
@@ -122,13 +182,28 @@ enum GraphifyCLI {
         }
     }
 
+    private static func render(maintenance result: GraphifyMaintenanceResult, json: Bool) throws {
+        if json {
+            try CLIJSONOutput.print(result)
+            return
+        }
+        print(result.stdout, terminator: result.stdout.hasSuffix("\n") ? "" : "\n")
+        if !result.stderr.isEmpty {
+            fputs(result.stderr, stderr)
+        }
+    }
+
     static let helpText = """
     Usage:
+      ashex graphify build [--json] [options]
       ashex graphify status [--json] [options]
       ashex graphify query "<question>" [--dfs] [--budget N] [--graph path] [--json] [options]
       ashex graphify path "<source>" "<target>" [--graph path] [--json] [options]
       ashex graphify explain "<node>" [--graph path] [--json] [options]
       ashex graphify report [--path-only] [--max-characters N] [--json] [options]
+      ashex graphify rebuild [--json] [options]
+      ashex graphify cluster-only [--json] [options]
+      ashex graphify clean --yes [--json] [options]
 
     Options:
       --workspace PATH
@@ -153,6 +228,7 @@ private struct GraphifyOptions {
     let graphPath: URL?
     let pathOnly: Bool
     let maxCharacters: Int?
+    let confirm: Bool
     let positionals: [String]
     let configurationArguments: [String]
 
@@ -163,6 +239,7 @@ private struct GraphifyOptions {
         var graphPath: URL?
         var pathOnly = false
         var maxCharacters: Int?
+        var confirm = false
         var positionals: [String] = []
         var configurationArguments = [arguments.first ?? "ashex"]
 
@@ -183,6 +260,8 @@ private struct GraphifyOptions {
                 graphPath = URL(fileURLWithPath: value, relativeTo: URL(fileURLWithPath: FileManager.default.currentDirectoryPath)).standardizedFileURL
             case "--path-only":
                 pathOnly = true
+            case "--yes":
+                confirm = true
             case "--max-characters":
                 guard let value = iterator.next(), let parsed = Int(value), parsed > 0 else {
                     throw AshexError.model("Invalid value for --max-characters")
@@ -207,6 +286,7 @@ private struct GraphifyOptions {
         self.graphPath = graphPath
         self.pathOnly = pathOnly
         self.maxCharacters = maxCharacters
+        self.confirm = confirm
         self.positionals = positionals
         self.configurationArguments = configurationArguments
     }

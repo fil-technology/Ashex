@@ -147,6 +147,52 @@ public struct GraphifyReport: Codable, Sendable, Equatable {
     }
 }
 
+public struct GraphifyBuildGuidance: Codable, Sendable, Equatable {
+    public let projectRoot: String
+    public let installed: Bool
+    public let graphExists: Bool
+    public let recommendedCommand: String
+    public let notes: [String]
+
+    public init(projectRoot: String, installed: Bool, graphExists: Bool, recommendedCommand: String, notes: [String]) {
+        self.projectRoot = projectRoot
+        self.installed = installed
+        self.graphExists = graphExists
+        self.recommendedCommand = recommendedCommand
+        self.notes = notes
+    }
+}
+
+public struct GraphifyMaintenanceResult: Codable, Sendable, Equatable {
+    public let operation: String
+    public let command: [String]
+    public let stdout: String
+    public let stderr: String
+    public let exitCode: Int32
+    public let statePath: String
+
+    public init(operation: String, command: [String], stdout: String, stderr: String, exitCode: Int32, statePath: String) {
+        self.operation = operation
+        self.command = command
+        self.stdout = stdout
+        self.stderr = stderr
+        self.exitCode = exitCode
+        self.statePath = statePath
+    }
+}
+
+public struct GraphifyCleanResult: Codable, Sendable, Equatable {
+    public let removedPaths: [String]
+    public let graphOutputPath: String
+    public let statePath: String
+
+    public init(removedPaths: [String], graphOutputPath: String, statePath: String) {
+        self.removedPaths = removedPaths
+        self.graphOutputPath = graphOutputPath
+        self.statePath = statePath
+    }
+}
+
 public protocol GraphifyCommandRunning: Sendable {
     func runGraphify(
         executableURL: URL,
@@ -330,6 +376,51 @@ public struct GraphifyService {
         return GraphifyReport(path: reportPath.path, exists: true, content: content, truncated: false)
     }
 
+    public func buildGuidance() async -> GraphifyBuildGuidance {
+        let status = await status()
+        return GraphifyBuildGuidance(
+            projectRoot: projectRoot.path,
+            installed: status.installed,
+            graphExists: status.graphExists,
+            recommendedCommand: "/graphify \(projectRoot.path)",
+            notes: [
+                "Graphify's current full initial graph build is an AI-assistant skill workflow, not a standalone `graphify build` terminal command.",
+                "Use the official `/graphify <path>` workflow for the first build so semantic extraction can run through the assistant.",
+                "After a graph exists, ASHEX can run `ashex graphify rebuild` for code-only upstream `graphify update` maintenance.",
+            ]
+        )
+    }
+
+    public func rebuild() async throws -> GraphifyMaintenanceResult {
+        try await runMaintenanceCommand(operation: "rebuild", arguments: ["update", projectRoot.path])
+    }
+
+    public func clusterOnly() async throws -> GraphifyMaintenanceResult {
+        try await runMaintenanceCommand(operation: "cluster-only", arguments: ["cluster-only", projectRoot.path])
+    }
+
+    public func clean(confirm: Bool) throws -> GraphifyCleanResult {
+        guard confirm else {
+            throw AshexError.model("`ashex graphify clean` removes graphify-out and graph state. Re-run with --yes to confirm.")
+        }
+
+        var removed: [String] = []
+        if fileManager.fileExists(atPath: graphOutputDirectory.path) {
+            try fileManager.removeItem(at: graphOutputDirectory)
+            removed.append(graphOutputDirectory.path)
+        }
+        let stateDirectory = statePath.deletingLastPathComponent()
+        if fileManager.fileExists(atPath: stateDirectory.path) {
+            try fileManager.removeItem(at: stateDirectory)
+            removed.append(stateDirectory.path)
+        }
+        return GraphifyCleanResult(
+            removedPaths: removed,
+            graphOutputPath: graphOutputDirectory.path,
+            statePath: statePath.path
+        )
+    }
+
     public func readStateMetadata() -> GraphifyStateMetadata? {
         guard fileManager.fileExists(atPath: statePath.path),
               let data = try? Data(contentsOf: statePath) else {
@@ -375,6 +466,47 @@ public struct GraphifyService {
             stderr: result.stderr,
             exitCode: result.exitCode,
             summary: Self.summary(from: result.stdout)
+        )
+    }
+
+    private func runMaintenanceCommand(operation: String, arguments: [String]) async throws -> GraphifyMaintenanceResult {
+        guard fileManager.fileExists(atPath: graphPath.path) else {
+            throw AshexError.model("No Graphify graph found at \(graphPath.path). Build it with the official `/graphify <path>` workflow first.")
+        }
+        guard let executable = executableURL ?? locateExecutable() else {
+            throw AshexError.model("Graphify is not installed. Install it from https://github.com/safishamsi/graphify, then rerun this command.")
+        }
+
+        let result = try await runner.runGraphify(
+            executableURL: executable,
+            arguments: arguments,
+            workingDirectory: projectRoot,
+            timeout: 120
+        )
+        guard result.success else {
+            let detail = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+                : result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            throw AshexError.shell("Graphify \(operation) failed with exit code \(result.exitCode)\(detail.isEmpty ? "" : "\n\(detail)")")
+        }
+
+        try writeStateMetadata(.init(
+            projectRoot: projectRoot.path,
+            lastBuildAt: Date(),
+            graphifyVersion: nil,
+            graphPath: graphPath.path,
+            reportPath: fileManager.fileExists(atPath: reportPath.path) ? reportPath.path : nil,
+            sourceHash: nil,
+            status: "ready"
+        ))
+
+        return GraphifyMaintenanceResult(
+            operation: operation,
+            command: [executable.path] + arguments,
+            stdout: result.stdout,
+            stderr: result.stderr,
+            exitCode: result.exitCode,
+            statePath: statePath.path
         )
     }
 

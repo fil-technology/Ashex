@@ -113,6 +113,73 @@ import Testing
     #expect(report.truncated == true)
 }
 
+@Test func graphifyRebuildRunsUpdateAndWritesState() async throws {
+    let root = try temporaryDirectory()
+    let output = root.appendingPathComponent("graphify-out", isDirectory: true)
+    try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+    try "{}".write(to: output.appendingPathComponent("graph.json"), atomically: true, encoding: .utf8)
+    try "# Graph".write(to: output.appendingPathComponent("GRAPH_REPORT.md"), atomically: true, encoding: .utf8)
+
+    let executable = root.appendingPathComponent("graphify")
+    try "".write(to: executable, atomically: true, encoding: .utf8)
+    let runner = MockGraphifyRunner(result: .init(stdout: "updated\n", stderr: "", exitCode: 0))
+    let service = GraphifyService(projectRoot: root, runner: runner, executableURL: executable)
+
+    let result = try await service.rebuild()
+
+    #expect(result.operation == "rebuild")
+    #expect(await runner.calls == [
+        .init(executablePath: executable.path, arguments: ["update", root.path], workingDirectory: root.path)
+    ])
+    #expect(service.readStateMetadata()?.status == "ready")
+    #expect(service.readStateMetadata()?.graphPath == output.appendingPathComponent("graph.json").path)
+}
+
+@Test func graphifyClusterOnlyRunsClusterCommand() async throws {
+    let root = try temporaryDirectory()
+    let output = root.appendingPathComponent("graphify-out", isDirectory: true)
+    try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+    try "{}".write(to: output.appendingPathComponent("graph.json"), atomically: true, encoding: .utf8)
+
+    let executable = root.appendingPathComponent("graphify")
+    try "".write(to: executable, atomically: true, encoding: .utf8)
+    let runner = MockGraphifyRunner(result: .init(stdout: "clustered\n", stderr: "", exitCode: 0))
+    let service = GraphifyService(projectRoot: root, runner: runner, executableURL: executable)
+
+    _ = try await service.clusterOnly()
+
+    #expect(await runner.calls == [
+        .init(executablePath: executable.path, arguments: ["cluster-only", root.path], workingDirectory: root.path)
+    ])
+}
+
+@Test func graphifyCleanRequiresConfirmationAndRemovesOutput() throws {
+    let root = try temporaryDirectory()
+    let output = root.appendingPathComponent("graphify-out", isDirectory: true)
+    try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+    try "{}".write(to: output.appendingPathComponent("graph.json"), atomically: true, encoding: .utf8)
+    let service = GraphifyService(projectRoot: root, runner: MockGraphifyRunner())
+    try service.writeStateMetadata(.init(
+        projectRoot: root.path,
+        lastBuildAt: Date(),
+        graphifyVersion: nil,
+        graphPath: service.graphPath.path,
+        reportPath: nil,
+        sourceHash: nil,
+        status: "ready"
+    ))
+
+    #expect(throws: Error.self) {
+        try service.clean(confirm: false)
+    }
+
+    let result = try service.clean(confirm: true)
+
+    #expect(result.removedPaths.contains(output.path))
+    #expect(FileManager.default.fileExists(atPath: output.path) == false)
+    #expect(FileManager.default.fileExists(atPath: service.statePath.path) == false)
+}
+
 private struct GraphifyRunnerCall: Equatable {
     let executablePath: String
     let arguments: [String]

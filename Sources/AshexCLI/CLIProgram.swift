@@ -236,7 +236,7 @@ struct AshexCLI {
       ashex audio models [options]
       ashex benchmark <list|run|compare> [options]
       ashex browser <doctor|backends|fetch|eval|screenshot|serve|benchmark|test-local> [options]
-      ashex graphify <status|query|path|explain|report> [options]
+      ashex graphify <build|status|query|path|explain|report|rebuild|cluster-only|clean> [options]
       ashex tools <list|doctor> [options]
       ashex computer <doctor> [options]
       ashex computer-use <doctor|prototype> [options]
