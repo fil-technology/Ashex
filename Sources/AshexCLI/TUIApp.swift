@@ -3780,8 +3780,7 @@ final class TUIApp {
             return false
         }
 
-        let recoveredModel = switchEshModelAfterMemoryPressure(from: providerStatus) ??
-            switchEshModelAfterMemoryPressureUsingInstalledModels()
+        let recoveredModel = switchEshModelAfterMemoryPressure(from: providerStatus)
 
         switch EshMemoryPreflightDecision.decide(provider: sessionProvider, recoveredModel: recoveredModel) {
         case .retryWithRecoveredModel:
@@ -3824,23 +3823,6 @@ final class TUIApp {
             onboardingStatus = "Selected installed esh model \(fallbackModel)"
         }
         return fallbackModel
-    }
-
-    private func switchEshModelAfterMemoryPressureUsingInstalledModels() -> String? {
-        let displayModels = eshInstalledDisplayModels()
-        guard !displayModels.isEmpty else { return nil }
-        let snapshot = ProviderStatusSnapshot(
-            headline: providerStatus.headline,
-            details: providerStatus.details,
-            availableModels: displayModels,
-            guardrailAssessment: providerStatus.guardrailAssessment
-        )
-        return switchEshModelAfterMemoryPressure(from: snapshot)
-    }
-
-    private func eshInstalledDisplayModels() -> [String] {
-        ((try? EshCommandClient.listInstalledModels(configuration: configuration)) ?? [])
-            .map { "\($0) • esh" }
     }
 
     private func renderProviderStartupBlock(prompt: String, startupIssue: ProviderStartupIssue) {
@@ -3908,8 +3890,7 @@ final class TUIApp {
         }
 
         let failingModel = sessionModel
-        let recoveredModel = switchEshModelAfterMemoryPressure(from: providerStatus) ??
-            switchEshModelAfterMemoryPressureUsingInstalledModels()
+        let recoveredModel = switchEshModelAfterMemoryPressure(from: providerStatus)
 
         switch RuntimeResourceFailureRecoveryDecision.memoryPressure(provider: sessionProvider, recoveredModel: recoveredModel) {
         case .retryWithRecoveredModel:
@@ -3927,15 +3908,14 @@ final class TUIApp {
             providerStartupIssue = nil
             queueRetryTask?.cancel()
             queueRetryTask = nil
-            let installedModels = eshInstalledDisplayModels()
-            let availableModels = providerStatus.availableModels.isEmpty ? installedModels : providerStatus.availableModels
+            let availableModels = providerStatus.availableModels
             providerStatus = .init(
                 headline: "`esh` model ran out of memory",
                 details: [
                     "The selected `esh` model \(failingModel) could not fit in memory.",
-                    installedModels.count <= 1
-                        ? "No smaller installed `esh` model was reported."
-                        : "Choose a smaller installed `esh` model from Assistant Setup.",
+                    availableModels.count <= 1
+                        ? "No smaller listed `esh` model is currently available."
+                        : "Choose a smaller listed `esh` model from Assistant Setup.",
                     "The failed prompt was not kept at the front of the queue, so the chat input stays usable."
                 ],
                 availableModels: availableModels,
