@@ -94,9 +94,9 @@ public final class ProcessExecutionRuntime: ExecutionRuntime {
         }
 
         let result = try await withTaskCancellationHandler {
-            try await withThrowingTaskGroup(of: ShellExecutionResult.self) { group in
+            try await withThrowingTaskGroup(of: ProcessExecutionOutcome?.self) { group in
                 group.addTask {
-                    await withCheckedContinuation { continuation in
+                    let result = await withCheckedContinuation { continuation in
                         process.terminationHandler = { _ in
                             stdoutPipe.fileHandleForReading.readabilityHandler = nil
                             stderrPipe.fileHandleForReading.readabilityHandler = nil
@@ -110,18 +110,14 @@ public final class ProcessExecutionRuntime: ExecutionRuntime {
                             ))
                         }
                     }
+                    return .completed(result)
                 }
 
                 group.addTask {
                     try await Task.sleep(for: .seconds(request.timeout))
                     timeoutState.markTimedOut()
                     try await processController.terminateAndWaitIfRunningAsync()
-                    return ShellExecutionResult(
-                        stdout: stdoutCollector.output,
-                        stderr: stderrCollector.output,
-                        exitCode: process.terminationStatus,
-                        timedOut: true
-                    )
+                    return nil
                 }
 
                 group.addTask {
@@ -131,16 +127,25 @@ public final class ProcessExecutionRuntime: ExecutionRuntime {
                             try await cancellationToken.checkCancellation()
                         } catch {
                             await processController.terminateAndWaitIfRunningAfterCancellation()
-                            throw error
+                            return .cancelled(error)
                         }
                     }
                 }
 
-                guard let first = try await group.next() else {
-                    throw AshexError.shell("Failed to retrieve shell result")
+                while let next = try await group.next() {
+                    switch next {
+                    case .completed(let result):
+                        group.cancelAll()
+                        return result
+                    case .cancelled(let error):
+                        group.cancelAll()
+                        throw error
+                    case nil:
+                        continue
+                    }
                 }
-                group.cancelAll()
-                return first
+
+                throw AshexError.shell("Failed to retrieve shell result")
             }
         } onCancel: {
             processController.terminate()
@@ -148,6 +153,11 @@ public final class ProcessExecutionRuntime: ExecutionRuntime {
 
         return result
     }
+}
+
+private enum ProcessExecutionOutcome: Sendable {
+    case completed(ShellExecutionResult)
+    case cancelled(any Error)
 }
 
 private final class ProcessController: @unchecked Sendable {
