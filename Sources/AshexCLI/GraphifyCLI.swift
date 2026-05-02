@@ -6,6 +6,8 @@ enum GraphifyCLI {
         guard arguments.dropFirst().first == "graphify" else { return false }
         let subcommand = arguments.dropFirst().dropFirst().first ?? "help"
         switch subcommand {
+        case "init":
+            try initGraph(arguments: arguments)
         case "build":
             try await build(arguments: arguments)
         case "status":
@@ -32,10 +34,37 @@ enum GraphifyCLI {
         return true
     }
 
+    private static func initGraph(arguments: [String]) throws {
+        let options = try GraphifyOptions(arguments: arguments, positionalMode: .none)
+        let configuration = try CLIConfiguration(arguments: options.configurationArguments)
+        let result = try GraphifyService(
+            projectRoot: configuration.workspaceRoot,
+            config: configuration.userConfig.graphify
+        ).prepareForInitialBuild()
+        if options.json {
+            try CLIJSONOutput.print(result)
+            return
+        }
+
+        print("Graphify Init")
+        print("Ignore file: \(result.ignorePath)")
+        print("State: \(result.statePath)")
+        if result.appendedEntries.isEmpty {
+            print("Ignore entries: already up to date")
+        } else {
+            print("Added ignore entries:")
+            for entry in result.appendedEntries {
+                print("- \(entry)")
+            }
+        }
+    }
+
     private static func build(arguments: [String]) async throws {
         let options = try GraphifyOptions(arguments: arguments, positionalMode: .none)
         let configuration = try CLIConfiguration(arguments: options.configurationArguments)
-        let guidance = await GraphifyService(projectRoot: configuration.workspaceRoot).buildGuidance()
+        let service = GraphifyService(projectRoot: configuration.workspaceRoot, config: configuration.userConfig.graphify)
+        _ = try? service.prepareForInitialBuild()
+        let guidance = await service.buildGuidance()
         if options.json {
             try CLIJSONOutput.print(guidance)
             return
@@ -55,7 +84,7 @@ enum GraphifyCLI {
     private static func status(arguments: [String]) async throws {
         let options = try GraphifyOptions(arguments: arguments, positionalMode: .none)
         let configuration = try CLIConfiguration(arguments: options.configurationArguments)
-        let service = GraphifyService(projectRoot: configuration.workspaceRoot)
+        let service = GraphifyService(projectRoot: configuration.workspaceRoot, config: configuration.userConfig.graphify)
         let status = await service.status()
         if options.json {
             try CLIJSONOutput.print(status)
@@ -66,6 +95,8 @@ enum GraphifyCLI {
         print("Installed: \(status.installed ? "yes" : "no")")
         print("Executable: \(status.executablePath ?? "<not found>")")
         print("Version: \(status.version ?? "<unknown>")")
+        print("Python import: \(status.pythonImportAvailable ? "yes" : "no")")
+        print("Python: \(status.pythonExecutablePath ?? "<not found>")")
         print("Project root: \(status.projectRoot)")
         print("Graph: \(status.graphExists ? status.graphPath : "<missing>")")
         print("Report: \(status.reportExists ? status.reportPath : "<missing>")")
@@ -85,7 +116,7 @@ enum GraphifyCLI {
             throw AshexError.model("graphify query requires a question")
         }
         let configuration = try CLIConfiguration(arguments: options.configurationArguments)
-        let result = try await GraphifyService(projectRoot: configuration.workspaceRoot).query(
+        let result = try await GraphifyService(projectRoot: configuration.workspaceRoot, config: configuration.userConfig.graphify).query(
             question: question,
             useDFS: options.useDFS,
             budget: options.budget,
@@ -100,7 +131,7 @@ enum GraphifyCLI {
             throw AshexError.model("graphify path requires source and target labels")
         }
         let configuration = try CLIConfiguration(arguments: options.configurationArguments)
-        let result = try await GraphifyService(projectRoot: configuration.workspaceRoot).path(
+        let result = try await GraphifyService(projectRoot: configuration.workspaceRoot, config: configuration.userConfig.graphify).path(
             source: options.positionals[0],
             target: options.positionals[1],
             graphPath: options.graphPath
@@ -114,7 +145,7 @@ enum GraphifyCLI {
             throw AshexError.model("graphify explain requires a node label")
         }
         let configuration = try CLIConfiguration(arguments: options.configurationArguments)
-        let result = try await GraphifyService(projectRoot: configuration.workspaceRoot).explain(
+        let result = try await GraphifyService(projectRoot: configuration.workspaceRoot, config: configuration.userConfig.graphify).explain(
             node: node,
             graphPath: options.graphPath
         )
@@ -124,7 +155,7 @@ enum GraphifyCLI {
     private static func report(arguments: [String]) throws {
         let options = try GraphifyOptions(arguments: arguments, positionalMode: .none)
         let configuration = try CLIConfiguration(arguments: options.configurationArguments)
-        let report = try GraphifyService(projectRoot: configuration.workspaceRoot).report(maxCharacters: options.maxCharacters)
+        let report = try GraphifyService(projectRoot: configuration.workspaceRoot, config: configuration.userConfig.graphify).report(maxCharacters: options.maxCharacters)
         if options.json {
             try CLIJSONOutput.print(report)
             return
@@ -145,21 +176,21 @@ enum GraphifyCLI {
     private static func rebuild(arguments: [String]) async throws {
         let options = try GraphifyOptions(arguments: arguments, positionalMode: .none)
         let configuration = try CLIConfiguration(arguments: options.configurationArguments)
-        let result = try await GraphifyService(projectRoot: configuration.workspaceRoot).rebuild()
+        let result = try await GraphifyService(projectRoot: configuration.workspaceRoot, config: configuration.userConfig.graphify).rebuild()
         try render(maintenance: result, json: options.json)
     }
 
     private static func clusterOnly(arguments: [String]) async throws {
         let options = try GraphifyOptions(arguments: arguments, positionalMode: .none)
         let configuration = try CLIConfiguration(arguments: options.configurationArguments)
-        let result = try await GraphifyService(projectRoot: configuration.workspaceRoot).clusterOnly()
+        let result = try await GraphifyService(projectRoot: configuration.workspaceRoot, config: configuration.userConfig.graphify).clusterOnly()
         try render(maintenance: result, json: options.json)
     }
 
     private static func clean(arguments: [String]) throws {
         let options = try GraphifyOptions(arguments: arguments, positionalMode: .none)
         let configuration = try CLIConfiguration(arguments: options.configurationArguments)
-        let result = try GraphifyService(projectRoot: configuration.workspaceRoot).clean(confirm: options.confirm)
+        let result = try GraphifyService(projectRoot: configuration.workspaceRoot, config: configuration.userConfig.graphify).clean(confirm: options.confirm)
         if options.json {
             try CLIJSONOutput.print(result)
             return
@@ -195,6 +226,7 @@ enum GraphifyCLI {
 
     static let helpText = """
     Usage:
+      ashex graphify init [--json] [options]
       ashex graphify build [--json] [options]
       ashex graphify status [--json] [options]
       ashex graphify query "<question>" [--dfs] [--budget N] [--graph path] [--json] [options]

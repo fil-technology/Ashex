@@ -34,6 +34,12 @@ import Testing
     #expect(RuntimeResourceFailureRecoveryDecision.memoryPressure(provider: "ollama", recoveredModel: nil) == .waitForModelChange)
 }
 
+@Test func eshMemoryPreflightDoesNotBlockWhenNoSmallerModelExists() {
+    #expect(EshMemoryPreflightDecision.decide(provider: "esh", recoveredModel: nil) == .runWithCurrentModel)
+    #expect(EshMemoryPreflightDecision.decide(provider: "esh", recoveredModel: "qwen3:0.6b") == .retryWithRecoveredModel)
+    #expect(EshMemoryPreflightDecision.decide(provider: "ollama", recoveredModel: nil) == .block)
+}
+
 @Test func providerFailureRoutingIdentifiesOllamaResourceFailures() {
     let message = "Ollama request for model 'gemma4:latest' failed with HTTP 500: out of memory"
 

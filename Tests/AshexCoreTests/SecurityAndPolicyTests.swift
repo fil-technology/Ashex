@@ -429,6 +429,50 @@ import Testing
     #expect(config.optimization.esh.homePath == "/tmp/.esh")
 }
 
+@Test func userConfigLoadsGraphifyAndTerminalSettings() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let configURL = root.appendingPathComponent(UserConfigStore.fileName)
+
+    try """
+    {
+      "graphify": {
+        "enabled": false,
+        "auto_query_for_architecture_tasks": false,
+        "auto_build": true,
+        "max_context_nodes": 7,
+        "max_context_chars": 2048,
+        "report_path": "graphify-out/GRAPH_REPORT.md",
+        "state_path": ".ashex/graphify/custom-state.json",
+        "executable_path": "/opt/bin/graphify"
+      },
+      "terminal": {
+        "default_timeout_seconds": 90,
+        "max_output_bytes": 4096,
+        "stream_output": false,
+        "redact_secrets": false,
+        "require_confirmation_for_destructive": false,
+        "preserve_logs": false
+      }
+    }
+    """.write(to: configURL, atomically: true, encoding: .utf8)
+
+    let config = try UserConfigStore.load(from: configURL)
+    #expect(config.graphify.enabled == false)
+    #expect(config.graphify.autoQueryForArchitectureTasks == false)
+    #expect(config.graphify.autoBuild)
+    #expect(config.graphify.maxContextNodes == 7)
+    #expect(config.graphify.maxContextCharacters == 2048)
+    #expect(config.graphify.statePath == ".ashex/graphify/custom-state.json")
+    #expect(config.graphify.executablePath == "/opt/bin/graphify")
+    #expect(config.terminal.defaultTimeoutSeconds == 90)
+    #expect(config.terminal.maxOutputBytes == 4096)
+    #expect(config.terminal.streamOutput == false)
+    #expect(config.terminal.redactSecrets == false)
+    #expect(config.terminal.requireConfirmationForDestructive == false)
+    #expect(config.terminal.preserveLogs == false)
+}
+
 @Test func sessionInspectorLoadsDurableRunSnapshot() throws {
     let databaseURL = FileManager.default.temporaryDirectory
         .appendingPathComponent(UUID().uuidString)

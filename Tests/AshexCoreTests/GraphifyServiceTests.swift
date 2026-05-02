@@ -180,6 +180,22 @@ import Testing
     #expect(FileManager.default.fileExists(atPath: service.statePath.path) == false)
 }
 
+@Test func graphifyInitPreparesIgnoreFileAndStateWithoutDroppingExistingEntries() throws {
+    let root = try temporaryDirectory()
+    try "CustomCache/\n".write(to: root.appendingPathComponent(".graphifyignore"), atomically: true, encoding: .utf8)
+    let service = GraphifyService(projectRoot: root, runner: MockGraphifyRunner())
+
+    let result = try service.prepareForInitialBuild()
+    let ignore = try String(contentsOf: root.appendingPathComponent(".graphifyignore"), encoding: .utf8)
+
+    #expect(result.created == false)
+    #expect(result.preservedExistingEntries)
+    #expect(ignore.contains("CustomCache/"))
+    #expect(ignore.contains("node_modules/"))
+    #expect(service.readStateMetadata()?.status == "prepared")
+    #expect(service.readStateMetadata()?.graphPath == service.graphPath.path)
+}
+
 @Test func graphifyPlanningPolicyChoosesGraphForArchitectureButSkipsTinyKnownFileEdits() {
     #expect(GraphifyPlanningPolicy.shouldUseGraphContext(
         prompt: "How does memory persistence work across modules in this repo?",
@@ -201,6 +217,24 @@ import Testing
         prompt: "git status",
         taskKind: .git
     ) == false)
+}
+
+@Test func knowledgeGraphProviderHonorsDisabledConfig() async throws {
+    let root = try temporaryDirectory()
+    let output = root.appendingPathComponent("graphify-out", isDirectory: true)
+    try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+    try "{}".write(to: output.appendingPathComponent("graph.json"), atomically: true, encoding: .utf8)
+
+    let runner = MockGraphifyRunner(result: .init(stdout: "Sources/AshexCore/AgentRuntime.swift", stderr: "", exitCode: 0))
+    let provider = KnowledgeGraphProvider(
+        service: GraphifyService(projectRoot: root, runner: runner, executableURL: root.appendingPathComponent("graphify")),
+        config: .init(enabled: false)
+    )
+
+    let context = await provider.context(for: "How does runtime architecture work?", taskKind: .analysis)
+
+    #expect(context == nil)
+    #expect(await runner.calls.isEmpty)
 }
 
 @Test func knowledgeGraphProviderExtractsRelatedFilesAndRendersContextBlock() {
@@ -255,7 +289,7 @@ import Testing
             "query",
             prompt,
             "--budget",
-            "1200",
+            "\(GraphifyConfig.default.maxContextCharacters)",
             "--graph",
             output.appendingPathComponent("graph.json").path,
         ], workingDirectory: root.path)

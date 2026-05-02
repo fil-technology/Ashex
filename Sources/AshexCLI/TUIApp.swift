@@ -3780,44 +3780,22 @@ final class TUIApp {
             return false
         }
 
-        if switchEshModelAfterMemoryPressure(from: providerStatus) != nil {
+        let recoveredModel = switchEshModelAfterMemoryPressure(from: providerStatus) ??
+            switchEshModelAfterMemoryPressureUsingInstalledModels()
+
+        switch EshMemoryPreflightDecision.decide(provider: sessionProvider, recoveredModel: recoveredModel) {
+        case .retryWithRecoveredModel:
             startRun(prompt: prompt)
             return true
+        case .runWithCurrentModel:
+            providerStartupIssue = nil
+            queueRetryTask?.cancel()
+            queueRetryTask = nil
+            statusLine = "Retrying esh prompt"
+            return false
+        case .block:
+            return false
         }
-
-        guard providerStatus.availableModels.isEmpty else { return false }
-
-        runLines = [
-            "Prompt: \(prompt)",
-            "",
-            "[provider] Refreshing `esh` models before blocking this prompt...",
-        ]
-        runFinished = true
-        runStartedAt = nil
-        statusLine = "Refreshing esh models"
-        render()
-
-        Task { [weak self] in
-            guard let self else { return }
-            await self.refreshProviderStatus()
-            await MainActor.run {
-                if self.providerStartupIssue == nil ||
-                    self.providerStartupIssue?.provider != self.sessionProvider ||
-                    self.providerStartupIssue?.model != self.sessionModel {
-                    self.startRun(prompt: prompt)
-                    return
-                }
-
-                if self.switchEshModelAfterMemoryPressure(from: self.providerStatus) != nil {
-                    self.startRun(prompt: prompt)
-                    return
-                }
-
-                guard let providerStartupIssue = self.providerStartupIssue else { return }
-                self.renderProviderStartupBlock(prompt: prompt, startupIssue: providerStartupIssue)
-            }
-        }
-        return true
     }
 
     @discardableResult

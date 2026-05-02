@@ -60,6 +60,8 @@ public struct GraphifyStatus: Codable, Sendable, Equatable {
     public let installed: Bool
     public let executablePath: String?
     public let version: String?
+    public let pythonImportAvailable: Bool
+    public let pythonExecutablePath: String?
     public let projectRoot: String
     public let graphExists: Bool
     public let graphPath: String
@@ -74,6 +76,8 @@ public struct GraphifyStatus: Codable, Sendable, Equatable {
         installed: Bool,
         executablePath: String?,
         version: String?,
+        pythonImportAvailable: Bool,
+        pythonExecutablePath: String?,
         projectRoot: String,
         graphExists: Bool,
         graphPath: String,
@@ -87,6 +91,8 @@ public struct GraphifyStatus: Codable, Sendable, Equatable {
         self.installed = installed
         self.executablePath = executablePath
         self.version = version
+        self.pythonImportAvailable = pythonImportAvailable
+        self.pythonExecutablePath = pythonExecutablePath
         self.projectRoot = projectRoot
         self.graphExists = graphExists
         self.graphPath = graphPath
@@ -96,6 +102,22 @@ public struct GraphifyStatus: Codable, Sendable, Equatable {
         self.lastBuiltAt = lastBuiltAt
         self.stateStatus = stateStatus
         self.recommendedNextAction = recommendedNextAction
+    }
+}
+
+public struct GraphifyIgnorePreparationResult: Codable, Sendable, Equatable {
+    public let ignorePath: String
+    public let created: Bool
+    public let appendedEntries: [String]
+    public let preservedExistingEntries: Bool
+    public let statePath: String
+
+    public init(ignorePath: String, created: Bool, appendedEntries: [String], preservedExistingEntries: Bool, statePath: String) {
+        self.ignorePath = ignorePath
+        self.created = created
+        self.appendedEntries = appendedEntries
+        self.preservedExistingEntries = preservedExistingEntries
+        self.statePath = statePath
     }
 }
 
@@ -304,12 +326,17 @@ public enum GraphifyPlanningPolicy {
 
 public struct KnowledgeGraphProvider {
     public let service: GraphifyService
+    public let config: GraphifyConfig
 
-    public init(service: GraphifyService) {
+    public init(service: GraphifyService, config: GraphifyConfig = .default) {
         self.service = service
+        self.config = config
     }
 
     public func context(for question: String, taskKind: TaskKind) async -> ProjectGraphContext? {
+        guard config.enabled, config.autoQueryForArchitectureTasks else {
+            return nil
+        }
         guard GraphifyPlanningPolicy.shouldUseGraphContext(prompt: question, taskKind: taskKind) else {
             return nil
         }
@@ -319,19 +346,19 @@ public struct KnowledgeGraphProvider {
             return nil
         }
 
-        if let query = try? await service.query(question: question, budget: 1_200) {
+        if let query = try? await service.query(question: question, budget: max(config.maxContextCharacters, 400)) {
             return ProjectGraphContext(
                 projectRoot: baseContext.projectRoot,
                 graphExists: true,
                 lastBuiltAt: baseContext.lastBuiltAt,
                 reportPath: baseContext.reportPath,
-                querySummary: query.summary,
+                querySummary: Self.clip(query.summary, maxCharacters: config.maxContextCharacters),
                 relatedFiles: Self.extractRelatedFiles(from: query.stdout, projectRoot: baseContext.projectRoot),
                 confidence: 0.8
             )
         }
 
-        if let report = try? service.report(maxCharacters: 1_600),
+        if let report = try? service.report(maxCharacters: config.maxContextCharacters),
            let content = report.content?.trimmingCharacters(in: .whitespacesAndNewlines),
            !content.isEmpty {
             return ProjectGraphContext(
@@ -349,6 +376,15 @@ public struct KnowledgeGraphProvider {
     }
 
     public static func renderContextBlock(_ context: ProjectGraphContext, question: String) -> String {
+        renderContextBlock(context, question: question, maxRelatedFiles: GraphifyConfig.default.maxContextNodes, maxCharacters: GraphifyConfig.default.maxContextCharacters)
+    }
+
+    public static func renderContextBlock(
+        _ context: ProjectGraphContext,
+        question: String,
+        maxRelatedFiles: Int,
+        maxCharacters: Int
+    ) -> String {
         var lines = [
             "<project_graph_context>",
             "Question: \(question)",
@@ -362,17 +398,17 @@ public struct KnowledgeGraphProvider {
         }
         if !context.relatedFiles.isEmpty {
             lines.append("Relevant files:")
-            lines.append(contentsOf: context.relatedFiles.prefix(15).map { "- \($0.path)" })
+            lines.append(contentsOf: context.relatedFiles.prefix(maxRelatedFiles).map { "- \($0.path)" })
         }
         if let summary = context.querySummary, !summary.isEmpty {
             lines.append("Graph summary:")
-            lines.append(summary)
+            lines.append(clip(summary, maxCharacters: maxCharacters))
         }
         if let confidence = context.confidence {
             lines.append("Confidence: \(String(format: "%.2f", confidence))")
         }
         lines.append("</project_graph_context>")
-        return lines.joined(separator: "\n")
+        return clip(lines.joined(separator: "\n"), maxCharacters: maxCharacters + 800)
     }
 
     public static func extractRelatedFiles(from text: String, projectRoot: URL) -> [URL] {
@@ -400,12 +436,20 @@ public struct KnowledgeGraphProvider {
         }
         return urls
     }
+
+    public static func clip(_ text: String, maxCharacters: Int) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count > maxCharacters else { return trimmed }
+        let index = trimmed.index(trimmed.startIndex, offsetBy: maxCharacters)
+        return String(trimmed[..<index]) + "\n[truncated]"
+    }
 }
 
 public struct GraphifyService {
     public let projectRoot: URL
     public let runner: any GraphifyCommandRunning
     public let executableURL: URL?
+    public let config: GraphifyConfig
 
     private let fileManager: FileManager
     private let environment: [String: String]
@@ -414,12 +458,14 @@ public struct GraphifyService {
         projectRoot: URL,
         runner: any GraphifyCommandRunning = GraphifyProcessCommandRunner(),
         executableURL: URL? = nil,
+        config: GraphifyConfig = .default,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         fileManager: FileManager = .default
     ) {
         self.projectRoot = projectRoot.standardizedFileURL
         self.runner = runner
-        self.executableURL = executableURL
+        self.config = config
+        self.executableURL = executableURL ?? config.executablePath.map { URL(fileURLWithPath: $0) }
         self.environment = environment
         self.fileManager = fileManager
     }
@@ -433,20 +479,22 @@ public struct GraphifyService {
     }
 
     public var reportPath: URL {
-        graphOutputDirectory.appendingPathComponent("GRAPH_REPORT.md")
+        resolveProjectPath(config.reportPath ?? "graphify-out/GRAPH_REPORT.md")
     }
 
     public var statePath: URL {
-        projectRoot
-            .appendingPathComponent(".ashex", isDirectory: true)
-            .appendingPathComponent("graphify", isDirectory: true)
-            .appendingPathComponent("state.json")
+        resolveProjectPath(config.statePath)
+    }
+
+    public var ignorePath: URL {
+        projectRoot.appendingPathComponent(".graphifyignore")
     }
 
     public func status() async -> GraphifyStatus {
         let executable = executableURL ?? locateExecutable()
         let installed = executable != nil
         let version = installed ? await graphifyVersion(executableURL: executable!) : nil
+        let pythonImport = pythonImportStatus()
         let metadata = readStateMetadata()
         let graphExists = fileManager.fileExists(atPath: graphPath.path)
         let reportExists = fileManager.fileExists(atPath: reportPath.path)
@@ -456,6 +504,8 @@ public struct GraphifyService {
             installed: installed,
             executablePath: executable?.path,
             version: version,
+            pythonImportAvailable: pythonImport.available,
+            pythonExecutablePath: pythonImport.executable?.path,
             projectRoot: projectRoot.path,
             graphExists: graphExists,
             graphPath: graphPath.path,
@@ -529,6 +579,49 @@ public struct GraphifyService {
                 "Use the official `/graphify <path>` workflow for the first build so semantic extraction can run through the assistant.",
                 "After a graph exists, ASHEX can run `ashex graphify rebuild` for code-only upstream `graphify update` maintenance.",
             ]
+        )
+    }
+
+    public func prepareForInitialBuild() throws -> GraphifyIgnorePreparationResult {
+        let existingContent = (try? String(contentsOf: ignorePath, encoding: .utf8)) ?? ""
+        let existingEntries = Set(existingContent
+            .split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && !$0.hasPrefix("#") })
+        let missingEntries = Self.defaultIgnoreEntries.filter { !existingEntries.contains($0) }
+        let existed = fileManager.fileExists(atPath: ignorePath.path)
+
+        if !missingEntries.isEmpty {
+            var content = existingContent
+            if !content.isEmpty, !content.hasSuffix("\n") {
+                content.append("\n")
+            }
+            if content.isEmpty {
+                content.append("# Generated by ASHEX. Graphify also respects its own upstream ignore behavior.\n")
+            } else {
+                content.append("\n# Added by ASHEX for generated/cache-heavy paths.\n")
+            }
+            content.append(missingEntries.joined(separator: "\n"))
+            content.append("\n")
+            try content.write(to: ignorePath, atomically: true, encoding: .utf8)
+        }
+
+        try writeStateMetadata(.init(
+            projectRoot: projectRoot.path,
+            lastBuildAt: nil,
+            graphifyVersion: nil,
+            graphPath: graphPath.path,
+            reportPath: reportPath.path,
+            sourceHash: nil,
+            status: "prepared"
+        ))
+
+        return GraphifyIgnorePreparationResult(
+            ignorePath: ignorePath.path,
+            created: !existed,
+            appendedEntries: missingEntries,
+            preservedExistingEntries: existed,
+            statePath: statePath.path
         )
     }
 
@@ -652,6 +745,13 @@ public struct GraphifyService {
     }
 
     private func locateExecutable() -> URL? {
+        if let configured = config.executablePath {
+            let url = URL(fileURLWithPath: configured)
+            if isExecutableFile(url) {
+                return url
+            }
+        }
+
         if let explicit = environment["ASHEX_GRAPHIFY_PATH"], !explicit.isEmpty {
             let url = URL(fileURLWithPath: explicit)
             if isExecutableFile(url) {
@@ -668,8 +768,49 @@ public struct GraphifyService {
         return nil
     }
 
+    private func pythonImportStatus() -> (available: Bool, executable: URL?) {
+        guard let executable = locatePythonExecutable() else {
+            return (false, nil)
+        }
+
+        let process = Process()
+        process.executableURL = executable
+        process.arguments = ["-c", "import graphify"]
+        process.currentDirectoryURL = projectRoot
+        process.standardOutput = Pipe()
+        process.standardError = Pipe()
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+            return (process.terminationStatus == 0, executable)
+        } catch {
+            return (false, executable)
+        }
+    }
+
+    private func locatePythonExecutable() -> URL? {
+        let names = ["python3", "python"]
+        for directory in (environment["PATH"] ?? "").split(separator: ":") {
+            for name in names {
+                let candidate = URL(fileURLWithPath: String(directory)).appendingPathComponent(name)
+                if isExecutableFile(candidate) {
+                    return candidate
+                }
+            }
+        }
+        return nil
+    }
+
     private func isExecutableFile(_ url: URL) -> Bool {
         fileManager.isExecutableFile(atPath: url.path)
+    }
+
+    private func resolveProjectPath(_ path: String) -> URL {
+        let url = path.hasPrefix("/")
+            ? URL(fileURLWithPath: path)
+            : projectRoot.appendingPathComponent(path)
+        return url.standardizedFileURL
     }
 
     private func graphifyVersion(executableURL: URL) async -> String? {
@@ -713,4 +854,26 @@ public struct GraphifyService {
         let index = trimmed.index(trimmed.startIndex, offsetBy: maxCharacters)
         return String(trimmed[..<index]) + "\n[truncated]"
     }
+
+    public static let defaultIgnoreEntries = [
+        ".git/",
+        ".ashex/",
+        ".codex/",
+        "node_modules/",
+        ".build/",
+        "DerivedData/",
+        "dist/",
+        "build/",
+        "target/",
+        "vendor/",
+        ".venv/",
+        "venv/",
+        "__pycache__/",
+        "*.xcarchive",
+        "*.xcodeproj/project.xcworkspace/xcuserdata/",
+        "*.xcworkspace/xcuserdata/",
+        "*.mlmodelc",
+        "*.safetensors",
+        "*.gguf",
+    ]
 }

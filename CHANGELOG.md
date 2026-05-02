@@ -6,6 +6,16 @@ The format is loosely based on Keep a Changelog and uses a simple `Added`, `Chan
 
 ## Unreleased
 
+## v0.2.34 - 2026-05-02
+
+### Changed
+
+- Graphify query validation now follows the configured context budget.
+
+### Fixed
+
+- The TUI no longer parks new `esh` prompts on a "Refreshing `esh` models before blocking this prompt" state after stale memory-pressure recovery; it retries with a known smaller model when possible, otherwise it clears the stale blocker and lets the prompt run.
+
 ## v0.2.18 - 2026-04-22
 
 ### Added

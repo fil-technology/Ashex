@@ -18,6 +18,8 @@ public struct AshexUserConfig: Codable, Sendable {
     public var logging: LoggingConfig
     public var exec: ExecConfig
     public var browser: BrowserConfigSection
+    public var graphify: GraphifyConfig
+    public var terminal: TerminalExecutionConfig
 
     public init(
         version: Int = 1,
@@ -36,7 +38,9 @@ public struct AshexUserConfig: Codable, Sendable {
         optimization: OptimizationConfig = .default,
         logging: LoggingConfig = .default,
         exec: ExecConfig = .default,
-        browser: BrowserConfigSection = .default
+        browser: BrowserConfigSection = .default,
+        graphify: GraphifyConfig = .default,
+        terminal: TerminalExecutionConfig = .default
     ) {
         self.version = version
         self.debug = debug
@@ -55,6 +59,8 @@ public struct AshexUserConfig: Codable, Sendable {
         self.logging = logging
         self.exec = exec
         self.browser = browser
+        self.graphify = graphify
+        self.terminal = terminal
     }
 
     public static let `default` = AshexUserConfig()
@@ -77,6 +83,8 @@ public struct AshexUserConfig: Codable, Sendable {
         case logging
         case exec
         case browser
+        case graphify
+        case terminal
     }
 
     private enum SnakeCodingKeys: String, CodingKey {
@@ -105,6 +113,8 @@ public struct AshexUserConfig: Codable, Sendable {
         logging = try container.decodeIfPresent(LoggingConfig.self, forKey: .logging) ?? .default
         exec = try container.decodeIfPresent(ExecConfig.self, forKey: .exec) ?? .default
         browser = try container.decodeIfPresent(BrowserConfigSection.self, forKey: .browser) ?? .default
+        graphify = try container.decodeIfPresent(GraphifyConfig.self, forKey: .graphify) ?? .default
+        terminal = try container.decodeIfPresent(TerminalExecutionConfig.self, forKey: .terminal) ?? .default
     }
 }
 
@@ -458,6 +468,166 @@ public struct ExecConfig: Codable, Sendable {
             ?? snakeContainer.decodeIfPresent(Int.self, forKey: .maxSteps)
             ?? 20)
         models = try container.decodeIfPresent(ExecModelConfig.self, forKey: .models) ?? .default
+    }
+}
+
+public struct GraphifyConfig: Codable, Sendable, Equatable {
+    public var enabled: Bool
+    public var autoQueryForArchitectureTasks: Bool
+    public var autoBuild: Bool
+    public var maxContextNodes: Int
+    public var maxContextCharacters: Int
+    public var reportPath: String?
+    public var statePath: String
+    public var executablePath: String?
+
+    public init(
+        enabled: Bool = true,
+        autoQueryForArchitectureTasks: Bool = true,
+        autoBuild: Bool = false,
+        maxContextNodes: Int = 12,
+        maxContextCharacters: Int = 6_000,
+        reportPath: String? = "graphify-out/GRAPH_REPORT.md",
+        statePath: String = ".ashex/graphify/state.json",
+        executablePath: String? = nil
+    ) {
+        self.enabled = enabled
+        self.autoQueryForArchitectureTasks = autoQueryForArchitectureTasks
+        self.autoBuild = autoBuild
+        self.maxContextNodes = max(1, maxContextNodes)
+        self.maxContextCharacters = max(400, maxContextCharacters)
+        self.reportPath = reportPath?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        self.statePath = statePath.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? ".ashex/graphify/state.json"
+        self.executablePath = executablePath?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+    }
+
+    public static let `default` = GraphifyConfig()
+
+    private enum CodingKeys: String, CodingKey {
+        case enabled
+        case autoQueryForArchitectureTasks
+        case autoBuild
+        case maxContextNodes
+        case maxContextCharacters
+        case reportPath
+        case statePath
+        case executablePath
+    }
+
+    private enum SnakeCodingKeys: String, CodingKey {
+        case autoQueryForArchitectureTasks = "auto_query_for_architecture_tasks"
+        case autoBuild = "auto_build"
+        case maxContextNodes = "max_context_nodes"
+        case maxContextCharacters = "max_context_chars"
+        case reportPath = "report_path"
+        case statePath = "state_path"
+        case executablePath = "executable_path"
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let snakeContainer = try decoder.container(keyedBy: SnakeCodingKeys.self)
+        enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
+        autoQueryForArchitectureTasks = try container.decodeIfPresent(Bool.self, forKey: .autoQueryForArchitectureTasks)
+            ?? snakeContainer.decodeIfPresent(Bool.self, forKey: .autoQueryForArchitectureTasks)
+            ?? true
+        autoBuild = try container.decodeIfPresent(Bool.self, forKey: .autoBuild)
+            ?? snakeContainer.decodeIfPresent(Bool.self, forKey: .autoBuild)
+            ?? false
+        maxContextNodes = max(1, try container.decodeIfPresent(Int.self, forKey: .maxContextNodes)
+            ?? snakeContainer.decodeIfPresent(Int.self, forKey: .maxContextNodes)
+            ?? Self.default.maxContextNodes)
+        maxContextCharacters = max(400, try container.decodeIfPresent(Int.self, forKey: .maxContextCharacters)
+            ?? snakeContainer.decodeIfPresent(Int.self, forKey: .maxContextCharacters)
+            ?? Self.default.maxContextCharacters)
+        reportPath = try container.decodeIfPresent(String.self, forKey: .reportPath)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .nilIfEmpty
+            ?? snakeContainer.decodeIfPresent(String.self, forKey: .reportPath)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .nilIfEmpty
+            ?? Self.default.reportPath
+        statePath = try container.decodeIfPresent(String.self, forKey: .statePath)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .nilIfEmpty
+            ?? snakeContainer.decodeIfPresent(String.self, forKey: .statePath)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .nilIfEmpty
+            ?? Self.default.statePath
+        executablePath = try container.decodeIfPresent(String.self, forKey: .executablePath)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .nilIfEmpty
+            ?? snakeContainer.decodeIfPresent(String.self, forKey: .executablePath)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .nilIfEmpty
+    }
+}
+
+public struct TerminalExecutionConfig: Codable, Sendable, Equatable {
+    public var defaultTimeoutSeconds: Int
+    public var maxOutputBytes: Int
+    public var streamOutput: Bool
+    public var redactSecrets: Bool
+    public var requireConfirmationForDestructive: Bool
+    public var preserveLogs: Bool
+
+    public init(
+        defaultTimeoutSeconds: Int = 120,
+        maxOutputBytes: Int = 120_000,
+        streamOutput: Bool = true,
+        redactSecrets: Bool = true,
+        requireConfirmationForDestructive: Bool = true,
+        preserveLogs: Bool = true
+    ) {
+        self.defaultTimeoutSeconds = max(1, defaultTimeoutSeconds)
+        self.maxOutputBytes = max(1_024, maxOutputBytes)
+        self.streamOutput = streamOutput
+        self.redactSecrets = redactSecrets
+        self.requireConfirmationForDestructive = requireConfirmationForDestructive
+        self.preserveLogs = preserveLogs
+    }
+
+    public static let `default` = TerminalExecutionConfig()
+
+    private enum CodingKeys: String, CodingKey {
+        case defaultTimeoutSeconds
+        case maxOutputBytes
+        case streamOutput
+        case redactSecrets
+        case requireConfirmationForDestructive
+        case preserveLogs
+    }
+
+    private enum SnakeCodingKeys: String, CodingKey {
+        case defaultTimeoutSeconds = "default_timeout_seconds"
+        case maxOutputBytes = "max_output_bytes"
+        case streamOutput = "stream_output"
+        case redactSecrets = "redact_secrets"
+        case requireConfirmationForDestructive = "require_confirmation_for_destructive"
+        case preserveLogs = "preserve_logs"
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let snakeContainer = try decoder.container(keyedBy: SnakeCodingKeys.self)
+        defaultTimeoutSeconds = max(1, try container.decodeIfPresent(Int.self, forKey: .defaultTimeoutSeconds)
+            ?? snakeContainer.decodeIfPresent(Int.self, forKey: .defaultTimeoutSeconds)
+            ?? Self.default.defaultTimeoutSeconds)
+        maxOutputBytes = max(1_024, try container.decodeIfPresent(Int.self, forKey: .maxOutputBytes)
+            ?? snakeContainer.decodeIfPresent(Int.self, forKey: .maxOutputBytes)
+            ?? Self.default.maxOutputBytes)
+        streamOutput = try container.decodeIfPresent(Bool.self, forKey: .streamOutput)
+            ?? snakeContainer.decodeIfPresent(Bool.self, forKey: .streamOutput)
+            ?? true
+        redactSecrets = try container.decodeIfPresent(Bool.self, forKey: .redactSecrets)
+            ?? snakeContainer.decodeIfPresent(Bool.self, forKey: .redactSecrets)
+            ?? true
+        requireConfirmationForDestructive = try container.decodeIfPresent(Bool.self, forKey: .requireConfirmationForDestructive)
+            ?? snakeContainer.decodeIfPresent(Bool.self, forKey: .requireConfirmationForDestructive)
+            ?? true
+        preserveLogs = try container.decodeIfPresent(Bool.self, forKey: .preserveLogs)
+            ?? snakeContainer.decodeIfPresent(Bool.self, forKey: .preserveLogs)
+            ?? true
     }
 }
 

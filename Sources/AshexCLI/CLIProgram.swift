@@ -236,7 +236,7 @@ struct AshexCLI {
       ashex audio models [options]
       ashex benchmark <list|run|compare> [options]
       ashex browser <doctor|backends|fetch|eval|screenshot|serve|benchmark|test-local> [options]
-      ashex graphify <build|status|query|path|explain|report|rebuild|cluster-only|clean> [options]
+      ashex graphify <init|build|status|query|path|explain|report|rebuild|cluster-only|clean> [options]
       ashex tools <list|doctor> [options]
       ashex computer <doctor> [options]
       ashex computer-use <doctor|prototype> [options]
@@ -638,7 +638,8 @@ struct CLIConfiguration {
             modelRouter: try makeRuntimeModelRouter(primary: primaryAdapter, userConfig: userConfig),
             skillRouting: makeRuntimeSkillRoutingConfig(workspaceURL: workspaceURL, storageRoot: storageRoot, tools: tools),
             subagentWorkspaceManager: SubagentWorkspaceManager(storageRoot: storageRoot, workspaceRoot: workspaceURL),
-            reasoningSummaryDebugEnabled: userConfig.debug.reasoningSummaries
+            reasoningSummaryDebugEnabled: userConfig.debug.reasoningSummaries,
+            graphifyConfig: userConfig.graphify
         )
     }
 

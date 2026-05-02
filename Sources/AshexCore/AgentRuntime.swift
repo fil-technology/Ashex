@@ -50,6 +50,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
     private let toolExecutor: ToolExecutor
     private let workspaceSnapshot: WorkspaceSnapshot?
     private let reasoningSummaryDebugEnabled: Bool
+    private let graphifyConfig: GraphifyConfig
 
     public init(
         modelAdapter: any ModelAdapter,
@@ -63,6 +64,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         subagentWorkspaceManager: SubagentWorkspaceManager? = nil,
         subagentWorkspaceMode: SubagentWorkspaceMode = .sharedReadOnly,
         reasoningSummaryDebugEnabled: Bool = false,
+        graphifyConfig: GraphifyConfig = .default,
         clock: @escaping @Sendable () -> Date = Date.init
     ) throws {
         self.modelAdapter = modelAdapter
@@ -75,6 +77,7 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
         self.subagentWorkspaceMode = subagentWorkspaceMode
         self.workspaceSnapshot = workspaceSnapshot
         self.reasoningSummaryDebugEnabled = reasoningSummaryDebugEnabled
+        self.graphifyConfig = graphifyConfig
         self.clock = clock
         self.toolExecutor = ToolExecutor(
             toolRegistry: toolRegistry,
@@ -1673,7 +1676,10 @@ public final class AgentRuntime: RuntimeStreaming, Sendable {
             return nil
         }
         let workspaceRoot = URL(fileURLWithPath: workspaceSnapshot.workspaceRootPath, isDirectory: true)
-        let provider = KnowledgeGraphProvider(service: GraphifyService(projectRoot: workspaceRoot))
+        let provider = KnowledgeGraphProvider(
+            service: GraphifyService(projectRoot: workspaceRoot, config: graphifyConfig),
+            config: graphifyConfig
+        )
         return await provider.context(for: prompt, taskKind: taskKind)
     }
 

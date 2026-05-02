@@ -120,6 +120,20 @@ enum RuntimeResourceFailureRecoveryDecision: Equatable {
     }
 }
 
+enum EshMemoryPreflightDecision: Equatable {
+    case retryWithRecoveredModel
+    case runWithCurrentModel
+    case block
+
+    static func decide(provider: String, recoveredModel: String?) -> Self {
+        guard provider == "esh" else { return .block }
+        if recoveredModel != nil {
+            return .retryWithRecoveredModel
+        }
+        return .runWithCurrentModel
+    }
+}
+
 enum ProviderFailureRouting {
     static func isOllamaModelResourceFailure(message: String) -> Bool {
         let normalized = message.lowercased()
